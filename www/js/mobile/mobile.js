@@ -34,43 +34,50 @@ document.body.addEventListener('click', (e) => {
 
 /* ================= 预览手势：滑动翻页 + 边缘点按翻页 ================= */
 
+// 用 Pointer Events 而非 Touch Events：previewBody 是 overflow:auto 的
+// 滚动容器，横向滑动会被原生滚动手势接管并派发 pointercancel，
+// touchend 往往收不到；pointerup 不受影响
 const previewBody = $('#previewBody')
 const btnNext = $('#btnNextPage')
 const btnPrev = $('#btnPrevPage')
 
-let touchX = 0
-let touchY = 0
-let touchT = 0
+let ptrX = 0
+let ptrY = 0
+let ptrT = 0
+let ptrId = -1
 
-previewBody.addEventListener('touchstart', (e) => {
-  const t = e.touches[0]
-  touchX = t.clientX
-  touchY = t.clientY
-  touchT = Date.now()
+previewBody.addEventListener('pointerdown', (e) => {
+  ptrId = e.pointerId
+  ptrX = e.clientX
+  ptrY = e.clientY
+  ptrT = Date.now()
 }, { passive: true })
 
-previewBody.addEventListener('touchend', (e) => {
-  const t = e.changedTouches[0]
-  const dx = t.clientX - touchX
-  const dy = t.clientY - touchY
-  const dt = Date.now() - touchT
+previewBody.addEventListener('pointerup', (e) => {
+  if (e.pointerId !== ptrId) return
+  ptrId = -1
+  const dx = e.clientX - ptrX
+  const dy = e.clientY - ptrY
+  const dt = Date.now() - ptrT
   const dist = Math.hypot(dx, dy)
 
   // 快速点按（非滑动）：左右 20% 是翻页热区，中央留给原生点击行为
   // （收起目录/笔记面板）
   if (dt < 300 && dist < 12) {
     const rect = previewBody.getBoundingClientRect()
-    const rel = (t.clientX - rect.left) / rect.width
+    const rel = (e.clientX - rect.left) / rect.width
     if (rel < 0.2) btnPrev?.click()
     else if (rel > 0.8) btnNext?.click()
     return
   }
   // 水平滑动翻页：横向位移明显大于纵向（纵向是滚动）
-  if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+  if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
     if (dx < 0) btnNext?.click()
     else btnPrev?.click()
   }
 }, { passive: true })
+
+previewBody.addEventListener('pointercancel', () => { ptrId = -1 }, { passive: true })
 
 /* ================= 内置笔记编辑器（桌面端经 Typora 打开的等价物） ===== */
 

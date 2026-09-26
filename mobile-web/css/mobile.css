@@ -103,6 +103,9 @@ body,
 }
 
 /* ---------- 预览：触屏控制条加大 ---------- */
+/* 阅读区纵向滚动交给原生，横向触摸留给页面（滑动翻页）：不声明的话横向
+   滑动会被滚动手势接管并以 pointercancel 结束，滑动翻页收不到 pointerup */
+.preview-body { touch-action: pan-y; }
 .preview-head { height: 54px; }
 .preview-head .btn-ghost { padding: 7px 12px; }
 .preview-foot { height: 58px; }
