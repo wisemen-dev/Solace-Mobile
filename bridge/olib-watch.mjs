@@ -4,16 +4,16 @@
 // 其余语义与桌面端逐条对齐：
 //   - 稳定判定：新文件隔 1.5s 两次枚举对比 size/mtime，仍在写的跳过
 //     （下载器渐进写入，Olib/aria2 场景与桌面端相同）
-//   - 内容级去重：importFile 的 SHA-256 挡下，重复静默跳过
+//   - 内容级去重：原生流式 SHA-256 挡下，重复静默跳过
 //   - 失败记录：文件 mtime 未变则本次会话不重试，变了（重新下载）放行
 //   - 通知聚合：800ms 内的入库合并成一条 toast（渲染层文案现成）
+//   - 导入走原生管线（hashUri + copyUri），文件内容不过 JS 桥
 // 与桌面端的差异（性能取舍，详见 docs/PORTING.md）：多一份 watch-state.json
 // 记录「已处理过的文件（size+mtime）」，未变化的文件每次补扫直接跳过，
 // 不再像桌面端那样每次重启都重读重算全部哈希——平板的补扫频率是「每次
 // 回前台」，重读不可接受。状态文件删掉无副作用：全部文件重新撞一次
 // 内容去重而已。
-import { listPdfs, readFileBase64 } from './native.mjs'
-import { base64ToBytes } from './base64.mjs'
+import { listPdfs, hashUri, copyUri } from './native.mjs'
 
 export function createWatch ({ lib, fs, getSettings }) {
   let callbacks = null
@@ -65,8 +65,11 @@ export function createWatch ({ lib, fs, getSettings }) {
 
   async function importOne (file, st) {
     try {
-      const bytes = base64ToBytes(await readFileBase64(file.uri))
-      const doc = await lib.importFile({ fileName: file.name, size: file.size, bytes })
+      // 原生管线：流式哈希 → 查重 → 流式复制，全程不过 JS 桥
+      const meta = await hashUri(file.uri)
+      const doc = await lib.importWith(
+        { fileName: file.name, size: meta.size >= 0 ? meta.size : file.size, hash: meta.hash },
+        (dest) => copyUri(file.uri, dest))
       const catId = getSettings().watchCategory
       if (catId) {
         const data = lib.getData()

@@ -95,6 +95,7 @@ async function drain () {
   emit()
   try {
     while (pending.size) {
+      if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 500)); continue }
       const docId = pending.values().next().value
       pending.delete(docId)
       inflight.add(docId)
@@ -113,11 +114,10 @@ async function drain () {
 
 async function extractOne (docId) {
   try {
-    const buffer = await window.solace.readPreview(docId)
-    // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
-    // 一整份文件）；万一拿到别的形态才走包装兜底
-    const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-    const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise
+    const loadOpts = window.solace.getDocUrl
+      ? { url: await window.solace.getDocUrl(docId), ...docParams }
+      : { data: await window.solace.readPreview(docId), ...docParams }
+    const pdf = await pdfjsLib.getDocument(loadOpts).promise
     try {
       const pages = []
       const max = Math.min(pdf.numPages, pageLimit)

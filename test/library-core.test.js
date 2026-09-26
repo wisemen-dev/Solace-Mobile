@@ -114,6 +114,27 @@ test('init 首次运行建立空库并落盘 library.json', async () => {
   assert.equal(data.settings.theme, 'auto')
 })
 
+test('importWith：注入原生式复制（内容不过 JS）的去重、落库与串行化', async () => {
+  const { lib } = createHarness()
+  await lib.init()
+  const hash = await realSha(PDF_A)
+  const copies = []
+  const perform = async (dest) => { copies.push(dest) }
+  const doc = await lib.importWith({ fileName: '原生导入.pdf', size: PDF_A.length, hash }, perform)
+  assert.equal(copies.length, 1)
+  assert.equal(copies[0], `files/${doc.id}.pdf`, '复制目标必须是预分配的库内路径')
+  assert.equal(doc.hash, hash)
+  // 同内容再导入：命中去重，performCopy 不应被调用
+  await assert.rejects(
+    () => lib.importWith({ fileName: '再来.pdf', size: PDF_A.length, hash }, perform),
+    (err) => err.duplicate && err.duplicate.docId === doc.id
+  )
+  assert.equal(copies.length, 1)
+  // 非法输入拒绝
+  await assert.rejects(() => lib.importWith({ fileName: 'a.pdf', size: 1 }, perform), /哈希/)
+  await assert.rejects(() => lib.importWith({ fileName: 'a.txt', size: 1, hash }, perform), /仅支持 PDF/)
+})
+
 test('importFile 入库、去重、写副本；removeDoc 连带清理', async () => {
   const { fs, lib } = createHarness()
   await lib.init()

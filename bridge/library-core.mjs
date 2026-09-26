@@ -143,22 +143,31 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
     return dup
   }
 
-  // 导入串行化：算哈希 → 查重 → 写副本 → 写数据中间有多个 await，本身
-  // 不原子；用一条 promise 链排队，队列内不并发（与桌面端 importChain 同法）
+  // 导入串行化：查重 → 复制 → 写数据中间有多个 await，本身不原子；用一条
+  // promise 链排队，队列内不并发（与桌面端 importChain 同法）
   let importChain = Promise.resolve()
 
-  function importFile (file) {
-    const run = importChain.then(() => importFileLocked(file))
-    importChain = run.then(() => {}, () => {})
-    return run
+  function enqueue (run) {
+    const p = importChain.then(run)
+    importChain = p.then(() => {}, () => {})
+    return p
   }
 
-  async function importFileLocked (file) {
-    const name = String(file.fileName || '')
+  // 导入统一内核：meta（fileName/size/hash）+ performCopy(destRelPath)。
+  // 哈希与复制的实现由调用方注入——平板真机传原生流式实现（文件内容
+  // 不过 JS 桥，主线程零参与）；Node 单测与 WebView 文件选择兜底传 JS 实现
+  // （读 bytes → subtle 哈希 → base64 写盘）。语义与桌面端逐条对齐
+  function importWith (meta, performCopy) {
+    return enqueue(() => importWithLocked(meta, performCopy))
+  }
+
+  async function importWithLocked (meta, performCopy) {
+    const name = String(meta.fileName || '')
     if (!name.toLowerCase().endsWith('.pdf')) throw new Error('仅支持 PDF 文件')
-    const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes)
-    const size = Number.isFinite(file.size) ? file.size : bytes.length
-    const hash = await sha256(bytes)
+    const size = Math.floor(Number(meta.size))
+    const hash = String(meta.hash || '')
+    if (!Number.isFinite(size) || size < 0) throw new Error('无效的文件大小')
+    if (!hash) throw new Error('缺少内容哈希')
     const dup = await findDuplicate(hash, size)
     if (dup) {
       const err = new Error(`与已入库的《${dup.title}》内容相同`)
@@ -166,7 +175,7 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
       throw err
     }
     const id = randomUUID()
-    await fs.writeB64(`files/${id}.pdf`, bytesToBase64(bytes))
+    await performCopy(`files/${id}.pdf`)
     const doc = {
       id,
       title: stemOf(name),
@@ -183,6 +192,24 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
     data.documents.push(doc)
     await save()
     return doc
+  }
+
+  // JS 兜底导入（WebView 文件选择器返回 File 对象时；单测也走这里）。
+  // 哈希在链外算（subtle 是原生实现，实测 10MB≈29ms，不构成瓶颈），
+  // 复制仍走 base64 写盘——慢路径仅兜底用
+  function importFile (file) {
+    const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes)
+    const name = String(file.fileName || '')
+    if (!name.toLowerCase().endsWith('.pdf')) {
+      return enqueue(async () => { throw new Error('仅支持 PDF 文件') })
+    }
+    return (async () => {
+      const size = Number.isFinite(file.size) ? file.size : bytes.length
+      const hash = await sha256(bytes)
+      return importWith({ fileName: name, size, hash }, async (dest) => {
+        await fs.writeB64(dest, bytesToBase64(bytes))
+      })
+    })()
   }
 
   /* ---- 文档：编辑 / 删除 / 进度 ---- */
@@ -688,6 +715,7 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
     getData,
     getStartupNotice,
     importFile,
+    importWith,
     updateDoc,
     removeDoc,
     readFileBuffer,

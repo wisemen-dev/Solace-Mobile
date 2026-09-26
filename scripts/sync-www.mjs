@@ -117,6 +117,58 @@ patch('js/pdfjs.js', [
   ['../../../node_modules/pdfjs-dist/standard_fonts/', '../../vendor/pdfjs/standard_fonts/']
 ])
 
+// 加载点统一换 URL 直读（_capacitor_file_ 由 WebView 原生拦截流式返回，
+// 内容不过 JS 桥；桌面端同步渲染层无此方法，自动回落字节路径）
+patch('js/preview.js', [
+  [`    const buffer = await window.solace.readPreview(id)
+    // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
+    // 一整份文件——大 PDF 上就是几十 MB 的无谓内存与耗时）
+    const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
+    const pdfDoc = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
+   `    const loadOpts = window.solace.getDocUrl
+      ? { url: await window.solace.getDocUrl(id), ...docParams }
+      : { data: await window.solace.readPreview(id), ...docParams }
+    const pdfDoc = await pdfjsLib.getDocument(loadOpts).promise`]
+])
+
+patch('js/covers.js', [
+  [`async function generateCover (docId) {
+  const buffer = await window.solace.readPreview(docId)
+  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
+  const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
+   `async function generateCover (docId) {
+  const loadOpts = window.solace.getDocUrl
+    ? { url: await window.solace.getDocUrl(docId), ...docParams }
+    : { data: await window.solace.readPreview(docId), ...docParams }
+  const pdf = await pdfjsLib.getDocument(loadOpts).promise`],
+  // 预览打开时封面队列让路：pdf.js 解析仍与翻页争 CPU，读书永远优先
+  [`  draining = true
+  while (queue.length) {
+    const doc = queue.shift()`,
+   `  draining = true
+  while (queue.length) {
+    if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 400)); continue }
+    const doc = queue.shift()`]
+])
+
+patch('js/textindex.js', [
+  [`    const buffer = await window.solace.readPreview(docId)
+    // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
+    // 一整份文件）；万一拿到别的形态才走包装兜底
+    const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
+    const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
+   `    const loadOpts = window.solace.getDocUrl
+      ? { url: await window.solace.getDocUrl(docId), ...docParams }
+      : { data: await window.solace.readPreview(docId), ...docParams }
+    const pdf = await pdfjsLib.getDocument(loadOpts).promise`],
+  // 预览打开时索引队列让路（同上）
+  [`    while (pending.size) {
+      const docId = pending.values().next().value`,
+   `    while (pending.size) {
+      if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 500)); continue }
+      const docId = pending.values().next().value`]
+])
+
 patch('js/app.js', [
   // 「打开」：平板端没有外部阅读器，直接进内置预览
   [`      case 'open-doc': {

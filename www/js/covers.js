@@ -58,6 +58,7 @@ async function drain () {
   if (draining) return
   draining = true
   while (queue.length) {
+    if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 400)); continue }
     const doc = queue.shift()
     inflight.add(doc.id)
     try {
@@ -76,9 +77,10 @@ async function drain () {
 }
 
 async function generateCover (docId) {
-  const buffer = await window.solace.readPreview(docId)
-  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-  const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise
+  const loadOpts = window.solace.getDocUrl
+    ? { url: await window.solace.getDocUrl(docId), ...docParams }
+    : { data: await window.solace.readPreview(docId), ...docParams }
+  const pdf = await pdfjsLib.getDocument(loadOpts).promise
   try {
     const page = await pdf.getPage(1)
     const base = page.getViewport({ scale: 1 })

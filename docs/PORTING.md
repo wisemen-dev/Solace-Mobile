@@ -73,6 +73,35 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 | Typora/外部程序 | spawn | 内置编辑器 | 沙箱无外部程序 |
 | Ctrl+K | 键盘 | ⌘K 按钮 | 无键盘（按钮本就存在） |
 
+## 性能架构（0.3.0，重要）
+
+**原则：文件内容永远不过 JS 桥。** WebView 桥以 base64 字符串传输大文件，
+两侧各有一次全尺寸编解码 + JSON 序列化 + JNI 拷贝，且 JS 侧编解码在主线程
+——实测纯 JS base64 编码 10MB≈1.1s（原生 SHA-256 同为 10MB 仅 29ms，
+差 37 倍）。0.2.x 的卡顿全部源于此，与平板硬件无关。
+
+三条原生通道（android/.../SolaceNativePlugin.java）：
+
+1. **读取**：Capacitor 内置资源服务器原生支持
+   `https://localhost/_capacitor_file_<绝对路径>`（WebViewLocalServer 拦截
+   该前缀、直接 FileInputStream 流式返回）。`fs-adapter.fileUrl(relPath)`
+   经 `Filesystem.getUri` 把库内相对路径换算成该 URL；preview / covers /
+   textindex 的 pdf.js 加载统一 `getDocument({ url })`（pdf.js 在自己的
+   worker 里 fetch，主线程不碰字节）。服务端不支持 Range → pdf.js 自动
+   整取，仍是全速（30.8MB≈220ms）。
+2. **导入哈希**：`hashUri(uri)` 原生流式 SHA-256（MessageDigest，
+   30.8MB≈278ms）。
+3. **导入复制**：`copyUri(uri, destPath)` 原生流式复制进资料库
+   （30.8MB≈58ms）；失败自动清掉半截文件。
+
+导入内核 `library-core.importWith(meta, performCopy)`：meta 携带
+{ fileName, size, hash }，performCopy(destRelPath) 由调用方注入原生实现
+（真机）或 JS 实现（Node 单测 / WebView 选择器兜底）。查重 → 复制 → 落库
+的顺序与桌面端一致，串行化链不变。
+
+**预览优先**：预览打开期间（`window.currentPreviewId` 非空）封面与索引
+队列 sleep 让路——pdf.js 解析虽在 worker，仍与翻页争 CPU。
+
 ## Olib 集成要点（0.2.0）
 
 - **包可见性（坑）**：Android 11+ 起 `queryIntentActivities` /

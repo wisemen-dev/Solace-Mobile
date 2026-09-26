@@ -1278,6 +1278,11 @@
       return null;
     }
   }
+  async function fileUrl(relPath) {
+    const r = await Filesystem.getUri({ path: abs(relPath), directory: DIR });
+    const p = String(r.uri).replace(/^file:\/\//, "");
+    return `https://localhost/_capacitor_file_${p}`;
+  }
 
   // bridge/base64.mjs
   var TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1424,19 +1429,23 @@
       return dup;
     }
     let importChain = Promise.resolve();
-    function importFile(file) {
-      const run = importChain.then(() => importFileLocked(file));
-      importChain = run.then(() => {
+    function enqueue(run) {
+      const p = importChain.then(run);
+      importChain = p.then(() => {
       }, () => {
       });
-      return run;
+      return p;
     }
-    async function importFileLocked(file) {
-      const name = String(file.fileName || "");
+    function importWith(meta, performCopy) {
+      return enqueue(() => importWithLocked(meta, performCopy));
+    }
+    async function importWithLocked(meta, performCopy) {
+      const name = String(meta.fileName || "");
       if (!name.toLowerCase().endsWith(".pdf")) throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
-      const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
-      const size = Number.isFinite(file.size) ? file.size : bytes.length;
-      const hash = await sha256(bytes);
+      const size = Math.floor(Number(meta.size));
+      const hash = String(meta.hash || "");
+      if (!Number.isFinite(size) || size < 0) throw new Error("\u65E0\u6548\u7684\u6587\u4EF6\u5927\u5C0F");
+      if (!hash) throw new Error("\u7F3A\u5C11\u5185\u5BB9\u54C8\u5E0C");
       const dup = await findDuplicate(hash, size);
       if (dup) {
         const err = new Error(`\u4E0E\u5DF2\u5165\u5E93\u7684\u300A${dup.title}\u300B\u5185\u5BB9\u76F8\u540C`);
@@ -1444,7 +1453,7 @@
         throw err;
       }
       const id = randomUUID2();
-      await fs2.writeB64(`files/${id}.pdf`, bytesToBase64(bytes));
+      await performCopy(`files/${id}.pdf`);
       const doc = {
         id,
         title: stemOf(name),
@@ -1462,6 +1471,22 @@
       data.documents.push(doc);
       await save();
       return doc;
+    }
+    function importFile(file) {
+      const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
+      const name = String(file.fileName || "");
+      if (!name.toLowerCase().endsWith(".pdf")) {
+        return enqueue(async () => {
+          throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
+        });
+      }
+      return (async () => {
+        const size = Number.isFinite(file.size) ? file.size : bytes.length;
+        const hash = await sha256(bytes);
+        return importWith({ fileName: name, size, hash }, async (dest) => {
+          await fs2.writeB64(dest, bytesToBase64(bytes));
+        });
+      })();
     }
     async function updateDoc(id, patch) {
       const doc = findDoc(id);
@@ -1919,6 +1944,7 @@
       getData,
       getStartupNotice,
       importFile,
+      importWith,
       updateDoc,
       removeDoc,
       readFileBuffer,
@@ -2082,10 +2108,18 @@
     if (r && r.error) throw new Error(r.error);
     return r.files || [];
   }
-  async function readFileBase64(uri) {
-    const r = await SolaceNative.readFileBase64({ uri });
+  async function pickPdfs() {
+    return SolaceNative.pickPdfs();
+  }
+  async function hashUri(uri) {
+    const r = await SolaceNative.hashUri({ uri });
     if (r && r.error) throw new Error(r.error);
-    return r.base64;
+    return r;
+  }
+  async function copyUri(uri, destPath) {
+    const r = await SolaceNative.copyUri({ uri, destPath });
+    if (r && r.error) throw new Error(r.error);
+    return r;
   }
 
   // bridge/olib-watch.mjs
@@ -2134,8 +2168,11 @@
     }
     async function importOne(file, st) {
       try {
-        const bytes = base64ToBytes(await readFileBase64(file.uri));
-        const doc = await lib2.importFile({ fileName: file.name, size: file.size, bytes });
+        const meta = await hashUri(file.uri);
+        const doc = await lib2.importWith(
+          { fileName: file.name, size: meta.size >= 0 ? meta.size : file.size, hash: meta.hash },
+          (dest) => copyUri(file.uri, dest)
+        );
         const catId = getSettings().watchCategory;
         if (catId) {
           const data = lib2.getData();
@@ -2242,14 +2279,30 @@
     });
   }
   async function importDialog() {
-    const files = await pickPdfFiles();
     const imported = [];
     const errors = [];
     const duplicates = [];
+    let entries = null;
+    try {
+      const r = await pickPdfs();
+      if (!r.canceled) entries = r.files || [];
+    } catch {
+    }
+    const files = entries || await pickPdfFiles();
     for (const f2 of files) {
       try {
-        const bytes = new Uint8Array(await f2.arrayBuffer());
-        imported.push(await lib.importFile({ fileName: f2.name, size: f2.size, bytes }));
+        let doc;
+        if (entries) {
+          const meta = await hashUri(f2.uri);
+          doc = await lib.importWith(
+            { fileName: f2.name, size: meta.size >= 0 ? meta.size : f2.size, hash: meta.hash },
+            (dest) => copyUri(f2.uri, dest)
+          );
+        } else {
+          const bytes = new Uint8Array(await f2.arrayBuffer());
+          doc = await lib.importFile({ fileName: f2.name, size: f2.size, bytes });
+        }
+        imported.push(doc);
       } catch (err) {
         if (err.duplicate) duplicates.push({ file: f2.name, title: err.duplicate.title });
         else errors.push({ file: f2.name, message: String(err.message || err) });
@@ -2289,6 +2342,14 @@
     }),
     markRead: gate((id) => lib.markOpened(id, "read")),
     readPreview: gate((id) => lib.readFileBuffer(id)),
+    // 字节路径（调试/兜底）
+    // 库内 PDF 的直读 URL：WebView 原生拦截 _capacitor_file_ 流式返回，
+    // 内容不过 JS 桥——预览/封面/索引的加载全走这条（性能关键路径）
+    getDocUrl: gate(async (id) => {
+      const doc = lib.getData().documents.find((d) => d.id === id);
+      if (!doc) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
+      return fileUrl(`files/${doc.id}.pdf`);
+    }),
     setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
     // 全文索引
     getTextIndexStatus: gate(() => lib.getTextIndexStatus()),

@@ -1,10 +1,12 @@
 package com.molly.solacemobile;
 
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import android.util.Base64;
 
 import androidx.activity.result.ActivityResult;
@@ -18,7 +20,10 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -196,5 +201,130 @@ public class SolaceNativePlugin extends Plugin {
             }
             call.resolve(res);
         });
+    }
+
+    /* ---- 原生导入管线（性能关键路径） ----
+       文件内容经 JS 桥以 base64 往返会让主线程卡死数秒（实测纯 JS 编码
+       10MB≈1.1s，全部阻塞 UI）；以下三条方法让内容全程不过 JS：
+       SAF 多选 → 原生流式哈希 → 原生流式复制进资料库 */
+
+    @PluginMethod
+    public void pickPdfs(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.setType("application/pdf");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        // 部分来源的 PDF 登记为 octet-stream，补进候选类型避免选不到
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/pdf", "application/octet-stream"});
+        startActivityForResult(call, intent, "pickPdfsResult");
+    }
+
+    @ActivityCallback
+    private void pickPdfsResult(PluginCall call, ActivityResult result) {
+        JSObject res = new JSObject();
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
+            res.put("canceled", true);
+            call.resolve(res);
+            return;
+        }
+        JSArray files = new JSArray();
+        ClipData clip = result.getData().getClipData();
+        Uri single = result.getData().getData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) files.put(docEntry(clip.getItemAt(i).getUri()));
+        } else if (single != null) {
+            files.put(docEntry(single));
+        }
+        res.put("canceled", false);
+        res.put("files", files);
+        call.resolve(res);
+    }
+
+    // SAF 文档的展示名与大小（选择器返回的 uri 直接可查）
+    private JSObject docEntry(Uri uri) {
+        JSObject o = new JSObject();
+        o.put("uri", uri.toString());
+        String name = null;
+        long size = -1;
+        try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                int si = c.getColumnIndex(OpenableColumns.SIZE);
+                if (ni >= 0) name = c.getString(ni);
+                if (si >= 0 && !c.isNull(si)) size = c.getLong(si);
+            }
+        } catch (Exception ignored) {
+        }
+        o.put("name", name != null ? name : "document.pdf");
+        o.put("size", size);
+        return o;
+    }
+
+    // 资料库根（与 fs-adapter 的 Directory.External + SolaceLibrary 同一位置）
+    private File libraryFile(String relPath) {
+        File base = new File(getContext().getExternalFilesDir(null), "SolaceLibrary");
+        return new File(base, relPath == null ? "" : relPath);
+    }
+
+    // 流式 SHA-256（MessageDigest 原生实现，~GB/s 级），内容不过 JS
+    @PluginMethod
+    public void hashUri(PluginCall call) {
+        String uri = call.getString("uri", "");
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
+                if (in == null) throw new IllegalStateException("无法打开文件");
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] buf = new byte[262144];
+                long total = 0;
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    md.update(buf, 0, n);
+                    total += n;
+                }
+                res.put("hash", toHex(md.digest()));
+                res.put("size", total);
+            } catch (Exception e) {
+                res.put("error", String.valueOf(e.getMessage()));
+            }
+            call.resolve(res);
+        });
+    }
+
+    // 流式复制 SAF 文档 → 资料库相对路径；失败清掉半截文件
+    @PluginMethod
+    public void copyUri(PluginCall call) {
+        String uri = call.getString("uri", "");
+        String destPath = call.getString("destPath", "");
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            File dest = libraryFile(destPath);
+            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
+                if (in == null) throw new IllegalStateException("无法打开文件");
+                //noinspection ResultOfMethodCallIgnored
+                dest.getParentFile().mkdirs();
+                long total = 0;
+                try (FileOutputStream out = new FileOutputStream(dest)) {
+                    byte[] buf = new byte[262144];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        total += n;
+                    }
+                }
+                res.put("size", total);
+            } catch (Exception e) {
+                //noinspection ResultOfMethodCallIgnored
+                dest.delete();
+                res.put("error", "复制失败：" + e.getMessage());
+            }
+            call.resolve(res);
+        });
+    }
+
+    private static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 }

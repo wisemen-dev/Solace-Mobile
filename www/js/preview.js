@@ -80,11 +80,10 @@ async function loadDoc (id, jumpPage) {
   // 过期判定：加载是异步的，期间用户可能已关闭浮层或切到别的书（currentDoc 变化）
   const stale = () => overlay.hidden || !currentDoc || currentDoc.id !== id
   try {
-    const buffer = await window.solace.readPreview(id)
-    // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
-    // 一整份文件——大 PDF 上就是几十 MB 的无谓内存与耗时）
-    const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-    const pdfDoc = await pdfjsLib.getDocument({ data, ...docParams }).promise
+    const loadOpts = window.solace.getDocUrl
+      ? { url: await window.solace.getDocUrl(id), ...docParams }
+      : { data: await window.solace.readPreview(id), ...docParams }
+    const pdfDoc = await pdfjsLib.getDocument(loadOpts).promise
     // 过期结果必须销毁丢弃：否则会把已关闭的预览「复活」——pdf 挂着永不
     // destroy（内存泄漏）、往隐藏的 canvas 渲染
     if (stale()) {

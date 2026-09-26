@@ -7,12 +7,12 @@
 // bundle 成一个经典脚本（www/vendor/solace-bridge.js），在 index.html 里
 // 先于 app.js 加载——经典脚本同步执行，window.solace 在任何模块代码运行
 // 前就位。
-import { fs, rootUri } from './fs-adapter.mjs'
+import { fs, rootUri, fileUrl } from './fs-adapter.mjs'
 import { createLibrary } from './library-core.mjs'
 import { createNotes } from './notes-core.mjs'
 import { sha256Hex } from './sha256.mjs'
 import { App } from '@capacitor/app'
-import { findApps, findOlibCandidates, launchApp, pickFolder } from './native.mjs'
+import { findApps, findOlibCandidates, launchApp, pickFolder, pickPdfs, hashUri, copyUri } from './native.mjs'
 import { createWatch } from './olib-watch.mjs'
 
 const randomUUID = () => {
@@ -72,14 +72,30 @@ function pickPdfFiles () {
 }
 
 async function importDialog () {
-  const files = await pickPdfFiles()
   const imported = []
   const errors = []
   const duplicates = []
+  // 优先原生管线（SAF 多选 + 原生流式哈希/复制，主线程零参与）；
+  // 原生选择器异常时兜底 WebView 文件选择（JS 字节路径，慢但不失效）
+  let entries = null
+  try {
+    const r = await pickPdfs()
+    if (!r.canceled) entries = r.files || []
+  } catch { /* 走兜底 */ }
+  const files = entries || await pickPdfFiles()
   for (const f of files) {
     try {
-      const bytes = new Uint8Array(await f.arrayBuffer())
-      imported.push(await lib.importFile({ fileName: f.name, size: f.size, bytes }))
+      let doc
+      if (entries) {
+        const meta = await hashUri(f.uri)
+        doc = await lib.importWith(
+          { fileName: f.name, size: meta.size >= 0 ? meta.size : f.size, hash: meta.hash },
+          (dest) => copyUri(f.uri, dest))
+      } else {
+        const bytes = new Uint8Array(await f.arrayBuffer())
+        doc = await lib.importFile({ fileName: f.name, size: f.size, bytes })
+      }
+      imported.push(doc)
     } catch (err) {
       if (err.duplicate) duplicates.push({ file: f.name, title: err.duplicate.title })
       else errors.push({ file: f.name, message: String(err.message || err) })
@@ -115,7 +131,14 @@ const solace = {
   removeDoc: gate((id, opts) => lib.removeDoc(id, opts || {})),
   openDoc: gate(async () => { throw new Error('平板端请用内置预览阅读') }),
   markRead: gate((id) => lib.markOpened(id, 'read')),
-  readPreview: gate((id) => lib.readFileBuffer(id)),
+  readPreview: gate((id) => lib.readFileBuffer(id)), // 字节路径（调试/兜底）
+  // 库内 PDF 的直读 URL：WebView 原生拦截 _capacitor_file_ 流式返回，
+  // 内容不过 JS 桥——预览/封面/索引的加载全走这条（性能关键路径）
+  getDocUrl: gate(async (id) => {
+    const doc = lib.getData().documents.find(d => d.id === id)
+    if (!doc) throw new Error(`文档不存在: ${id}`)
+    return fileUrl(`files/${doc.id}.pdf`)
+  }),
   setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
 
   // 全文索引
