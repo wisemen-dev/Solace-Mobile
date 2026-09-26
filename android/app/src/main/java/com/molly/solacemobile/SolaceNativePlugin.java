@@ -98,24 +98,27 @@ public class SolaceNativePlugin extends Plugin {
 
     @ActivityCallback
     private void pickFolderResult(PluginCall call, ActivityResult result) {
-        JSObject res = new JSObject();
         if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
-            res.put("canceled", true);
-            call.resolve(res);
+            JSObject canceled = new JSObject();
+            canceled.put("canceled", true);
+            call.resolve(canceled);
             return;
         }
         Uri uri = result.getData().getData();
-        try {
-            // 持久化读权限：重启后免再次授权（每次安装新 APK 权限保留）
-            getContext().getContentResolver().takePersistableUriPermission(uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (SecurityException ignored) {
-            // 部分 ROM 不支持持久化：本次会话仍可读，下次需重选
-        }
-        res.put("canceled", false);
-        res.put("uri", uri.toString());
-        res.put("name", queryDisplayName(uri));
-        call.resolve(res);
+        // 持久化授权与目录名查询都是磁盘 IO，统一挪到 io 线程
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            try {
+                getContext().getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+                // 部分 ROM 不支持持久化：本次会话仍可读，下次需重选
+            }
+            res.put("canceled", false);
+            res.put("uri", uri.toString());
+            res.put("name", queryDisplayName(uri));
+            call.resolve(res);
+        });
     }
 
     private String queryDisplayName(Uri uri) {
@@ -212,32 +215,37 @@ public class SolaceNativePlugin extends Plugin {
     public void pickPdfs(PluginCall call) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        // 只留 application/pdf：加 octet-stream 会让选择器显示出各种二进制
+        // 文件，选择体验混乱（导入侧另有文件名防线）
         intent.setType("application/pdf");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        // 部分来源的 PDF 登记为 octet-stream，补进候选类型避免选不到
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/pdf", "application/octet-stream"});
         startActivityForResult(call, intent, "pickPdfsResult");
     }
 
     @ActivityCallback
     private void pickPdfsResult(PluginCall call, ActivityResult result) {
-        JSObject res = new JSObject();
         if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
-            res.put("canceled", true);
-            call.resolve(res);
+            JSObject canceled = new JSObject();
+            canceled.put("canceled", true);
+            call.resolve(canceled);
             return;
         }
-        JSArray files = new JSArray();
         ClipData clip = result.getData().getClipData();
         Uri single = result.getData().getData();
-        if (clip != null) {
-            for (int i = 0; i < clip.getItemCount(); i++) files.put(docEntry(clip.getItemAt(i).getUri()));
-        } else if (single != null) {
-            files.put(docEntry(single));
-        }
-        res.put("canceled", false);
-        res.put("files", files);
-        call.resolve(res);
+        // 文档名/大小要走 ContentResolver 查询（磁盘 IO），挪到 io 线程，
+        // 不占插件默认的主线程
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            JSArray files = new JSArray();
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) files.put(docEntry(clip.getItemAt(i).getUri()));
+            } else if (single != null) {
+                files.put(docEntry(single));
+            }
+            res.put("canceled", false);
+            res.put("files", files);
+            call.resolve(res);
+        });
     }
 
     // SAF 文档的展示名与大小（选择器返回的 uri 直接可查）
@@ -317,6 +325,63 @@ public class SolaceNativePlugin extends Plugin {
                 //noinspection ResultOfMethodCallIgnored
                 dest.delete();
                 res.put("error", "复制失败：" + e.getMessage());
+            }
+            call.resolve(res);
+        });
+    }
+
+    // 复制的同时计算 SHA-256：一次读取完成两件事，且哈希与副本内容严格
+    // 同源——彻底消除「先哈希后复制」之间文件仍在被写入的竞态
+    // （hash 与 copy 分两步时，库内登记的哈希可能与副本实际内容不符）
+    @PluginMethod
+    public void copyAndHash(PluginCall call) {
+        String uri = call.getString("uri", "");
+        String destPath = call.getString("destPath", "");
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            File dest = libraryFile(destPath);
+            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
+                if (in == null) throw new IllegalStateException("无法打开文件");
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                //noinspection ResultOfMethodCallIgnored
+                dest.getParentFile().mkdirs();
+                long total = 0;
+                try (FileOutputStream out = new FileOutputStream(dest)) {
+                    byte[] buf = new byte[262144];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        md.update(buf, 0, n);
+                        total += n;
+                    }
+                }
+                res.put("size", total);
+                res.put("hash", toHex(md.digest()));
+            } catch (Exception e) {
+                //noinspection ResultOfMethodCallIgnored
+                dest.delete();
+                res.put("error", "复制失败：" + e.getMessage());
+            }
+            call.resolve(res);
+        });
+    }
+
+    // 库内文件的原生流式哈希：旧桌面库（0.9.x 之前）条目缺 hash，补算时
+    // 不再走 base64 过桥的 JS 慢路径
+    @PluginMethod
+    public void hashLibraryPath(PluginCall call) {
+        String path = call.getString("path", "");
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            File src = libraryFile(path);
+            try (InputStream in = new java.io.FileInputStream(src)) {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] buf = new byte[262144];
+                int n;
+                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+                res.put("hash", toHex(md.digest()));
+            } catch (Exception e) {
+                res.put("error", String.valueOf(e.getMessage()));
             }
             call.resolve(res);
         });

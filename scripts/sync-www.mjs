@@ -199,10 +199,12 @@ patch('js/app.js', [
 ])
 
 patch('js/settings.js', [
-  // 监视文件夹显示名：平板端存 SAF 目录名（uri 不可读也不可手输）
+  // 监视文件夹显示名：平板端存 SAF 目录名（uri 不可读也不可手输）。
+  // 注意用 .value 赋值而非 setAttribute('value')——后者只设默认值，
+  // 面板重开时会显示用户上次输入的脏值而非已存值
   [`  $('#setWatchFolder').value = s.watchFolder || ''`,
    `  $('#setWatchFolder').value = window.solace.isMobile ? (s.watchFolderName || '') : (s.watchFolder || '')
-  $('#setOlibPackage')?.setAttribute('value', s.externalToolPackage || '')`],
+  $('#setOlibPackage').value = s.externalToolPackage || ''`],
   // 「浏览…」：平板端走 SAF 系统目录选择器，返回 { uri, name }
   [`$('#btnBrowseWatch').addEventListener('click', async () => {
   const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
@@ -282,7 +284,16 @@ patch('js/notespanel.js', [
   }
   try {
     const res = await window.solace.openNote(doc.id, file)`],
-  ['将移入系统回收站。', '将直接删除（平板端无回收站）。']
+  ['将移入系统回收站。', '将直接删除（平板端无回收站）。'],
+  // 内置编辑器保存后刷新列表的修改时间（面板开着且是同一本书时）
+  [`btnNew.addEventListener('click', async () => {`,
+   `window.addEventListener('solace-note-saved', (e) => {
+  if (panel.hidden || !doc) return
+  if (e.detail && e.detail.docId && e.detail.docId !== doc.id) return
+  load()
+})
+
+btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)

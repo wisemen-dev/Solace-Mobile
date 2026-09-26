@@ -1,6 +1,8 @@
 // 平板端触屏适配层：与桌面渲染代码并存，不改其结构。
 // 1. 侧栏抽屉（窄屏） 2. 预览滑动/边缘点按翻页 3. 内置笔记编辑器
-// 4. 抽屉内选择后自动收起 5. 双击返回键关预览（Android 返回手势的兜底）
+// 4. 抽屉内选择后自动收起 5. Android 返回键语义（桥负责，这里只兜底）
+import { askConfirm } from '../dialog.js'
+
 const $ = (sel) => document.querySelector(sel)
 
 /* ================= 侧栏抽屉 ================= */
@@ -100,34 +102,61 @@ const editorDlg = editorHost.querySelector('#noteEditorDialog')
 const editorTitle = editorHost.querySelector('#noteEditorTitle')
 const editorText = editorHost.querySelector('#noteEditorText')
 let editorCtx = null // { docId, file }：保存时绑定，防止编辑期间切书串写
+let editorDirty = false // 有未保存修改时不允许静默关闭（含返回键）
+
+editorText.addEventListener('input', () => { editorDirty = true })
 
 // notespanel.openOne 的移动端分支调用；content 是 .md 全文
 window.openNoteEditor = function (docId, file, title, content) {
   editorCtx = { docId, file }
   editorTitle.textContent = `《${title || '笔记'}》 · ${String(file || '').replace(/\.md$/i, '')}`
   editorText.value = content ?? ''
+  editorDirty = false
   editorDlg.showModal()
   setTimeout(() => editorText.focus(), 60)
 }
+
+// 有未保存修改时先确认再关；确认放弃才真正关闭
+async function requestEditorClose () {
+  if (editorDirty) {
+    const res = await askConfirm({
+      title: '放弃未保存的修改？',
+      text: '笔记内容自上次保存后已修改，关闭后将丢失这些修改。',
+      okText: '放弃修改'
+    })
+    if (!res) return
+  }
+  editorDirty = false
+  editorDlg.close()
+}
+
+// 返回键（桥的 backButton 对话框分支）：拦截关闭请求，走未保存确认
+editorDlg.addEventListener('solace-close-request', (e) => {
+  if (!editorDirty) return
+  e.preventDefault()
+  requestEditorClose()
+})
 
 async function saveEditor () {
   if (!editorCtx) return
   const { docId, file } = editorCtx
   try {
     await window.solace.writeNote(docId, file, editorText.value)
+    editorDirty = false
+    editorCtx = null // 已保存，后续关闭不再触发确认
     editorDlg.close()
     window.toast?.('笔记已保存')
-    // 笔记面板若开着，刷新列表的修改时间
-    window.dispatchEvent(new CustomEvent('solace-note-saved'))
+    // 笔记面板若开着则刷新列表的修改时间（notespanel 的移动端补丁监听）
+    window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
   } catch (err) {
     window.toast?.(`保存失败：${err.message || err}`)
   }
 }
 
 editorHost.querySelector('#btnNoteEdSave').addEventListener('click', saveEditor)
-editorHost.querySelector('#btnNoteEdCancel').addEventListener('click', () => editorDlg.close())
-editorHost.querySelector('#btnNoteEdClose').addEventListener('click', () => editorDlg.close())
-editorDlg.addEventListener('click', (e) => { if (e.target === editorDlg) editorDlg.close() })
+editorHost.querySelector('#btnNoteEdCancel').addEventListener('click', requestEditorClose)
+editorHost.querySelector('#btnNoteEdClose').addEventListener('click', requestEditorClose)
+editorDlg.addEventListener('click', (e) => { if (e.target === editorDlg) requestEditorClose() })
 
 /* ================= Android 返回键 ================= */
 

@@ -85,3 +85,18 @@ export async function copyUri (uri, destPath) {
   if (r && r.error) throw new Error(r.error)
   return r
 }
+
+// 复制 + 哈希一次完成（内容同源，消除先哈希后复制的写入竞态）。
+// 返回 { size, hash }；失败时原生侧已清掉半截文件
+export async function copyAndHash (uri, destPath) {
+  const r = await SolaceNative.copyAndHash({ uri, destPath })
+  if (r && r.error) throw new Error(r.error)
+  return r
+}
+
+// 库内文件（资料库相对路径）的原生流式哈希。返回 { hash }
+export async function hashLibraryPath (path) {
+  const r = await SolaceNative.hashLibraryPath({ path })
+  if (r && r.error) throw new Error(r.error)
+  return r
+}

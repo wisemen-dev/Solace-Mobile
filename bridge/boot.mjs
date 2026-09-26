@@ -12,7 +12,7 @@ import { createLibrary } from './library-core.mjs'
 import { createNotes } from './notes-core.mjs'
 import { sha256Hex } from './sha256.mjs'
 import { App } from '@capacitor/app'
-import { findApps, findOlibCandidates, launchApp, pickFolder, pickPdfs, hashUri, copyUri } from './native.mjs'
+import { findApps, findOlibCandidates, launchApp, pickFolder, pickPdfs, copyAndHash, hashLibraryPath } from './native.mjs'
 import { createWatch } from './olib-watch.mjs'
 
 const randomUUID = () => {
@@ -26,7 +26,7 @@ const randomUUID = () => {
   })
 }
 
-const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID })
+const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath })
 const notes = createNotes({ fs })
 
 // 自动入库（Olib 下载目录补扫）：settings 随取随读，配置变更即时生效
@@ -35,6 +35,25 @@ const watch = createWatch({ lib, fs, getSettings: () => (lib.getData().settings 
 // 资料库初始化是异步的（读 library.json）；app.js 的 refresh() 可能在它
 // 完成前就发起 getLibrary——每个方法先 await ready 再干活
 const ready = lib.init()
+
+// 初始化失败（磁盘满/目录不可写等）不能变成一个不报错的空壳界面：
+// 全屏错误页兜底（桌面端对应场景是 dialog.showErrorBox）
+ready.catch((err) => {
+  const div = document.createElement('div')
+  div.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#101418;color:#e8edf2;' +
+    'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;' +
+    'padding:48px;text-align:center;font-size:15px;line-height:1.8;font-family:sans-serif'
+  const msg = document.createElement('div')
+  msg.style.cssText = 'opacity:.75;max-width:560px;word-break:break-all;font-size:13px'
+  msg.textContent = String((err && err.message) || err)
+  div.innerHTML = '<div style="font-size:42px">⚠️</div><b style="font-size:17px">资料库无法初始化</b>'
+  div.appendChild(msg)
+  const hint = document.createElement('div')
+  hint.style.cssText = 'opacity:.5;font-size:12.5px'
+  hint.textContent = '清理存储空间或重启应用后重试；已入库的书籍不受影响'
+  div.appendChild(hint)
+  document.body.appendChild(div)
+})
 
 const gate = (fn) => async (...args) => {
   await ready
@@ -87,10 +106,9 @@ async function importDialog () {
     try {
       let doc
       if (entries) {
-        const meta = await hashUri(f.uri)
-        doc = await lib.importWith(
-          { fileName: f.name, size: meta.size >= 0 ? meta.size : f.size, hash: meta.hash },
-          (dest) => copyUri(f.uri, dest))
+        // 原生暂存管线：复制+哈希一次完成（内容同源，无写入竞态），
+        // 查重通过后由数据层把暂存文件原子转正
+        doc = await lib.importVia({ fileName: f.name }, (staging) => copyAndHash(f.uri, staging))
       } else {
         const bytes = new Uint8Array(await f.arrayBuffer())
         doc = await lib.importFile({ fileName: f.name, size: f.size, bytes })
@@ -233,9 +251,36 @@ App.addListener('appStateChange', ({ isActive }) => {
 // Android 返回键语义：关最上层的浮层（对话框 > 预览 > 抽屉），都没有才
 // 退出应用——不然看书中随手一划返回手势就把整个应用杀了。
 // 桥脚本在 body 末尾执行，DOM 已就绪
+
+// 模态对话框的打开顺序栈：querySelector('dialog[open]') 拿到的是 DOM 顺序
+// 第一个，不是最上层——原生 dialog 的层叠按打开顺序而非 DOM 顺序。
+// 在 showModal 上挂钩子记录打开顺序，close 事件（捕获阶段可收到不冒泡
+// 的事件）负责出栈，返回键总是关真正在最上面的那个
+const dialogStack = []
+{
+  const origShowModal = HTMLDialogElement.prototype.showModal
+  HTMLDialogElement.prototype.showModal = function (...args) {
+    origShowModal.apply(this, args)
+    if (!dialogStack.includes(this)) dialogStack.push(this)
+  }
+  document.addEventListener('close', (e) => {
+    const i = dialogStack.indexOf(e.target)
+    if (i >= 0) dialogStack.splice(i, 1)
+  }, true)
+}
+
+let lastBackAt = 0
+
 App.addListener('backButton', () => {
-  const dlg = document.querySelector('dialog[open]')
-  if (dlg) { dlg.close(); return }
+  const dlg = dialogStack[dialogStack.length - 1]
+  if (dlg) {
+    // 先给对话框自己一个拦截机会（如笔记编辑器的未保存确认），
+    // 不拦截才真正关闭
+    const ev = new CustomEvent('solace-close-request', { cancelable: true })
+    dlg.dispatchEvent(ev)
+    if (!ev.defaultPrevented) dlg.close()
+    return
+  }
   const overlay = document.getElementById('previewOverlay')
   if (overlay && !overlay.hidden) {
     // 走按钮链路：app.js 的 closePreviewAndRefresh 会先落库进度再刷新
@@ -249,7 +294,14 @@ App.addListener('backButton', () => {
     if (bd) bd.hidden = true
     return
   }
-  App.exitApp()
+  // 根界面：再按一次退出（Android 惯例，防误触）；2 秒窗口
+  const now = Date.now()
+  if (now - lastBackAt < 2000) {
+    App.exitApp()
+  } else {
+    lastBackAt = now
+    window.toast?.('再按一次退出 Solace', 1600)
+  }
 })
 
 // 启动告示（资料库损坏重建等）：等渲染层就绪后经其 toast 通道提示。

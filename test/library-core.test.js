@@ -135,6 +135,42 @@ test('importWith：注入原生式复制（内容不过 JS）的去重、落库�
   await assert.rejects(() => lib.importWith({ fileName: 'a.txt', size: 1, hash }, perform), /仅支持 PDF/)
 })
 
+test('importVia：暂存管线——哈希与复制同源、去重删暂存、转正为正式副本', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const B = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9])
+  const hashOf = async (bytes) => {
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', arr)
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+  }
+  const simulate = async (staging, bytes) => {
+    await fs.writeB64(staging, bytesToBase64(bytes))
+    return { hash: await hashOf(bytes), size: bytes.length }
+  }
+  const doc = await lib.importVia({ fileName: '暂存.pdf' }, (staging) => simulate(staging, B))
+  assert.ok(await fs.exists(`files/${doc.id}.pdf`), '暂存已转正为正式副本')
+  assert.equal(doc.hash, await hashOf(B))
+  assert.equal(doc.size, B.length)
+  // 同内容再导入：暂存被删除，库内无残留
+  await assert.rejects(
+    () => lib.importVia({ fileName: '重复.pdf' }, (staging) => simulate(staging, B)),
+    (err) => !!err.duplicate
+  )
+  let left = (await fs.readdir('files')).filter(e => APP_STAGING_NAME(e.name))
+  assert.equal(left.length, 0, '去重路径不应留下暂存文件')
+  // 崩溃残留的暂存副本由启动清扫回收（点前缀命名，用户文件不可能撞上）
+  await fs.writeB64('files/.incoming-00000000-0000-4000-8000-000000000abc.pdf', 'AAAA')
+  const lib2 = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date() })
+  await lib2.init()
+  left = (await fs.readdir('files')).filter(e => APP_STAGING_NAME(e.name))
+  assert.equal(left.length, 0, '启动清扫应清掉 .incoming- 残留')
+})
+
+function APP_STAGING_NAME (name) {
+  return /^\.incoming-[0-9a-f-]{36}\.pdf$/i.test(name)
+}
+
 test('importFile 入库、去重、写副本；removeDoc 连带清理', async () => {
   const { fs, lib } = createHarness()
   await lib.init()

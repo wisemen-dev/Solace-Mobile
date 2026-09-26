@@ -1321,7 +1321,7 @@
   }
 
   // bridge/library-core.mjs
-  function createLibrary({ fs: fs2, sha256, randomUUID: randomUUID2, now = () => /* @__PURE__ */ new Date() }) {
+  function createLibrary({ fs: fs2, sha256, randomUUID: randomUUID2, hashStorageFile, now = () => /* @__PURE__ */ new Date() }) {
     let data = null;
     let startupNotice = null;
     let textIndexMeta = { version: 1, entries: {} };
@@ -1418,7 +1418,11 @@
         }
         if (d.size !== size) continue;
         try {
-          d.hash = await sha256(base64ToBytes(await fs2.readFileB64(`files/${d.id}.pdf`)));
+          if (hashStorageFile) {
+            d.hash = (await hashStorageFile(`files/${d.id}.pdf`)).hash;
+          } else {
+            d.hash = await sha256(base64ToBytes(await fs2.readFileB64(`files/${d.id}.pdf`)));
+          }
           backfilled = true;
           if (d.hash === hash) dup = d;
         } catch {
@@ -1487,6 +1491,53 @@
           await fs2.writeB64(dest, bytesToBase64(bytes));
         });
       })();
+    }
+    function importVia(meta, performCopyAndHash) {
+      return enqueue(() => importViaLocked(meta, performCopyAndHash));
+    }
+    async function importViaLocked(meta, performCopyAndHash) {
+      const name = String(meta.fileName || "");
+      if (!name.toLowerCase().endsWith(".pdf")) throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
+      const id = randomUUID2();
+      const staging = `files/.incoming-${id}.pdf`;
+      let info;
+      try {
+        info = await performCopyAndHash(staging);
+      } catch (err) {
+        await fs2.rm(staging);
+        throw err;
+      }
+      const size = Math.floor(Number(info.size));
+      const hash = String(info.hash || "");
+      try {
+        if (!Number.isFinite(size) || size < 0 || !hash) throw new Error("\u5BFC\u5165\u7ED3\u679C\u4E0D\u5B8C\u6574");
+        const dup = await findDuplicate(hash, size);
+        if (dup) {
+          const err = new Error(`\u4E0E\u5DF2\u5165\u5E93\u7684\u300A${dup.title}\u300B\u5185\u5BB9\u76F8\u540C`);
+          err.duplicate = { title: dup.title, docId: dup.id };
+          throw err;
+        }
+        await fs2.rename(staging, `files/${id}.pdf`);
+      } catch (err) {
+        await fs2.rm(staging);
+        throw err;
+      }
+      const doc = {
+        id,
+        title: stemOf(name),
+        fileName: name,
+        originalPath: null,
+        size,
+        hash,
+        addedAt: now().toISOString(),
+        openedAt: null,
+        openCount: 0,
+        categoryId: null,
+        tagIds: []
+      };
+      data.documents.push(doc);
+      await save();
+      return doc;
     }
     async function updateDoc(id, patch) {
       const doc = findDoc(id);
@@ -1772,9 +1823,18 @@
     }
     const APP_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(pdf|jpg)$/i;
     const APP_TMP_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.tmp$/i;
+    const APP_STAGING_RE = /^\.incoming-[0-9a-f-]{36}\.pdf$/i;
     async function sweepOrphans() {
       await fs2.rm("library.json.tmp");
       await fs2.rm("textindex/index.json.tmp");
+      let staged = [];
+      try {
+        staged = await fs2.readdir("files");
+      } catch {
+      }
+      for (const e of staged) {
+        if (APP_STAGING_RE.test(e.name)) await fs2.rm(`files/${e.name}`);
+      }
       let shards = [];
       try {
         shards = await fs2.readdir("textindex");
@@ -1945,6 +2005,7 @@
       getStartupNotice,
       importFile,
       importWith,
+      importVia,
       updateDoc,
       removeDoc,
       readFileBuffer,
@@ -2111,13 +2172,13 @@
   async function pickPdfs() {
     return SolaceNative.pickPdfs();
   }
-  async function hashUri(uri) {
-    const r = await SolaceNative.hashUri({ uri });
+  async function copyAndHash(uri, destPath) {
+    const r = await SolaceNative.copyAndHash({ uri, destPath });
     if (r && r.error) throw new Error(r.error);
     return r;
   }
-  async function copyUri(uri, destPath) {
-    const r = await SolaceNative.copyUri({ uri, destPath });
+  async function hashLibraryPath(path) {
+    const r = await SolaceNative.hashLibraryPath({ path });
     if (r && r.error) throw new Error(r.error);
     return r;
   }
@@ -2127,7 +2188,7 @@
     let callbacks = null;
     let scanSeq = 0;
     let lastScanAt = 0;
-    const RESCAN_THROTTLE_MS = 15e3;
+    const RESCAN_THROTTLE_MS = 12e4;
     const failed = /* @__PURE__ */ new Map();
     let notifyQueue = [];
     let notifyTimer = null;
@@ -2168,11 +2229,7 @@
     }
     async function importOne(file, st) {
       try {
-        const meta = await hashUri(file.uri);
-        const doc = await lib2.importWith(
-          { fileName: file.name, size: meta.size >= 0 ? meta.size : file.size, hash: meta.hash },
-          (dest) => copyUri(file.uri, dest)
-        );
+        const doc = await lib2.importVia({ fileName: file.name }, (staging) => copyAndHash(file.uri, staging));
         const catId = getSettings().watchCategory;
         if (catId) {
           const data = lib2.getData();
@@ -2209,10 +2266,20 @@
       const st = await loadState();
       try {
         const files = await listPdfs(s2.watchTreeUri);
+        const seen = new Set(files.map((f2) => f2.uri));
+        for (const k of Object.keys(st)) {
+          if (!seen.has(k)) {
+            delete st[k];
+            stateDirty = true;
+          }
+        }
+        for (const k of [...failed.keys()]) {
+          if (!seen.has(k)) failed.delete(k);
+        }
         const candidates = files.filter((f2) => {
-          const seen = st[f2.uri];
-          if (!seen) return true;
-          return seen.size !== f2.size || seen.mtime !== f2.mtime;
+          const seen2 = st[f2.uri];
+          if (!seen2) return true;
+          return seen2.size !== f2.size || seen2.mtime !== f2.mtime;
         });
         if (candidates.length) {
           await new Promise((r) => setTimeout(r, 1500));
@@ -2245,10 +2312,24 @@
       return (c === "x" ? r : r & 3 | 8).toString(16);
     });
   };
-  var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID });
+  var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath });
   var notes = createNotes({ fs });
   var watch = createWatch({ lib, fs, getSettings: () => lib.getData().settings || {} });
   var ready = lib.init();
+  ready.catch((err) => {
+    const div = document.createElement("div");
+    div.style.cssText = "position:fixed;inset:0;z-index:9999;background:#101418;color:#e8edf2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:48px;text-align:center;font-size:15px;line-height:1.8;font-family:sans-serif";
+    const msg = document.createElement("div");
+    msg.style.cssText = "opacity:.75;max-width:560px;word-break:break-all;font-size:13px";
+    msg.textContent = String(err && err.message || err);
+    div.innerHTML = '<div style="font-size:42px">\u26A0\uFE0F</div><b style="font-size:17px">\u8D44\u6599\u5E93\u65E0\u6CD5\u521D\u59CB\u5316</b>';
+    div.appendChild(msg);
+    const hint = document.createElement("div");
+    hint.style.cssText = "opacity:.5;font-size:12.5px";
+    hint.textContent = "\u6E05\u7406\u5B58\u50A8\u7A7A\u95F4\u6216\u91CD\u542F\u5E94\u7528\u540E\u91CD\u8BD5\uFF1B\u5DF2\u5165\u5E93\u7684\u4E66\u7C4D\u4E0D\u53D7\u5F71\u54CD";
+    div.appendChild(hint);
+    document.body.appendChild(div);
+  });
   var gate = (fn) => async (...args) => {
     await ready;
     return fn(...args);
@@ -2293,11 +2374,7 @@
       try {
         let doc;
         if (entries) {
-          const meta = await hashUri(f2.uri);
-          doc = await lib.importWith(
-            { fileName: f2.name, size: meta.size >= 0 ? meta.size : f2.size, hash: meta.hash },
-            (dest) => copyUri(f2.uri, dest)
-          );
+          doc = await lib.importVia({ fileName: f2.name }, (staging) => copyAndHash(f2.uri, staging));
         } else {
           const bytes = new Uint8Array(await f2.arrayBuffer());
           doc = await lib.importFile({ fileName: f2.name, size: f2.size, bytes });
@@ -2429,10 +2506,25 @@
     if (isActive) watch.scan().catch(() => {
     });
   });
+  var dialogStack = [];
+  {
+    const origShowModal = HTMLDialogElement.prototype.showModal;
+    HTMLDialogElement.prototype.showModal = function(...args) {
+      origShowModal.apply(this, args);
+      if (!dialogStack.includes(this)) dialogStack.push(this);
+    };
+    document.addEventListener("close", (e) => {
+      const i = dialogStack.indexOf(e.target);
+      if (i >= 0) dialogStack.splice(i, 1);
+    }, true);
+  }
+  var lastBackAt = 0;
   App.addListener("backButton", () => {
-    const dlg = document.querySelector("dialog[open]");
+    const dlg = dialogStack[dialogStack.length - 1];
     if (dlg) {
-      dlg.close();
+      const ev = new CustomEvent("solace-close-request", { cancelable: true });
+      dlg.dispatchEvent(ev);
+      if (!ev.defaultPrevented) dlg.close();
       return;
     }
     const overlay = document.getElementById("previewOverlay");
@@ -2447,7 +2539,13 @@
       if (bd) bd.hidden = true;
       return;
     }
-    App.exitApp();
+    const now = Date.now();
+    if (now - lastBackAt < 2e3) {
+      App.exitApp();
+    } else {
+      lastBackAt = now;
+      window.toast?.("\u518D\u6309\u4E00\u6B21\u9000\u51FA Solace", 1600);
+    }
   });
   ready.then(async () => {
     const notice = lib.getStartupNotice();

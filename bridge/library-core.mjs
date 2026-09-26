@@ -16,7 +16,7 @@
 
 import { bytesToBase64, base64ToBytes } from './base64.mjs'
 
-export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() }) {
+export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = () => new Date() }) {
   let data = null
   let startupNotice = null
   let textIndexMeta = { version: 1, entries: {} }
@@ -122,7 +122,9 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
 
   // 内容级去重：字节相同的 PDF 不重复入库。新条目带 hash 直接比对；
   // 旧库条目（桌面端 0.9.x 之前导入的）没有 hash，只对同大小的文件现算
-  // 一次并回填，之后走 hash 快路径——与桌面端 findDuplicate 同逻辑
+  // 一次并回填，之后走 hash 快路径——与桌面端 findDuplicate 同逻辑。
+  // 回填哈希优先用注入的原生流式实现（hashStorageFile）；未注入时回落
+  // base64 过桥 + JS 计算（Node 单测路径，真机不走这条）
   async function findDuplicate (hash, size) {
     let backfilled = false
     let dup = null
@@ -133,7 +135,11 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
       }
       if (d.size !== size) continue
       try {
-        d.hash = await sha256(base64ToBytes(await fs.readFileB64(`files/${d.id}.pdf`)))
+        if (hashStorageFile) {
+          d.hash = (await hashStorageFile(`files/${d.id}.pdf`)).hash
+        } else {
+          d.hash = await sha256(base64ToBytes(await fs.readFileB64(`files/${d.id}.pdf`)))
+        }
         backfilled = true
         if (d.hash === hash) dup = d
       } catch { /* 副本丢失的旧条目跳过 */ }
@@ -210,6 +216,59 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
         await fs.writeB64(dest, bytesToBase64(bytes))
       })
     })()
+  }
+
+  // 暂存式导入（真机主路径）：复制与哈希由 performCopyAndHash(stagingPath)
+  // 一次完成（内容同源），写入 files/.incoming-<id>.pdf 暂存；查重通过后
+  // 原子改名为正式副本。与「先哈希后复制」相比，登记的 hash 与副本内容
+  // 严格一致，不存在两步之间文件仍在被写入的竞态。查重不通过时删除暂存
+  function importVia (meta, performCopyAndHash) {
+    return enqueue(() => importViaLocked(meta, performCopyAndHash))
+  }
+
+  async function importViaLocked (meta, performCopyAndHash) {
+    const name = String(meta.fileName || '')
+    if (!name.toLowerCase().endsWith('.pdf')) throw new Error('仅支持 PDF 文件')
+    const id = randomUUID()
+    const staging = `files/.incoming-${id}.pdf`
+    let info
+    try {
+      info = await performCopyAndHash(staging)
+    } catch (err) {
+      await fs.rm(staging) // 原生失败已自清，这里兜底实现未清的情况
+      throw err
+    }
+    const size = Math.floor(Number(info.size))
+    const hash = String(info.hash || '')
+    try {
+      if (!Number.isFinite(size) || size < 0 || !hash) throw new Error('导入结果不完整')
+      const dup = await findDuplicate(hash, size)
+      if (dup) {
+        const err = new Error(`与已入库的《${dup.title}》内容相同`)
+        err.duplicate = { title: dup.title, docId: dup.id }
+        throw err
+      }
+      await fs.rename(staging, `files/${id}.pdf`)
+    } catch (err) {
+      await fs.rm(staging)
+      throw err
+    }
+    const doc = {
+      id,
+      title: stemOf(name),
+      fileName: name,
+      originalPath: null,
+      size,
+      hash,
+      addedAt: now().toISOString(),
+      openedAt: null,
+      openCount: 0,
+      categoryId: null,
+      tagIds: []
+    }
+    data.documents.push(doc)
+    await save()
+    return doc
   }
 
   /* ---- 文档：编辑 / 删除 / 进度 ---- */
@@ -542,10 +601,18 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
   // 无主副本只清不在册的；库为空时一律不清（同桌面端的不可逆风险取舍）
   const APP_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(pdf|jpg)$/i
   const APP_TMP_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.tmp$/i
+  // importVia 的暂存副本（带点前缀，用户文件不可能撞上该命名）：崩溃残留，
+  // 与 *.tmp 一样永远可清
+  const APP_STAGING_RE = /^\.incoming-[0-9a-f-]{36}\.pdf$/i
 
   async function sweepOrphans () {
     await fs.rm('library.json.tmp')
     await fs.rm('textindex/index.json.tmp')
+    let staged = []
+    try { staged = await fs.readdir('files') } catch { /* 目录尚未建立 */ }
+    for (const e of staged) {
+      if (APP_STAGING_RE.test(e.name)) await fs.rm(`files/${e.name}`)
+    }
     let shards = []
     try { shards = await fs.readdir('textindex') } catch { /* 目录尚未建立 */ }
     for (const e of shards) {
@@ -716,6 +783,7 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
     getStartupNotice,
     importFile,
     importWith,
+    importVia,
     updateDoc,
     removeDoc,
     readFileBuffer,

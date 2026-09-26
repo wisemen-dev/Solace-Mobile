@@ -13,13 +13,15 @@
 // 不再像桌面端那样每次重启都重读重算全部哈希——平板的补扫频率是「每次
 // 回前台」，重读不可接受。状态文件删掉无副作用：全部文件重新撞一次
 // 内容去重而已。
-import { listPdfs, hashUri, copyUri } from './native.mjs'
+import { listPdfs, copyAndHash } from './native.mjs'
 
 export function createWatch ({ lib, fs, getSettings }) {
   let callbacks = null
   let scanSeq = 0 // 扫描代数：换目录/停用后，旧扫描在检查点自行退出
   let lastScanAt = 0
-  const RESCAN_THROTTLE_MS = 15000 // 回前台的最小间隔，防频繁切换刷扫描
+  // 回前台补扫的最小间隔：SAF 全量枚举本身有成本（几百文件秒级，虽在
+  // io 线程不卡 UI），频繁切换应用时不该每次都扫
+  const RESCAN_THROTTLE_MS = 120000
   const failed = new Map() // uri -> mtime：导入失败的文件，未变化不重试
   let notifyQueue = []
   let notifyTimer = null
@@ -65,11 +67,9 @@ export function createWatch ({ lib, fs, getSettings }) {
 
   async function importOne (file, st) {
     try {
-      // 原生管线：流式哈希 → 查重 → 流式复制，全程不过 JS 桥
-      const meta = await hashUri(file.uri)
-      const doc = await lib.importWith(
-        { fileName: file.name, size: meta.size >= 0 ? meta.size : file.size, hash: meta.hash },
-        (dest) => copyUri(file.uri, dest))
+      // 原生暂存管线：复制+哈希一次完成（内容同源，无写入竞态），
+      // 查重通过后由数据层原子转正
+      const doc = await lib.importVia({ fileName: file.name }, (staging) => copyAndHash(file.uri, staging))
       const catId = getSettings().watchCategory
       if (catId) {
         const data = lib.getData()
@@ -108,6 +108,14 @@ export function createWatch ({ lib, fs, getSettings }) {
     const st = await loadState()
     try {
       const files = await listPdfs(s.watchTreeUri)
+      // 清理已离开目录的陈旧记录（文件被删/移走）：状态表不再无限增长
+      const seen = new Set(files.map(f => f.uri))
+      for (const k of Object.keys(st)) {
+        if (!seen.has(k)) { delete st[k]; stateDirty = true }
+      }
+      for (const k of [...failed.keys()]) {
+        if (!seen.has(k)) failed.delete(k)
+      }
       // 候选：没处理过、或处理过后文件又变了（重新下载）
       const candidates = files.filter(f => {
         const seen = st[f.uri]

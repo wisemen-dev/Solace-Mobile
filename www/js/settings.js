@@ -43,7 +43,7 @@ async function fillPanel () {
   $('#setNotesEditor').value = s.notesEditorPath || ''
   $('#setTool').value = s.externalToolPath || ''
   $('#setWatchFolder').value = window.solace.isMobile ? (s.watchFolderName || '') : (s.watchFolder || '')
-  $('#setOlibPackage')?.setAttribute('value', s.externalToolPackage || '')
+  $('#setOlibPackage').value = s.externalToolPackage || ''
   $('#setWatchEnabled').checked = !!s.watchFolder && s.watchEnabled !== false
   // 自动入库分类下拉随当前资料库的分类重建
   $('#setWatchCategory').innerHTML = '<option value="">不归分类</option>' +

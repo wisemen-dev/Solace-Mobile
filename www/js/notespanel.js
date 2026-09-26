@@ -165,6 +165,12 @@ async function openOne (file) {
   }
 }
 
+window.addEventListener('solace-note-saved', (e) => {
+  if (panel.hidden || !doc) return
+  if (e.detail && e.detail.docId && e.detail.docId !== doc.id) return
+  load()
+})
+
 btnNew.addEventListener('click', async () => {
   if (!doc) return
   const ctx = getPageCtx ? getPageCtx() : {}
