@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Solace</string>
+    <string name="title_activity_main">Solace</string>
+    <string name="package_name">com.molly.solacemobile</string>
+    <string name="custom_url_scheme">com.molly.solacemobile</string>
+</resources>

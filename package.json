@@ -1,0 +1,29 @@
+{
+  "name": "solace-mobile",
+  "productName": "Solace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Solace 平板端 —— 本地 PDF 私人图书馆（Capacitor 移植版），与桌面端共用同一套 library.json 数据格式。",
+  "author": "Molly",
+  "license": "MIT",
+  "scripts": {
+    "bridge": "node scripts/build-bridge.mjs",
+    "www": "node scripts/sync-www.mjs",
+    "sync": "node scripts/build-bridge.mjs && npx cap sync android",
+    "test": "node --test test/library-core.test.js",
+    "android": "npx cap open android",
+    "apk": "node scripts/build-bridge.mjs && npx cap sync android && node scripts/build-apk.mjs",
+    "install:device": "node scripts/install-device.mjs",
+    "push:library": "node scripts/push-library.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/filesystem": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "esbuild": "^0.25.0"
+  }
+}

@@ -1,0 +1,200 @@
+// window.solace 桥：以桌面端 preload.js 暴露的同一套方法签名，把渲染层
+// 的全部请求接到上面的数据层移植版上。渲染层代码（app.js / preview.js /
+// settings.js / notespanel.js …）零感知——它们只知道 window.solace.* 返回
+// Promise，分不清后面是 Electron IPC 还是 Capacitor Filesystem。
+//
+// 打包：esbuild 把本文件连同 @capacitor/core、@capacitor/filesystem 一起
+// bundle 成一个经典脚本（www/vendor/solace-bridge.js），在 index.html 里
+// 先于 app.js 加载——经典脚本同步执行，window.solace 在任何模块代码运行
+// 前就位。
+import { fs, rootUri } from './fs-adapter.mjs'
+import { createLibrary } from './library-core.mjs'
+import { createNotes } from './notes-core.mjs'
+import { sha256Hex } from './sha256.mjs'
+import { App } from '@capacitor/app'
+
+const randomUUID = () => {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  // 兜底：非安全上下文（不应出现，防御性保留）
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+  })
+}
+
+const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID })
+const notes = createNotes({ fs })
+
+// 资料库初始化是异步的（读 library.json）；app.js 的 refresh() 可能在它
+// 完成前就发起 getLibrary——每个方法先 await ready 再干活
+const ready = lib.init()
+
+const gate = (fn) => async (...args) => {
+  await ready
+  return fn(...args)
+}
+
+/* ---- 导入：WebView 原生 <input type=file> 走系统文件选择器 ---- */
+
+// Android 上取消选择不触发 change：焦点回到窗口后做延迟兜底。
+// 兜底窗口内的真实选择不会被误吞（有文件时 change 已先触发并置 settled）
+function pickPdfFiles () {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.accept = 'application/pdf,.pdf'
+    input.style.display = 'none'
+    document.body.appendChild(input)
+    let settled = false
+    const done = (files) => {
+      if (settled) return
+      settled = true
+      input.remove()
+      resolve(files)
+    }
+    input.addEventListener('change', () => done([...input.files]))
+    const onFocus = () => {
+      setTimeout(() => {
+        if (!settled && (!input.files || !input.files.length)) done([])
+      }, 1200)
+    }
+    window.addEventListener('focus', onFocus, { once: true })
+    input.click()
+  })
+}
+
+async function importDialog () {
+  const files = await pickPdfFiles()
+  const imported = []
+  const errors = []
+  const duplicates = []
+  for (const f of files) {
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer())
+      imported.push(await lib.importFile({ fileName: f.name, size: f.size, bytes }))
+    } catch (err) {
+      if (err.duplicate) duplicates.push({ file: f.name, title: err.duplicate.title })
+      else errors.push({ file: f.name, message: String(err.message || err) })
+    }
+  }
+  return { imported, errors, duplicates }
+}
+
+/* ---- window.solace（签名与桌面端 preload.js 一一对应） ---- */
+
+const solace = {
+  // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
+  isMobile: true,
+
+  // 资料库
+  getLibrary: gate(() => lib.getData()),
+  getOpenStats: gate(() => lib.getOpenStats()),
+  importDialog: gate(importDialog),
+  importPaths: gate(async () => ({ imported: [], errors: [], duplicates: [] })), // 触屏无拖拽导入
+  getLibraryInfo: gate(async () => ({ rootDir: (await rootUri()) || 'SolaceLibrary（应用专属目录）', canRelocate: false })),
+  openLibraryRoot: gate(async () => true), // 平板端无文件管理器直达，占位成功
+  inspectTarget: gate(async () => { throw new Error('平板端资料库位置固定，不支持迁移') }),
+  relocateLibrary: gate(async () => { throw new Error('平板端资料库位置固定，不支持迁移') }),
+  pickFile: gate(async () => null),
+  pickDirectory: gate(async () => null),
+
+  // 文档
+  updateDoc: gate((id, patch) => lib.updateDoc(id, patch)),
+  removeDoc: gate((id, opts) => lib.removeDoc(id, opts || {})),
+  openDoc: gate(async () => { throw new Error('平板端请用内置预览阅读') }),
+  markRead: gate((id) => lib.markOpened(id, 'read')),
+  readPreview: gate((id) => lib.readFileBuffer(id)),
+  setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
+
+  // 全文索引
+  getTextIndexStatus: gate(() => lib.getTextIndexStatus()),
+  searchTextIndex: gate((kw) => lib.searchTextIndex(kw)),
+  setTextIndex: gate((id, payload) => lib.setTextIndex(id, payload)),
+
+  // 封面
+  setCover: gate((id, dataUrl) => lib.setCover(id, dataUrl)),
+  getCover: gate((id) => lib.getCoverDataUrl(id)),
+
+  // 分类
+  addCategory: gate((name, parentId) => lib.addCategory(name, parentId)),
+  renameCategory: gate((id, name) => lib.renameCategory(id, name)),
+  moveCategory: gate((id, parentId) => lib.moveCategory(id, parentId)),
+  removeCategory: gate((id) => lib.removeCategory(id)),
+
+  // 标签
+  addTag: gate((name) => lib.addTag(name)),
+  removeTag: gate((id) => lib.removeTag(id)),
+
+  // 智能收藏夹
+  saveShelf: gate((name, filters) => lib.addSmartShelf(name, filters)),
+  renameShelf: gate((id, name) => lib.renameSmartShelf(id, name)),
+  removeShelf: gate((id) => lib.removeSmartShelf(id)),
+
+  // 设置
+  updateSettings: gate((patch) => lib.updateSettings(patch)),
+
+  // 外部工具与自动入库（桌面端专属）：方法保留、行为降级
+  launchTool: gate(async () => { throw new Error('外部工具仅桌面端提供') }),
+  onWatchEvent: () => {}, // 无监视文件夹（Android 无目录变更通知），永不回调
+
+  // 笔记：列表/新建/删除与桌面端同形；打开改为交内置编辑器（inApp）
+  listNotes: gate((id) => notes.list(id)),
+  createNote: gate((id, payload) => notes.create(id, payload)),
+  openNote: gate(async (id, file) => {
+    const doc = lib.getData().documents.find(d => d.id === id)
+    const content = await notes.read(id, file)
+    return { inApp: true, title: (doc && doc.title) || '笔记', content }
+  }),
+  trashNote: gate((id, file) => notes.trash(id, file)),
+  revealNote: gate(async () => true), // 无「在文件夹中查看」，按钮已隐藏
+  // 移动端内置编辑器专用：读写笔记正文
+  readNote: gate((id, file) => notes.read(id, file)),
+  writeNote: gate((id, file, text) => notes.write(id, file, text)),
+
+  // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
+  getStartupNotice: () => lib.getStartupNotice()
+}
+
+window.solace = solace
+
+// Android 返回键语义：关最上层的浮层（对话框 > 预览 > 抽屉），都没有才
+// 退出应用——不然看书中随手一划返回手势就把整个应用杀了。
+// 桥脚本在 body 末尾执行，DOM 已就绪
+App.addListener('backButton', () => {
+  const dlg = document.querySelector('dialog[open]')
+  if (dlg) { dlg.close(); return }
+  const overlay = document.getElementById('previewOverlay')
+  if (overlay && !overlay.hidden) {
+    // 走按钮链路：app.js 的 closePreviewAndRefresh 会先落库进度再刷新
+    document.getElementById('btnPreviewClose')?.click()
+    return
+  }
+  const sidebar = document.querySelector('.sidebar')
+  if (sidebar && sidebar.classList.contains('open')) {
+    sidebar.classList.remove('open')
+    const bd = document.getElementById('drawerBackdrop')
+    if (bd) bd.hidden = true
+    return
+  }
+  App.exitApp()
+})
+
+// 启动告示（资料库损坏重建等）：等渲染层就绪后经其 toast 通道提示。
+// app.js 的 window.toast 在模块求值后才存在，这里延迟轮询
+ready.then(async () => {
+  const notice = lib.getStartupNotice()
+  if (!notice) return
+  let tries = 0
+  const timer = setInterval(() => {
+    tries++
+    if (typeof window.toast === 'function') {
+      window.toast(notice, 8000)
+      clearInterval(timer)
+    } else if (tries > 40) {
+      clearInterval(timer)
+    }
+  }, 250)
+})

@@ -1,0 +1,147 @@
+/* ===== 平板/触屏适配层：叠加在桌面 style.css 之上 =====
+   只做覆盖，不改桌面样式；断点 900px —— 竖屏/分屏走抽屉侧栏，
+   横屏平板（≥900px CSS 像素）沿用桌面双栏布局。 */
+
+/* 触屏通用：touch-action 消除 300ms 双击缩放延迟；按下反馈沿用 :active */
+button,
+.side-list li,
+.doc-card,
+.palette-list li,
+.toc-list button,
+.notes-list li,
+.stats-list li {
+  touch-action: manipulation;
+}
+
+/* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出 */
+body,
+.layout,
+.main {
+  height: 100dvh;
+}
+
+/* ---------- 悬停依赖 → 点按可达（无悬停能力的设备） ---------- */
+@media (hover: none) {
+  /* 封面操作条常显（桌面端悬停浮现） */
+  .doc-cover-ops { opacity: 1; }
+  /* 侧栏条目的 ＋/✎/✕ 小按钮常显 */
+  .side-list .ops { display: inline-flex; }
+  /* 笔记条目的删除按钮常显 */
+  .notes-list li .note-del { visibility: visible; }
+}
+
+/* ---------- 桌面端专属入口隐藏 ---------- */
+/* 预览「外部打开」：平板上预览即本体 */
+#btnPreviewExternal { display: none; }
+/* 笔记「在文件夹中查看」：无文件管理器直达 */
+#btnNoteReveal { display: none; }
+/* 设置面板：笔记编辑器/资料库位置/监视文件夹都是桌面概念，
+   导航按钮与分区一并隐藏（fillPanel 的读取逻辑不动） */
+#settingsNav button[data-sec='notes'],
+#settingsNav button[data-sec='library'] { display: none; }
+.settings-group[data-sec='notes'],
+.settings-group[data-sec='library'] { display: none !important; }
+/* 「阅读与索引」分区只留索引上限与恢复开关 */
+.settings-group[data-sec='reading'] .settings-row:has(#setPdfReader),
+.settings-group[data-sec='reading'] .settings-row:has(#setTool) { display: none; }
+
+/* ---------- 窄屏（竖屏/分屏）：侧栏抽屉化 ---------- */
+@media (max-width: 899.98px) {
+  .layout { display: block; }
+
+  .sidebar {
+    position: fixed;
+    z-index: 70;
+    left: 0; top: 0; bottom: 0;
+    width: min(300px, 82vw);
+    transform: translateX(-102%);
+    transition: transform var(--dur) var(--ease-out-expo);
+    padding-top: max(18px, env(safe-area-inset-top));
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+    padding-left: max(14px, env(safe-area-inset-left));
+  }
+  .sidebar.open {
+    transform: none;
+    box-shadow: 14px 0 40px rgba(0, 0, 0, 0.35);
+  }
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: var(--overlay-bg);
+  }
+  .drawer-backdrop[hidden] { display: none; }
+  .btn-drawer { display: inline-flex; }
+
+  /* 侧栏各列表放宽高度：抽屉里没有与主区抢空间的问题 */
+  .side-list { max-height: 26vh; }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 10px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+  }
+  .search { flex: 1 1 160px; min-width: 140px; }
+  .topbar .btn-ghost { padding: 7px 12px; font-size: 13px; }
+  .count { margin-left: 0; width: 100%; order: 9; }
+
+  .doc-grid { padding: 14px; }
+
+  /* 对话框与面板宽度适配 */
+  .dialog { min-width: 0; width: min(92vw, 480px); }
+  .settings-dialog { width: 94vw; height: min(88vh, 760px); }
+  .stats-dialog { width: 94vw; }
+  .palette-dialog { width: 94vw; }
+
+  /* 批量操作栏换行，不溢出屏宽 */
+  .batch-bar { flex-wrap: wrap; justify-content: center; max-width: 94vw; }
+}
+
+/* ---------- 宽屏（横屏平板）：桌面双栏布局 ---------- */
+@media (min-width: 900px) {
+  .btn-drawer { display: none; }
+}
+
+/* ---------- 预览：触屏控制条加大 ---------- */
+.preview-head { height: 54px; }
+.preview-head .btn-ghost { padding: 7px 12px; }
+.preview-foot { height: 58px; }
+.preview-foot .btn-ghost { padding: 11px 18px; font-size: 14px; }
+.page-jump { width: 76px; font-size: 15px; padding: 8px 6px; }
+/* 目录/笔记面板占屏比例上限（固定 256px 在窄屏过宽） */
+.toc-panel { width: min(300px, 76vw); }
+
+/* ---------- 笔记编辑器（移动端内置，替代桌面端 Typora） ---------- */
+.note-editor-dialog {
+  width: min(94vw, 720px);
+  height: min(86dvh, 880px);
+}
+.note-editor-dialog[open] { display: flex; flex-direction: column; }
+.note-editor-text {
+  flex: 1;
+  resize: none;
+  margin-top: 4px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.8;
+  font-family: var(--font-display);
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.note-editor-text:focus { border-color: var(--accent); }
+
+/* 正文输入类控件允许长按选择（全局 user-select:none 关掉了） */
+.page-jump,
+#searchInput,
+#paletteInput,
+.dialog input,
+.dialog select,
+.dialog textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
