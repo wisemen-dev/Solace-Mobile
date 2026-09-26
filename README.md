@@ -18,8 +18,21 @@
 | Ctrl+K 命令面板 | 顶栏 ⌘K 按钮（同一面板） |
 | 悬停浮现操作按钮 | 触屏常显（无悬停设备自动切换） |
 | 拖拽归档到分类 | 编辑对话框 / 批量管理里的「归档到分类」 |
-| 监视文件夹自动入库 | 不适用（Android 无目录变更通知） |
+| 监视文件夹自动入库（fs.watch） | **SAF 授权目录 + 启动/回前台补扫**（见下） |
+| 命令面板拉起外部工具（Olib） | **同款**：拉起平板上的 Olib 应用（自动检测包名） |
 | 资料库位置迁移 | 不适用（固定在应用专属外部目录） |
+
+## Olib：从下载到上架（与桌面端同款流程）
+
+1. **在 Olib 里把保存目录设为公共目录**，如 `Download/olib-books`
+   （应用私有目录 Solace 无权读取）
+2. **Solace → 设置 → 资料库 → 监视文件夹 → 「浏览…」**，系统选择器里
+   选中该目录授权（持久化，重启免重授权）；可设「自动入库归入分类」
+3. 用法与桌面端一致：命令面板 ⌘K →「🚀 打开外部工具」拉起 Olib 搜书，
+   下载完切回 Solace 即自动入库（内容去重，重复静默跳过）
+
+首次使用若「打开外部工具」提示未检测到：设置 → 资料库 → 下载工具 →
+「检测…」选定 Olib（包名 `com.open_library.app`）。
 
 ## 开发环境
 
@@ -76,15 +89,17 @@ SolaceMobile/
 │   ├── library-core.mjs   # 桌面端 library.js 的异步移植（数据格式一致）
 │   ├── notes-core.mjs     # 笔记数据层移植
 │   ├── fs-adapter.mjs     # Capacitor Filesystem 封装（Directory.External）
-│   ├── boot.mjs           # window.solace 组装 + 返回键语义
+│   ├── olib-watch.mjs     # 自动入库：SAF 目录补扫（watcher.js 的等价物）
+│   ├── native.mjs         # SolaceNative 原生插件的 JS 封装
+│   ├── boot.mjs           # window.solace 组装 + 返回键 + 补扫触发
 │   └── base64.mjs / sha256.mjs
 ├── mobile-web/      # 移动端适配层（sync 时拷入 www/）
 │   ├── css/mobile.css     # 抽屉侧栏、触屏控件、悬停改点按
 │   └── js/mobile/mobile.js# 手势、内置笔记编辑器、抽屉
 ├── www/             # Capacitor webDir：桌面渲染层 + 补丁 + vendor 资产
-├── android/         # Capacitor Android 工程
+├── android/         # Capacitor Android 工程（含 SolaceNativePlugin.java）
 ├── test/            # 数据层单测（node:test + 内存 fs）
-├── scripts/         # sync-www / build-bridge / build-apk / install / push-library
+├── scripts/         # sync-www / build-bridge / build-apk / install / push-library / cdp-eval
 └── docs/PORTING.md  # 移植文档：补丁清单、平台差异、已知问题
 ```
 

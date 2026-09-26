@@ -299,7 +299,7 @@
         <div class="settings-row col">
           <div class="settings-label">自动入库·监视文件夹<span class="hint">该文件夹（含子文件夹）里新出现的 PDF 会在写入完成后自动复制入库（内容去重，原件不动），适合对接下载器的保存目录</span></div>
           <div class="path-row">
-            <input id="setWatchFolder" class="field-input" type="text" placeholder="D:\Downloads\books" />
+            <input id="setWatchFolder" class="field-input" type="text" readonly placeholder="点「浏览…」选择 Olib 的保存目录" />
             <button id="btnBrowseWatch" class="btn-ghost">浏览…</button>
           </div>
         </div>
@@ -310,6 +310,13 @@
         <div class="settings-row">
           <div class="settings-label">自动入库归入分类<span class="hint">自动入库的书统一归入该分类，便于后续整理</span></div>
           <select id="setWatchCategory" class="settings-select"></select>
+        </div>
+        <div class="settings-row col">
+          <div class="settings-label">下载工具（Olib）<span class="hint">命令面板「打开外部工具」启动的平板应用；把 Olib 的保存目录设到上面，搜到即入库。留空自动检测，检测不到或有多个时在此指定</span></div>
+          <div class="path-row">
+            <input id="setOlibPackage" class="field-input" type="text" placeholder="自动检测" />
+            <button id="btnDetectOlib" class="btn-ghost">检测…</button>
+          </div>
         </div>
       </section>
       </div>

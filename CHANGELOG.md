@@ -4,6 +4,42 @@
 `Solace_Rust/CHANGELOG.md`。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本。
 
+## [0.2.0] - 2026-09-26
+
+Olib 集成：桌面端「打开外部工具 + 监视文件夹自动入库」的平板等价实现。
+
+### 新增
+- **拉起 Olib**（`SolaceNativePlugin.java`）：命令面板「打开外部工具」
+  经 `getLaunchIntentForPackage` 拉起 Olib；包名可配置（设置 → 资料库 →
+  下载工具），缺省按多关键字（olib/open_library/openlibrary）自动检测，
+  检测到多个时列出选择
+- **自动入库（扫描式）**（`bridge/olib-watch.mjs`）：Android 无目录变更
+  通知，改为 SAF 授权目录 + 时机触发补扫——应用启动、回到前台（从 Olib
+  切回的主路径）、设置里启用/换目录时。语义与桌面端 watcher.js 对齐：
+  稳定判定（两次枚举对比 size/mtime，下载写一半的跳过）、内容级去重
+  静默挡、失败记录（mtime 未变不重试）、800ms 通知聚合（渲染层 toast
+  与刷新逻辑零改动）
+- **SAF 目录授权**：设置 → 资料库 → 监视文件夹「浏览…」走系统目录
+  选择器（ACTION_OPEN_DOCUMENT_TREE + 持久化读权限，重启免重授权）
+- **性能优化（相对桌面端）**：`watch-state.json` 记录已处理文件
+  （size+mtime），未变化的文件补扫直接跳过——桌面端每次重启全量重算
+  哈希，平板补扫频率是「每次回前台」，必须短路
+- 设置白名单新增 `watchTreeUri` / `watchFolderName` / `externalToolPackage`
+  （桌面端 save() 全量回写 settings，未知键不丢，两端互搬安全）
+
+### 修复（开发过程中发现）
+- AndroidManifest 声明 `<queries>`（MAIN+LAUNCHER）：Android 11+ 包可见性
+  过滤下不声明则 `queryIntentActivities` / `getLaunchIntentForPackage`
+  都看不到其他应用（拉起 Olib 与自动检测全失效）
+- Olib 包名 `com.open_library.app` 不含连续子串 "olib"，单一关键字检测
+  漏检 → 多关键字检索按包名去重
+
+### 验证（真机 PA2353）
+- 命令面板拉起 Olib（自动检测包名，零配置）✓
+- SAF 授权 Download/olib-books → 推入 PDF 自动入库（封面正常生成）✓
+- 回前台补扫：新落盘 PDF 在切回 Solace 后自动入库 ✓
+- CDP 远程求值辅助验证（scripts/cdp-eval.mjs，调试基建保留）
+
 ## [0.1.0] - 2026-09-26
 
 首个可用版本：桌面端 Solace v0.15.3 的 Capacitor 移植。

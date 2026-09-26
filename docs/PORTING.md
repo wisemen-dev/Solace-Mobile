@@ -66,10 +66,41 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 | 导入来源 | 文件路径 | 文件内容（File.arrayBuffer） | SAF 无路径概念 |
 | originalPath | 真实路径 | 恒 null | 同上（字段保留，形状一致） |
 | 回收站删除 | shell.trashItem | 永久删除 | 无系统回收站 API |
-| 监视文件夹 | fs.watch | 无 | Android 无目录变更通知 |
+| 监视文件夹 | fs.watch 事件驱动 | SAF 授权 + 补扫（启动/回前台/启用时） | Android 无目录变更通知 |
+| 监视补扫成本 | 每次重启全量重算哈希 | watch-state.json 短路未变文件 | 平板补扫频率是「每次回前台」 |
+| 拉起外部工具 | spawn(exe) | getLaunchIntentForPackage | 平板无外部程序概念，有应用 |
 | relocate | 指针文件 | 固定位置 | 应用专属目录即一切 |
 | Typora/外部程序 | spawn | 内置编辑器 | 沙箱无外部程序 |
 | Ctrl+K | 键盘 | ⌘K 按钮 | 无键盘（按钮本就存在） |
+
+## Olib 集成要点（0.2.0）
+
+- **包可见性（坑）**：Android 11+ 起 `queryIntentActivities` /
+  `getLaunchIntentForPackage` 受包可见性过滤，必须在 AndroidManifest 声明
+  `<queries><intent>`（MAIN+LAUNCHER）才能看到其他应用——不声明时
+  检测与拉起全部静默失败（返回空/null），且无任何报错日志。
+- **Olib 包名** `com.open_library.app`，label「Olib」。注意包名不含连续
+  子串 "olib"（open 与 library 之间是下划线），按单一关键字检测会漏检，
+  `findOlibCandidates` 用多关键字（olib / open_library / openlibrary /
+  open library）检索并按包名去重。
+- **SAF 目录授权**：ACTION_OPEN_DOCUMENT_TREE +
+  FLAG_GRANT_PERSISTABLE_URI_PERMISSION，回调里 takePersistableUriPermission
+  持久化（重启、覆盖安装后仍有效）。tree URI 形如
+  `content://com.android.externalstorage.documents/tree/primary%3ADownload%2Folib-books`。
+- **扫描语义**（bridge/olib-watch.mjs ↔ 桌面端 watcher.js）：
+  - 稳定判定：候选文件隔 1.5s 两次枚举对比 size/mtime（桌面端是事件
+    防抖 + 两次 stat，扫描式等价物）
+  - 内容去重：importFile 的 SHA-256 挡下（两端同值）
+  - 失败记录：mtime 未变不重试（会话内）
+  - 通知聚合：800ms（渲染层 onWatchEvent 逻辑零改动）
+- **watch-state.json**：uri → { size, mtime } 的已处理记录，与资料库同
+  目录存放。删掉无副作用（重扫撞去重）。
+- **Java 插件**（android/.../SolaceNativePlugin.java）：文件 IO 走单线程
+  执行器——插件方法默认主线程执行，枚举/读大文件必须让出；
+  call.resolve 线程安全。
+- **调试基建**：`scripts/cdp-eval.mjs` 连 WebView DevTools 直接在页面里
+  求值（Runtime.evaluate 不支持顶层 await，表达式要自带 async IIFE）。
+  配合 `adb shell uiautomator dump` 驱动原生 UI（SAF 选择器）。
 
 ## 手势实现要点（曾踩的坑）
 

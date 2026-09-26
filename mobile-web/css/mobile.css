@@ -35,12 +35,13 @@ body,
 #btnPreviewExternal { display: none; }
 /* 笔记「在文件夹中查看」：无文件管理器直达 */
 #btnNoteReveal { display: none; }
-/* 设置面板：笔记编辑器/资料库位置/监视文件夹都是桌面概念，
-   导航按钮与分区一并隐藏（fillPanel 的读取逻辑不动） */
-#settingsNav button[data-sec='notes'],
-#settingsNav button[data-sec='library'] { display: none; }
+/* 设置面板：笔记编辑器是桌面概念（平板内置编辑器），导航与分区隐藏；
+   「资料库」分区保留——监视文件夹（Olib 自动入库）与下载工具是平板功能，
+   只藏桌面专属的「资料库位置」行（fillPanel 的读取逻辑不动） */
+#settingsNav button[data-sec='notes'] { display: none; }
 .settings-group[data-sec='notes'],
-.settings-group[data-sec='library'] { display: none !important; }
+.settings-group[data-sec='notes'].active { display: none !important; }
+.settings-group[data-sec='library'] .settings-row:has(#setRootPath) { display: none; }
 /* 「阅读与索引」分区只留索引上限与恢复开关 */
 .settings-group[data-sec='reading'] .settings-row:has(#setPdfReader),
 .settings-group[data-sec='reading'] .settings-row:has(#setTool) { display: none; }

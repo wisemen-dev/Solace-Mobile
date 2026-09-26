@@ -86,7 +86,28 @@ patch('index.html', [
    '  </aside>\n\n  <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>'],
   // 桥（经典脚本，同步执行，先于一切模块）+ 移动端适配模块 + 原有 app.js
   ['  <script type="module" src="js/app.js"></script>',
-   '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>']
+   '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>'],
+  // 监视文件夹输入框：平板端只读（目录经 SAF 授权选择，不能手输 URI）
+  ['<input id="setWatchFolder" class="field-input" type="text" placeholder="D:\\Downloads\\books" />',
+   '<input id="setWatchFolder" class="field-input" type="text" readonly placeholder="点「浏览…」选择 Olib 的保存目录" />'],
+  // 资料库分区追加「下载工具（Olib）」行（平板端专属，桌面同步不会带上）
+  [`        <div class="settings-row">
+          <div class="settings-label">自动入库归入分类<span class="hint">自动入库的书统一归入该分类，便于后续整理</span></div>
+          <select id="setWatchCategory" class="settings-select"></select>
+        </div>
+      </section>`,
+   `        <div class="settings-row">
+          <div class="settings-label">自动入库归入分类<span class="hint">自动入库的书统一归入该分类，便于后续整理</span></div>
+          <select id="setWatchCategory" class="settings-select"></select>
+        </div>
+        <div class="settings-row col">
+          <div class="settings-label">下载工具（Olib）<span class="hint">命令面板「打开外部工具」启动的平板应用；把 Olib 的保存目录设到上面，搜到即入库。留空自动检测，检测不到或有多个时在此指定</span></div>
+          <div class="path-row">
+            <input id="setOlibPackage" class="field-input" type="text" placeholder="自动检测" />
+            <button id="btnDetectOlib" class="btn-ghost">检测…</button>
+          </div>
+        </div>
+      </section>`]
 ])
 
 patch('js/pdfjs.js', [
@@ -123,6 +144,73 @@ patch('js/app.js', [
   ['同时删除这本书的全部笔记（移入系统回收站）', '同时删除这本书的全部笔记（直接删除，无回收站）'],
   ['同时删除所选书籍的全部笔记（移入系统回收站）', '同时删除所选书籍的全部笔记（直接删除，无回收站）'],
   ['（系统回收站不可用）', '（平板端无回收站）']
+])
+
+patch('js/settings.js', [
+  // 监视文件夹显示名：平板端存 SAF 目录名（uri 不可读也不可手输）
+  [`  $('#setWatchFolder').value = s.watchFolder || ''`,
+   `  $('#setWatchFolder').value = window.solace.isMobile ? (s.watchFolderName || '') : (s.watchFolder || '')
+  $('#setOlibPackage')?.setAttribute('value', s.externalToolPackage || '')`],
+  // 「浏览…」：平板端走 SAF 系统目录选择器，返回 { uri, name }
+  [`$('#btnBrowseWatch').addEventListener('click', async () => {
+  const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
+  if (p) {
+    $('#setWatchFolder').value = p
+    $('#setWatchEnabled').checked = true // 选了文件夹即视为想启用
+    save({ watchFolder: p, watchEnabled: true })
+  }
+})`,
+   `$('#btnBrowseWatch').addEventListener('click', async () => {
+  if (window.solace.isMobile) {
+    const r = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
+    if (r && r.uri) {
+      $('#setWatchFolder').value = r.name
+      $('#setWatchEnabled').checked = true // 选了文件夹即视为想启用
+      save({ watchTreeUri: r.uri, watchFolderName: r.name, watchEnabled: true })
+    }
+    return
+  }
+  const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
+  if (p) {
+    $('#setWatchFolder').value = p
+    $('#setWatchEnabled').checked = true // 选了文件夹即视为想启用
+    save({ watchFolder: p, watchEnabled: true })
+  }
+})`],
+  // 平板端输入框只读，change 不会由用户触发；防御性短路
+  [`$('#setWatchFolder').addEventListener('change', (e) => save({ watchFolder: e.target.value.trim() }))`,
+   `$('#setWatchFolder').addEventListener('change', (e) => {
+  if (window.solace.isMobile) return
+  save({ watchFolder: e.target.value.trim() })
+})`],
+  // 下载工具（Olib）：包名手输保存 + 「检测…」自动发现
+  [`dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close() }) // 点 backdrop 关闭`,
+   `dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close() }) // 点 backdrop 关闭
+
+/* ---- 平板端：下载工具（Olib）包名 ---- */
+$('#setOlibPackage')?.addEventListener('change', (e) => save({ externalToolPackage: e.target.value.trim() }))
+$('#btnDetectOlib')?.addEventListener('click', async () => {
+  let apps
+  try {
+    apps = await window.solace.findApps() // 无关键字 = Olib 多关键字检测（含 open_library 包名）
+  } catch (err) {
+    window.toast?.(\`检测失败：\${err.message || err}\`)
+    return
+  }
+  if (!apps.length) { window.toast?.('未检测到 Olib，请确认已安装；也可手动填写包名'); return }
+  if (apps.length === 1) {
+    $('#setOlibPackage').value = apps[0].package
+    save({ externalToolPackage: apps[0].package })
+    window.toast?.(\`已选定 \${apps[0].label}（\${apps[0].package}）\`)
+    return
+  }
+  const picked = await askChoice({
+    title: '选择下载工具',
+    text: '检测到多个可能的应用，选择哪一个作为「打开外部工具」的目标。',
+    choices: apps.slice(0, 4).map(a => ({ label: \`\${a.label}（\${a.package}）\`, value: a.package, primary: a.package.includes('open_library') }))
+  })
+  if (picked) { $('#setOlibPackage').value = picked; save({ externalToolPackage: picked }) }
+})`]
 ])
 
 patch('js/notespanel.js', [

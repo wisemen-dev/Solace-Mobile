@@ -12,6 +12,8 @@ import { createLibrary } from './library-core.mjs'
 import { createNotes } from './notes-core.mjs'
 import { sha256Hex } from './sha256.mjs'
 import { App } from '@capacitor/app'
+import { findApps, findOlibCandidates, launchApp, pickFolder } from './native.mjs'
+import { createWatch } from './olib-watch.mjs'
 
 const randomUUID = () => {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
@@ -26,6 +28,9 @@ const randomUUID = () => {
 
 const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID })
 const notes = createNotes({ fs })
+
+// 自动入库（Olib 下载目录补扫）：settings 随取随读，配置变更即时生效
+const watch = createWatch({ lib, fs, getSettings: () => (lib.getData().settings || {}) })
 
 // 资料库初始化是异步的（读 library.json）；app.js 的 refresh() 可能在它
 // 完成前就发起 getLibrary——每个方法先 await ready 再干活
@@ -98,8 +103,12 @@ const solace = {
   openLibraryRoot: gate(async () => true), // 平板端无文件管理器直达，占位成功
   inspectTarget: gate(async () => { throw new Error('平板端资料库位置固定，不支持迁移') }),
   relocateLibrary: gate(async () => { throw new Error('平板端资料库位置固定，不支持迁移') }),
+  // 目录选择走 SAF（系统授权）：返回 { canceled, uri, name }，供监视文件夹配置
+  pickDirectory: gate(async () => {
+    const r = await pickFolder()
+    return r && r.canceled ? null : r
+  }),
   pickFile: gate(async () => null),
-  pickDirectory: gate(async () => null),
 
   // 文档
   updateDoc: gate((id, patch) => lib.updateDoc(id, patch)),
@@ -134,11 +143,40 @@ const solace = {
   removeShelf: gate((id) => lib.removeSmartShelf(id)),
 
   // 设置
-  updateSettings: gate((patch) => lib.updateSettings(patch)),
+  updateSettings: gate(async (patch) => {
+    const s = await lib.updateSettings(patch)
+    // 监视设置变化即补扫：重新启用/换目录时把期间落盘的文件收进来
+    // （与桌面端 watcher.configure 的语义对齐）
+    if ('watchEnabled' in patch || 'watchTreeUri' in patch) {
+      watch.scan({ force: true }).catch(() => {})
+    }
+    return s
+  }),
 
-  // 外部工具与自动入库（桌面端专属）：方法保留、行为降级
-  launchTool: gate(async () => { throw new Error('外部工具仅桌面端提供') }),
-  onWatchEvent: () => {}, // 无监视文件夹（Android 无目录变更通知），永不回调
+  // 外部工具与自动入库（对应桌面端「打开下载器 + 监视文件夹」）
+  // 平板端：拉起 Olib（包名可配置，缺省按关键字自动检测）
+  launchTool: gate(async () => {
+    const s = lib.getData().settings || {}
+    let pkg = s.externalToolPackage || ''
+    if (!pkg) {
+      const apps = await findOlibCandidates()
+      if (apps.length === 1) pkg = apps[0].package
+      else if (apps.length > 1) throw new Error('检测到多个可能的应用，请到 设置 → 资料库 → 下载工具 指定包名')
+      else throw new Error('未检测到 Olib，请先安装；或到 设置 → 资料库 → 下载工具 填写包名')
+    }
+    const ok = await launchApp(pkg)
+    if (!ok) throw new Error(`无法启动 ${pkg}（应用可能未安装）`)
+    return true
+  }),
+  // 原生应用检索（设置面板「检测…」按钮用；Olib 检测走多关键字集合）
+  findApps: gate((keyword) => keyword ? findApps(keyword) : findOlibCandidates()),
+  // 自动入库事件（app.js 已监听：imported → toast+刷新；error → toast）
+  onWatchEvent: (cb) => {
+    watch.init({
+      onImported: (docs) => cb({ type: 'imported', docs }),
+      onError: (message) => cb({ type: 'error', message })
+    })
+  },
 
   // 笔记：列表/新建/删除与桌面端同形；打开改为交内置编辑器（inApp）
   listNotes: gate((id) => notes.list(id)),
@@ -159,6 +197,15 @@ const solace = {
 }
 
 window.solace = solace
+
+// 自动入库的补扫时机：启动后稍等片刻（让首屏与索引进度先跑）+ 回到前台
+// （用户从 Olib 下载完切回来的主路径）。节流在 watch.scan 内部
+ready.then(() => {
+  setTimeout(() => watch.scan({ force: true }).catch(() => {}), 3000)
+})
+App.addListener('appStateChange', ({ isActive }) => {
+  if (isActive) watch.scan().catch(() => {})
+})
 
 // Android 返回键语义：关最上层的浮层（对话框 > 预览 > 抽屉），都没有才
 // 退出应用——不然看书中随手一划返回手势就把整个应用杀了。

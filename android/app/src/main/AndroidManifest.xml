@@ -38,4 +38,14 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android 11+ 包可见性：不声明 queries 则 queryIntentActivities 与
+         getLaunchIntentForPackage 都看不到其他应用（拉起 Olib / 自动检测
+         会失败）。声明 MAIN+LAUNCHER 即可看到全部可启动应用 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 </manifest>

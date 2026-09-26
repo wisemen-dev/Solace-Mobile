@@ -653,11 +653,15 @@ export function createLibrary ({ fs, sha256, randomUUID, now = () => new Date() 
     return true
   }
 
-  // 设置白名单：与桌面端完全一致的键集合与收敛规则（含平板用不到的
-  // watch/阅读器路径键——留着它们，库在两端互搬时设置不丢）
+  // 设置白名单：与桌面端一致的键集合与收敛规则（含平板用不到的
+  // watch/阅读器路径键——留着它们，库在两端互搬时设置不丢）。
+  // 平板端新增：watchTreeUri/watchFolderName（SAF 授权目录）、
+  // externalToolPackage（Olib 包名）——桌面端 save() 全量回写 settings，
+  // 未知键不会丢，两端互搬安全
   async function updateSettings (patch) {
     if (!data.settings) data.settings = {}
-    const strings = ['notesEditorPath', 'pdfReaderPath', 'externalToolPath', 'watchFolder', 'watchCategory']
+    const strings = ['notesEditorPath', 'pdfReaderPath', 'externalToolPath', 'watchFolder', 'watchCategory',
+      'watchTreeUri', 'watchFolderName', 'externalToolPackage']
     const booleans = ['resumeReading', 'confetti', 'openingAnimation', 'watchEnabled']
     const numbers = { dormantDays: 1, indexPageLimit: 1 }
     const enums = {

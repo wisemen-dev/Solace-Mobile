@@ -285,6 +285,10 @@ test('updateSettings 白名单收敛：非法枚举拒绝、数值下界卡住',
   // 库文件里同样没有非法值
   assert.equal(lib.getData().settings.viewMode, 'spine')
   assert.equal('theme' in lib.getData().settings && lib.getData().settings.theme, 'auto')
+  // 平板端新增键（SAF 目录与 Olib 包名）按字符串白名单收纳入库
+  const s2 = await lib.updateSettings({ watchTreeUri: 'content://tree/xyz', watchFolderName: 'olib', externalToolPackage: 'com.open_library.app' })
+  assert.equal(s2.watchTreeUri, 'content://tree/xyz')
+  assert.equal(s2.externalToolPackage, 'com.open_library.app')
 })
 
 /* ---- 笔记 ---- */

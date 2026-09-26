@@ -1884,7 +1884,16 @@
     }
     async function updateSettings(patch) {
       if (!data.settings) data.settings = {};
-      const strings = ["notesEditorPath", "pdfReaderPath", "externalToolPath", "watchFolder", "watchCategory"];
+      const strings = [
+        "notesEditorPath",
+        "pdfReaderPath",
+        "externalToolPath",
+        "watchFolder",
+        "watchCategory",
+        "watchTreeUri",
+        "watchFolderName",
+        "externalToolPackage"
+      ];
       const booleans = ["resumeReading", "confetti", "openingAnimation", "watchEnabled"];
       const numbers = { dormantDays: 1, indexPageLimit: 1 };
       const enums = {
@@ -2031,6 +2040,164 @@
     web: () => Promise.resolve().then(() => (init_web2(), web_exports2)).then((m) => new m.AppWeb())
   });
 
+  // bridge/native.mjs
+  init_dist();
+  var SolaceNative = registerPlugin("SolaceNative");
+  async function findApps(keyword) {
+    const r = await SolaceNative.findApps({ keyword: String(keyword || "") });
+    return r.apps || [];
+  }
+  var OLIB_KEYWORDS = ["olib", "open_library", "openlibrary", "open library"];
+  async function findOlibCandidates() {
+    const seen = /* @__PURE__ */ new Map();
+    for (const kw of OLIB_KEYWORDS) {
+      try {
+        for (const app of await findApps(kw)) {
+          if (!seen.has(app.package)) seen.set(app.package, app);
+        }
+      } catch {
+      }
+    }
+    return [...seen.values()].sort((a, b) => (b.package === "com.open_library.app") - (a.package === "com.open_library.app"));
+  }
+  async function launchApp(pkg) {
+    const r = await SolaceNative.launchApp({ package: pkg });
+    if (r && r.error) throw new Error(r.error);
+    return !!r.ok;
+  }
+  async function pickFolder() {
+    const r = await SolaceNative.pickFolder();
+    if (r && !r.canceled) {
+      try {
+        const tail = decodeURIComponent(String(r.uri)).split("/").filter(Boolean).pop() || "";
+        const name = tail.replace(/^primary:/, "").split("/").pop();
+        if (name) r.name = name;
+      } catch {
+      }
+    }
+    return r;
+  }
+  async function listPdfs(uri) {
+    const r = await SolaceNative.listPdfs({ uri });
+    if (r && r.error) throw new Error(r.error);
+    return r.files || [];
+  }
+  async function readFileBase64(uri) {
+    const r = await SolaceNative.readFileBase64({ uri });
+    if (r && r.error) throw new Error(r.error);
+    return r.base64;
+  }
+
+  // bridge/olib-watch.mjs
+  function createWatch({ lib: lib2, fs: fs2, getSettings }) {
+    let callbacks = null;
+    let scanSeq = 0;
+    let lastScanAt = 0;
+    const RESCAN_THROTTLE_MS = 15e3;
+    const failed = /* @__PURE__ */ new Map();
+    let notifyQueue = [];
+    let notifyTimer = null;
+    let state = null;
+    let stateDirty = false;
+    function init(cb) {
+      callbacks = cb || {};
+    }
+    async function loadState() {
+      if (state) return state;
+      try {
+        state = JSON.parse(await fs2.readFileText("watch-state.json"));
+        if (!state || typeof state !== "object" || Array.isArray(state)) state = {};
+      } catch {
+        state = {};
+      }
+      return state;
+    }
+    async function saveState() {
+      if (!stateDirty) return;
+      stateDirty = false;
+      try {
+        await fs2.writeFileAtomicText("watch-state.json", JSON.stringify(state));
+      } catch {
+      }
+    }
+    function notifyImported(doc) {
+      notifyQueue.push({ id: doc.id, title: doc.title });
+      clearTimeout(notifyTimer);
+      notifyTimer = setTimeout(() => {
+        const docs = notifyQueue;
+        notifyQueue = [];
+        if (docs.length && callbacks && callbacks.onImported) callbacks.onImported(docs);
+      }, 800);
+    }
+    function reportError(message) {
+      if (callbacks && callbacks.onError) callbacks.onError(message);
+    }
+    async function importOne(file, st) {
+      try {
+        const bytes = base64ToBytes(await readFileBase64(file.uri));
+        const doc = await lib2.importFile({ fileName: file.name, size: file.size, bytes });
+        const catId = getSettings().watchCategory;
+        if (catId) {
+          const data = lib2.getData();
+          if (data.categories.some((c) => c.id === catId)) {
+            try {
+              await lib2.updateDoc(doc.id, { categoryId: catId });
+            } catch {
+            }
+          }
+        }
+        st[file.uri] = { size: file.size, mtime: file.mtime };
+        stateDirty = true;
+        notifyImported(doc);
+      } catch (err) {
+        if (err && err.duplicate) {
+          st[file.uri] = { size: file.size, mtime: file.mtime };
+          stateDirty = true;
+          return;
+        }
+        failed.set(file.uri, file.mtime);
+        reportError(`${file.name} \u5165\u5E93\u5931\u8D25\uFF08${err && err.message || err}\uFF09\uFF0C\u672C\u6B21\u8FD0\u884C\u5185\u4E0D\u518D\u91CD\u8BD5`);
+      }
+    }
+    function shouldRun() {
+      if (Date.now() - lastScanAt < RESCAN_THROTTLE_MS) return false;
+      lastScanAt = Date.now();
+      return true;
+    }
+    async function scan(opts = {}) {
+      const s2 = getSettings();
+      if (!s2.watchTreeUri || s2.watchEnabled === false) return;
+      if (!opts.force && !shouldRun()) return;
+      const gen = ++scanSeq;
+      const st = await loadState();
+      try {
+        const files = await listPdfs(s2.watchTreeUri);
+        const candidates = files.filter((f2) => {
+          const seen = st[f2.uri];
+          if (!seen) return true;
+          return seen.size !== f2.size || seen.mtime !== f2.mtime;
+        });
+        if (candidates.length) {
+          await new Promise((r) => setTimeout(r, 1500));
+          if (gen !== scanSeq) return;
+          const again = new Map((await listPdfs(s2.watchTreeUri)).map((f2) => [f2.uri, f2]));
+          for (const f2 of candidates) {
+            if (gen !== scanSeq) return;
+            const cur = again.get(f2.uri);
+            if (!cur || cur.size !== f2.size || cur.mtime !== f2.mtime) continue;
+            const failedAt = failed.get(f2.uri);
+            if (failedAt != null && failedAt === cur.mtime) continue;
+            await importOne(f2, st);
+          }
+        }
+        await saveState();
+      } catch (err) {
+        reportError(`\u81EA\u52A8\u5165\u5E93\uFF1A${err && err.message || err}\uFF08\u53EF\u5230\u8BBE\u7F6E \u2192 \u8D44\u6599\u5E93 \u91CD\u65B0\u9009\u62E9\u6587\u4EF6\u5939\uFF09`);
+      }
+    }
+    return { init, scan };
+  }
+
   // bridge/boot.mjs
   var randomUUID = () => {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
@@ -2043,6 +2210,7 @@
   };
   var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID });
   var notes = createNotes({ fs });
+  var watch = createWatch({ lib, fs, getSettings: () => lib.getData().settings || {} });
   var ready = lib.init();
   var gate = (fn) => async (...args) => {
     await ready;
@@ -2107,8 +2275,12 @@
     relocateLibrary: gate(async () => {
       throw new Error("\u5E73\u677F\u7AEF\u8D44\u6599\u5E93\u4F4D\u7F6E\u56FA\u5B9A\uFF0C\u4E0D\u652F\u6301\u8FC1\u79FB");
     }),
+    // 目录选择走 SAF（系统授权）：返回 { canceled, uri, name }，供监视文件夹配置
+    pickDirectory: gate(async () => {
+      const r = await pickFolder();
+      return r && r.canceled ? null : r;
+    }),
     pickFile: gate(async () => null),
-    pickDirectory: gate(async () => null),
     // 文档
     updateDoc: gate((id, patch) => lib.updateDoc(id, patch)),
     removeDoc: gate((id, opts) => lib.removeDoc(id, opts || {})),
@@ -2138,14 +2310,38 @@
     renameShelf: gate((id, name) => lib.renameSmartShelf(id, name)),
     removeShelf: gate((id) => lib.removeSmartShelf(id)),
     // 设置
-    updateSettings: gate((patch) => lib.updateSettings(patch)),
-    // 外部工具与自动入库（桌面端专属）：方法保留、行为降级
-    launchTool: gate(async () => {
-      throw new Error("\u5916\u90E8\u5DE5\u5177\u4EC5\u684C\u9762\u7AEF\u63D0\u4F9B");
+    updateSettings: gate(async (patch) => {
+      const s2 = await lib.updateSettings(patch);
+      if ("watchEnabled" in patch || "watchTreeUri" in patch) {
+        watch.scan({ force: true }).catch(() => {
+        });
+      }
+      return s2;
     }),
-    onWatchEvent: () => {
+    // 外部工具与自动入库（对应桌面端「打开下载器 + 监视文件夹」）
+    // 平板端：拉起 Olib（包名可配置，缺省按关键字自动检测）
+    launchTool: gate(async () => {
+      const s2 = lib.getData().settings || {};
+      let pkg = s2.externalToolPackage || "";
+      if (!pkg) {
+        const apps = await findOlibCandidates();
+        if (apps.length === 1) pkg = apps[0].package;
+        else if (apps.length > 1) throw new Error("\u68C0\u6D4B\u5230\u591A\u4E2A\u53EF\u80FD\u7684\u5E94\u7528\uFF0C\u8BF7\u5230 \u8BBE\u7F6E \u2192 \u8D44\u6599\u5E93 \u2192 \u4E0B\u8F7D\u5DE5\u5177 \u6307\u5B9A\u5305\u540D");
+        else throw new Error("\u672A\u68C0\u6D4B\u5230 Olib\uFF0C\u8BF7\u5148\u5B89\u88C5\uFF1B\u6216\u5230 \u8BBE\u7F6E \u2192 \u8D44\u6599\u5E93 \u2192 \u4E0B\u8F7D\u5DE5\u5177 \u586B\u5199\u5305\u540D");
+      }
+      const ok = await launchApp(pkg);
+      if (!ok) throw new Error(`\u65E0\u6CD5\u542F\u52A8 ${pkg}\uFF08\u5E94\u7528\u53EF\u80FD\u672A\u5B89\u88C5\uFF09`);
+      return true;
+    }),
+    // 原生应用检索（设置面板「检测…」按钮用；Olib 检测走多关键字集合）
+    findApps: gate((keyword) => keyword ? findApps(keyword) : findOlibCandidates()),
+    // 自动入库事件（app.js 已监听：imported → toast+刷新；error → toast）
+    onWatchEvent: (cb) => {
+      watch.init({
+        onImported: (docs) => cb({ type: "imported", docs }),
+        onError: (message) => cb({ type: "error", message })
+      });
     },
-    // 无监视文件夹（Android 无目录变更通知），永不回调
     // 笔记：列表/新建/删除与桌面端同形；打开改为交内置编辑器（inApp）
     listNotes: gate((id) => notes.list(id)),
     createNote: gate((id, payload) => notes.create(id, payload)),
@@ -2164,6 +2360,14 @@
     getStartupNotice: () => lib.getStartupNotice()
   };
   window.solace = solace;
+  ready.then(() => {
+    setTimeout(() => watch.scan({ force: true }).catch(() => {
+    }), 3e3);
+  });
+  App.addListener("appStateChange", ({ isActive }) => {
+    if (isActive) watch.scan().catch(() => {
+    });
+  });
   App.addListener("backButton", () => {
     const dlg = document.querySelector("dialog[open]");
     if (dlg) {
