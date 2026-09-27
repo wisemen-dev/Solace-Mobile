@@ -81,9 +81,15 @@ patch('index.html', [
   // 抽屉开关（窄屏显示，横屏宽屏隐藏）
   ['  <header class="topbar">',
    '  <header class="topbar">\n        <button id="btnDrawer" class="btn-ghost btn-drawer" title="分类与筛选">☰</button>'],
-  // 抽屉背板
-  ['  </aside>',
-   '  </aside>\n\n  <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>'],
+  // 抽屉背板（锚定侧栏收尾行而非裸 </aside>：split/join 是全量替换，
+  // 上游若新增第二个 aside 会把背板静默插成两份——锚到唯一文本上，
+  // 漂移只会显式报错）
+  [`      <div class="side-foot">本地资料库 · 数据不出你的电脑</div>
+    </aside>`,
+   `      <div class="side-foot">本地资料库 · 数据不出你的电脑</div>
+    </aside>
+
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>`],
   // 桥（经典脚本，同步执行，先于一切模块）+ 移动端适配模块 + 原有 app.js
   ['  <script type="module" src="js/app.js"></script>',
    '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>'],

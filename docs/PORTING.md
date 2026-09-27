@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 18 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 30 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -34,18 +34,34 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
+共 30 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
-### index.html（7 处）
+### index.html（9 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
-2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`
+2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
 4. 顶栏加 `#btnDrawer`（抽屉开关，窄屏显示）
-5. 加 `#drawerBackdrop`（抽屉背板）
+5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 side-foot 收尾行防上游新增
+   aside 时静默重复插入）
 6. 底部加 `vendor/solace-bridge.js`（经典脚本，先于模块执行）
 7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js）
+8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI）
+9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
 
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
+
+### preview.js（1 处，v0.3.0）
+预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
+优先、字节路径回落；会话守卫保留在异步解析之后。
+
+### covers.js（2 处，v0.3.0）
+1. 封面生成的 PDF 加载同上 URL 直读
+2. 预览打开时封面队列让路（读书优先，400ms 轮询）
+
+### textindex.js（2 处，v0.3.0）
+1. 索引提取的 PDF 加载同上 URL 直读
+2. 预览打开时索引队列让路（同上，500ms 轮询）
 
 ### app.js（5 处）
 1. `open-doc` 动作：平板端直接开内置预览（无外部阅读器）
@@ -54,9 +70,16 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 4. 批删笔记确认文案：同上
 5. 删除结果 toast：回收站字样改为平板端表述
 
-### notespanel.js（2 处）
+### settings.js（4 处）
+1. 监视文件夹显示名：平板端显示 SAF 目录名（watchFolderName）
+2. 「浏览…」走 SAF 目录选择器，返回 { uri, name } 落 watchTreeUri
+3. 监视文件夹输入框 change 短路（只读，用户不会触发）
+4. Olib 包名保存与「检测…」自动发现（多结果走选择框）
+
+### notespanel.js（3 处）
 1. `openOne`：桥返回 `{ inApp: true, content }` 时交给内置编辑器
 2. 删除确认文案（回收站 → 直接删除）
+3. `solace-note-saved` 监听：内置编辑器保存后刷新列表（v0.3.1）
 
 ## 平台差异与取舍
 
