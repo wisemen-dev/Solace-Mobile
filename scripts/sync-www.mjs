@@ -120,59 +120,65 @@ patch('js/pdfjs.js', [
 // 加载点统一换 URL 直读（_capacitor_file_ 由 WebView 原生拦截流式返回，
 // 内容不过 JS 桥；桌面端同步渲染层无此方法，自动回落字节路径）
 patch('js/preview.js', [
-  [`    const buffer = await window.solace.readPreview(id)
+  [`    const buffer = await window.solace.readPreview(id, sessionId)
+    if (!isCurrentSession(token)) return
     // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
     // 一整份文件——大 PDF 上就是几十 MB 的无谓内存与耗时）
     const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-    const pdfDoc = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
+    const task = pdfjsLib.getDocument({ data, ...docParams })`,
    `    const loadOpts = window.solace.getDocUrl
       ? { url: await window.solace.getDocUrl(id), ...docParams }
-      : { data: await window.solace.readPreview(id), ...docParams }
-    const pdfDoc = await pdfjsLib.getDocument(loadOpts).promise`]
+      : { data: await window.solace.readPreview(id, sessionId), ...docParams }
+    if (!isCurrentSession(token)) return
+    const task = pdfjsLib.getDocument(loadOpts)`]
 ])
 
 patch('js/covers.js', [
-  [`async function generateCover (docId) {
-  const buffer = await window.solace.readPreview(docId)
-  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-  const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
-   `async function generateCover (docId) {
-  const loadOpts = window.solace.getDocUrl
-    ? { url: await window.solace.getDocUrl(docId), ...docParams }
-    : { data: await window.solace.readPreview(docId), ...docParams }
-  const pdf = await pdfjsLib.getDocument(loadOpts).promise`],
+  [`async function generateCover (task) {
+  try {
+    const buffer = await window.solace.readPreview(task.doc.id, task.sessionId)
+    if (task.generation !== generation) return null
+    const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
+    task.loadingTask = pdfjsLib.getDocument({ data, ...docParams })`,
+   `async function generateCover (task) {
+  try {
+    const loadOpts = window.solace.getDocUrl
+      ? { url: await window.solace.getDocUrl(task.doc.id), ...docParams }
+      : { data: await window.solace.readPreview(task.doc.id, task.sessionId), ...docParams }
+    if (task.generation !== generation) return null
+    task.loadingTask = pdfjsLib.getDocument(loadOpts)`],
   // 预览打开时封面队列让路：pdf.js 解析仍与翻页争 CPU，读书永远优先
-  [`  draining = true
-  while (queue.length) {
-    const doc = queue.shift()`,
-   `  draining = true
-  while (queue.length) {
-    if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 400)); continue }
-    const doc = queue.shift()`]
+  [`    while (queue.length && epoch === generation) {
+      const task = queue.shift()`,
+   `    while (queue.length && epoch === generation) {
+      if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 400)); continue }
+      const task = queue.shift()`]
 ])
 
 patch('js/textindex.js', [
-  [`    const buffer = await window.solace.readPreview(docId)
+  [`    const buffer = await window.solace.readPreview(docId, sessionId)
+    if (task.generation !== generation) return
     // IPC 送来的就是 Uint8Array，直接用（再包一层 new Uint8Array 会白复制
     // 一整份文件）；万一拿到别的形态才走包装兜底
     const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-    const pdf = await pdfjsLib.getDocument({ data, ...docParams }).promise`,
+    task.loadingTask = pdfjsLib.getDocument({ data, ...docParams })`,
    `    const loadOpts = window.solace.getDocUrl
       ? { url: await window.solace.getDocUrl(docId), ...docParams }
-      : { data: await window.solace.readPreview(docId), ...docParams }
-    const pdf = await pdfjsLib.getDocument(loadOpts).promise`],
+      : { data: await window.solace.readPreview(docId, sessionId), ...docParams }
+    if (task.generation !== generation) return
+    task.loadingTask = pdfjsLib.getDocument(loadOpts)`],
   // 预览打开时索引队列让路（同上）
-  [`    while (pending.size) {
-      const docId = pending.values().next().value`,
-   `    while (pending.size) {
+  [`    while (pending.size && epoch === generation) {
+      const task = pending.values().next().value`,
+   `    while (pending.size && epoch === generation) {
       if (window.currentPreviewId) { await new Promise(r => setTimeout(r, 500)); continue }
-      const docId = pending.values().next().value`]
+      const task = pending.values().next().value`]
 ])
 
 patch('js/app.js', [
   // 「打开」：平板端没有外部阅读器，直接进内置预览
   [`      case 'open-doc': {
-        await window.solace.openDoc(id)
+        await window.solace.openDoc(id, sessionId)
         refresh()
         break
       }`,
@@ -207,11 +213,16 @@ patch('js/settings.js', [
   $('#setOlibPackage').value = s.externalToolPackage || ''`],
   // 「浏览…」：平板端走 SAF 系统目录选择器，返回 { uri, name }
   [`$('#btnBrowseWatch').addEventListener('click', async () => {
-  const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
-  if (p) {
+  if (relocating) return
+  const sessionId = panelSession
+  try {
+    const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
+    if (!p || relocating || sessionId !== panelSession) return
     $('#setWatchFolder').value = p
     $('#setWatchEnabled').checked = true // 选了文件夹即视为想启用
-    save({ watchFolder: p, watchEnabled: true })
+    await save({ watchFolder: p, watchEnabled: true }, sessionId)
+  } catch (err) {
+    if (!relocating && sessionId === panelSession) window.toast?.(\`选择失败：\${err.message || err}\`)
   }
 })`,
    `$('#btnBrowseWatch').addEventListener('click', async () => {
@@ -224,11 +235,16 @@ patch('js/settings.js', [
     }
     return
   }
-  const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
-  if (p) {
+  if (relocating) return
+  const sessionId = panelSession
+  try {
+    const p = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
+    if (!p || relocating || sessionId !== panelSession) return
     $('#setWatchFolder').value = p
     $('#setWatchEnabled').checked = true // 选了文件夹即视为想启用
-    save({ watchFolder: p, watchEnabled: true })
+    await save({ watchFolder: p, watchEnabled: true }, sessionId)
+  } catch (err) {
+    if (!relocating && sessionId === panelSession) window.toast?.(\`选择失败：\${err.message || err}\`)
   }
 })`],
   // 平板端输入框只读，change 不会由用户触发；防御性短路
@@ -269,21 +285,23 @@ $('#btnDetectOlib')?.addEventListener('click', async () => {
 
 patch('js/notespanel.js', [
   // 「打开笔记」：内置 Markdown 编辑器接管（桌面端是 Typora）
-  [`async function openOne (file) {
+  [`async function openOne (file, session) {
+  if (!isCurrentSession(session)) return
   try {
-    const res = await window.solace.openNote(doc.id, file)`,
-   `async function openOne (file) {
+    const res = await window.solace.openNote(session.id, file, {}, session.sessionId)`,
+   `async function openOne (file, session) {
   if (window.solace.isMobile) {
     try {
-      const res = await window.solace.openNote(doc.id, file)
-      if (res && res.inApp) window.openNoteEditor(doc.id, file, res.title, res.content)
+      const res = await window.solace.openNote(session.id, file, {}, session.sessionId)
+      if (res && res.inApp) window.openNoteEditor(session.id, file, res.title, res.content)
     } catch (err) {
       window.toast?.(\`打开失败：\${err.message || err}\`)
     }
     return
   }
+  if (!isCurrentSession(session)) return
   try {
-    const res = await window.solace.openNote(doc.id, file)`],
+    const res = await window.solace.openNote(session.id, file, {}, session.sessionId)`],
   ['将移入系统回收站。', '将直接删除（平板端无回收站）。'],
   // 内置编辑器保存后刷新列表的修改时间（面板开着且是同一本书时）
   [`btnNew.addEventListener('click', async () => {`,
@@ -297,4 +315,4 @@ btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×7, pdfjs.js×4, app.js×5, notespanel.js×2')
+console.log('补丁：index.html×7, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×4, notespanel.js×3')
