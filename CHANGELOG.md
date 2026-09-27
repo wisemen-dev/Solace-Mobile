@@ -4,6 +4,27 @@
 `Solace_Rust/CHANGELOG.md`。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本。
 
+## [0.3.2] - 2026-09-27
+
+同步桌面端渲染层（含其异步生命周期加固），并重锚 6 处因上游漂移而失效的
+适配补丁。
+
+### 修复
+
+- 同步桌面批量归档修复：归档完成后清空选中，上一批勾选不再残留进下一批
+  分类（与桌面 v0.15.3 后的未发布修复一致）
+- sync-www 补丁锚点对齐桌面新代码：preview/covers/textindex 的会话化
+  PDF 加载（task/loadingTask/generation 模型，getDocUrl 快路径上保留
+  会话与 generation 校验）、封面/索引队列让路循环、app open-doc 会话
+  参数、settings 监视文件夹浏览的会话守卫、notespanel 打开笔记的新签名
+- open-doc 桌面回落分支补齐 sessionId 参数（平板上不可达，消除补丁
+  替换段与锚点的不一致）
+
+### 其他
+
+- 同步新增 www/js/pdfcanvas.js（桌面端画布尺寸限制模块）
+- 修正 sync-www 补丁计数日志（index.html 实为 9 处，共 30 处）
+
 ## [0.3.1] - 2026-09-26
 
 第一轮代码审查修复（11 项，按优先级）。

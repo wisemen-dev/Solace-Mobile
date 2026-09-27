@@ -902,7 +902,7 @@ document.body.addEventListener('click', async (e) => {
           if (doc) openPreview(doc)
           break
         }
-        await window.solace.openDoc(id)
+        await window.solace.openDoc(id, sessionId)
         refresh()
         break
       }

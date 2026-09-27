@@ -188,7 +188,7 @@ patch('js/app.js', [
           if (doc) openPreview(doc)
           break
         }
-        await window.solace.openDoc(id)
+        await window.solace.openDoc(id, sessionId)
         refresh()
         break
       }`],
@@ -315,4 +315,4 @@ btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×7, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×4, notespanel.js×3')
+console.log('补丁：index.html×9, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×4, notespanel.js×3（共30）')
