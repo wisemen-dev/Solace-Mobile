@@ -58,32 +58,11 @@ export async function listPdfs (uri) {
   return r.files || []
 }
 
-// 读取 SAF 文档内容为 base64（仅调试/兜底用；导入已走 hashUri/copyUri 原生管线）
-export async function readFileBase64 (uri) {
-  const r = await SolaceNative.readFileBase64({ uri })
-  if (r && r.error) throw new Error(r.error)
-  return r.base64
-}
-
 /* ---- 原生导入管线（性能关键路径，内容不过 JS 桥） ---- */
 
 // SAF 多选 PDF。返回 { canceled, files: [{ uri, name, size }] }
 export async function pickPdfs () {
   return SolaceNative.pickPdfs()
-}
-
-// 原生流式 SHA-256。返回 { hash, size }
-export async function hashUri (uri) {
-  const r = await SolaceNative.hashUri({ uri })
-  if (r && r.error) throw new Error(r.error)
-  return r
-}
-
-// 原生流式复制 SAF 文档 → 资料库相对路径。返回 { size }
-export async function copyUri (uri, destPath) {
-  const r = await SolaceNative.copyUri({ uri, destPath })
-  if (r && r.error) throw new Error(r.error)
-  return r
 }
 
 // 复制 + 哈希一次完成（内容同源，消除先哈希后复制的写入竞态）。

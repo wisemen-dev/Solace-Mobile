@@ -47,7 +47,7 @@ docs/PORTING.md 性能章节。
 
 ```bash
 npm install          # 安装依赖
-npm run www          # 从桌面仓库搬运渲染层 + 打移动端补丁（见下）
+npm run www          # 从桌面仓库搬运渲染层 + 打移动端补丁 + 重建桥（见下）
 npm run bridge       # esbuild 打包桥接层 → www/vendor/solace-bridge.js
 npm test             # 数据层单测（内存 fs，纯 Node）
 npm run apk          # 同步资源并构建 debug APK
@@ -57,7 +57,7 @@ npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
-`scripts/sync-www.mjs` 搬运并施加 **30 处移动端补丁**（锚点校验：上游改动
+`scripts/sync-www.mjs` 搬运并施加 **31 处移动端补丁**（锚点校验：上游改动
 导致锚点消失会显式报错，防止静默漂移）。桌面端更新后：
 
 ```bash

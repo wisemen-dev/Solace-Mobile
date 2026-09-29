@@ -7,7 +7,7 @@
 //   - 内容级去重：原生流式 SHA-256 挡下，重复静默跳过
 //   - 失败记录：文件 mtime 未变则本次会话不重试，变了（重新下载）放行
 //   - 通知聚合：800ms 内的入库合并成一条 toast（渲染层文案现成）
-//   - 导入走原生管线（hashUri + copyUri），文件内容不过 JS 桥
+//   - 导入走原生管线（copyAndHash），文件内容不过 JS 桥
 // 与桌面端的差异（性能取舍，详见 docs/PORTING.md）：多一份 watch-state.json
 // 记录「已处理过的文件（size+mtime）」，未变化的文件每次补扫直接跳过，
 // 不再像桌面端那样每次重启都重读重算全部哈希——平板的补扫频率是「每次
@@ -20,8 +20,9 @@ export function createWatch ({ lib, fs, getSettings }) {
   let scanSeq = 0 // 扫描代数：换目录/停用后，旧扫描在检查点自行退出
   let lastScanAt = 0
   // 回前台补扫的最小间隔：SAF 全量枚举本身有成本（几百文件秒级，虽在
-  // io 线程不卡 UI），频繁切换应用时不该每次都扫
-  const RESCAN_THROTTLE_MS = 120000
+  // io 线程不卡 UI），频繁切换应用时不该每次都扫；但主路径是「去 Olib
+  // 下载完切回」，30s 窗口既合并了频繁切换，又不会漏掉刚下完的书
+  const RESCAN_THROTTLE_MS = 30000
   const failed = new Map() // uri -> mtime：导入失败的文件，未变化不重试
   let notifyQueue = []
   let notifyTimer = null

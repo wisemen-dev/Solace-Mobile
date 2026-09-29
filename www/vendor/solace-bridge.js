@@ -1199,6 +1199,23 @@
   async function statOf(p) {
     return Filesystem.stat({ path: abs(p), directory: DIR });
   }
+  var writeChains = /* @__PURE__ */ new Map();
+  async function writeFileAtomicText(p, text) {
+    const prev = writeChains.get(p) || Promise.resolve();
+    const run = prev.then(async () => {
+      const tmp = `${p}.tmp`;
+      await Filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 });
+      await Filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR });
+    });
+    const tail = run.then(() => {
+    }, () => {
+    });
+    writeChains.set(p, tail);
+    tail.then(() => {
+      if (writeChains.get(p) === tail) writeChains.delete(p);
+    });
+    return run;
+  }
   var fs = {
     // 文本读写（library.json、索引分片、笔记）
     async readFileText(p) {
@@ -1210,12 +1227,7 @@
       const r = await Filesystem.readFile({ path: abs(p), directory: DIR });
       return r.data;
     },
-    // 原子写：临时文件 + 重命名，与桌面端 atomicWriteFile 同语义
-    async writeFileAtomicText(p, text) {
-      const tmp = `${p}.tmp`;
-      await Filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 });
-      await Filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR });
-    },
+    writeFileAtomicText,
     async writeText(p, text) {
       await Filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 });
     },
@@ -1325,17 +1337,26 @@
     let data = null;
     let startupNotice = null;
     let textIndexMeta = { version: 1, entries: {} };
-    let legacyMigrationDone = false;
+    let legacyMigration = null;
+    async function nextCorruptName(p) {
+      let backup = `${p}.corrupt`;
+      let suffix = 1;
+      while (await fs2.exists(backup)) backup = `${p}.corrupt.${suffix++}`;
+      return backup;
+    }
     async function init() {
       startupNotice = null;
       try {
         await loadRoot();
       } catch (err) {
+        if (err.code !== "LIBRARY_CORRUPT") throw err;
+        const backup = await nextCorruptName("library.json");
         try {
-          await fs2.rename("library.json", "library.json.corrupt");
+          await fs2.rename("library.json", backup);
         } catch {
         }
-        startupNotice = "\u8D44\u6599\u5E93\u6570\u636E\u6587\u4EF6\u635F\u574F\uFF0C\u5DF2\u65B0\u5EFA\u7A7A\u8D44\u6599\u5E93\u3002\n\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 library.json.corrupt\uFF0C\u5E93\u5185 PDF \u526F\u672C\u4E0E\u5168\u6587\u7D22\u5F15\u672A\u5220\u9664\uFF0C\u53EF\u624B\u52A8\u53D6\u56DE\u6216\u91CD\u65B0\u5BFC\u5165\u3002";
+        startupNotice = `\u8D44\u6599\u5E93\u6570\u636E\u6587\u4EF6\u635F\u574F\uFF0C\u5DF2\u65B0\u5EFA\u7A7A\u8D44\u6599\u5E93\u3002
+\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 ${backup}\uFF0C\u5E93\u5185 PDF \u526F\u672C\u4E0E\u5168\u6587\u7D22\u5F15\u672A\u5220\u9664\uFF0C\u53EF\u624B\u52A8\u53D6\u56DE\u6216\u91CD\u65B0\u5BFC\u5165\u3002`;
         await loadRoot({ sweep: false });
       }
     }
@@ -1344,8 +1365,14 @@
       await fs2.mkdirp("covers");
       await fs2.mkdirp("textindex");
       if (await fs2.exists("library.json")) {
-        data = JSON.parse(await fs2.readFileText("library.json"));
-        assertLibraryShape();
+        const raw = await fs2.readFileText("library.json");
+        try {
+          data = JSON.parse(raw);
+          assertLibraryShape();
+        } catch (err) {
+          err.code = "LIBRARY_CORRUPT";
+          throw err;
+        }
       } else {
         data = {
           version: 1,
@@ -1371,7 +1398,7 @@
       normalizeOpenDays();
       shardCache.clear();
       shardCacheChars = 0;
-      legacyMigrationDone = false;
+      legacyMigration = null;
       textIndexMeta = await readTextIndexMeta();
       if (opts.sweep !== false) await pruneTextIndexMeta();
       if (opts.sweep !== false) await sweepOrphans();
@@ -1382,10 +1409,22 @@
     function getStartupNotice() {
       return startupNotice;
     }
+    const DOC_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    function assertDocumentId(id) {
+      if (typeof id !== "string" || !DOC_ID_RE.test(id)) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
+      return id;
+    }
     function assertLibraryShape(obj = data) {
       if (!obj || typeof obj !== "object" || Array.isArray(obj)) throw new Error("\u4E0D\u662F\u5BF9\u8C61");
       for (const key of ["documents", "categories", "tags"]) {
         if (!Array.isArray(obj[key])) throw new Error(`\u7F3A\u5C11 ${key} \u96C6\u5408`);
+      }
+      const ids = /* @__PURE__ */ new Set();
+      for (const doc of obj.documents) {
+        if (!doc || typeof doc !== "object" || Array.isArray(doc)) throw new Error("\u975E\u6CD5\u6587\u6863\u6761\u76EE");
+        const id = assertDocumentId(doc.id).toLowerCase();
+        if (ids.has(id)) throw new Error("\u6587\u6863\u6807\u8BC6\u91CD\u590D");
+        ids.add(id);
       }
     }
     async function save() {
@@ -1457,24 +1496,36 @@
         throw err;
       }
       const id = randomUUID2();
-      await performCopy(`files/${id}.pdf`);
-      const doc = {
-        id,
-        title: stemOf(name),
-        fileName: name,
-        originalPath: null,
-        // 平板端拿不到来源路径；字段保留，两端数据形状一致
-        size,
-        hash,
-        addedAt: now().toISOString(),
-        openedAt: null,
-        openCount: 0,
-        categoryId: null,
-        tagIds: []
-      };
-      data.documents.push(doc);
-      await save();
-      return doc;
+      const target = `files/${id}.pdf`;
+      let committed = false;
+      try {
+        await performCopy(target);
+        const doc = {
+          id,
+          title: stemOf(name),
+          fileName: name,
+          originalPath: null,
+          // 平板端拿不到来源路径；字段保留，两端数据形状一致
+          size,
+          hash,
+          addedAt: now().toISOString(),
+          openedAt: null,
+          openCount: 0,
+          categoryId: null,
+          tagIds: []
+        };
+        data.documents.push(doc);
+        try {
+          await save();
+        } catch (err) {
+          data.documents = data.documents.filter((d) => d !== doc);
+          throw err;
+        }
+        committed = true;
+        return doc;
+      } finally {
+        if (!committed) await fs2.rm(target);
+      }
     }
     function importFile(file) {
       const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
@@ -1500,16 +1551,18 @@
       if (!name.toLowerCase().endsWith(".pdf")) throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
       const id = randomUUID2();
       const staging = `files/.incoming-${id}.pdf`;
-      let info;
+      const target = `files/${id}.pdf`;
+      let committed = false;
       try {
-        info = await performCopyAndHash(staging);
-      } catch (err) {
-        await fs2.rm(staging);
-        throw err;
-      }
-      const size = Math.floor(Number(info.size));
-      const hash = String(info.hash || "");
-      try {
+        let info;
+        try {
+          info = await performCopyAndHash(staging);
+        } catch (err) {
+          await fs2.rm(staging);
+          throw err;
+        }
+        const size = Math.floor(Number(info.size));
+        const hash = String(info.hash || "");
         if (!Number.isFinite(size) || size < 0 || !hash) throw new Error("\u5BFC\u5165\u7ED3\u679C\u4E0D\u5B8C\u6574");
         const dup = await findDuplicate(hash, size);
         if (dup) {
@@ -1517,27 +1570,35 @@
           err.duplicate = { title: dup.title, docId: dup.id };
           throw err;
         }
-        await fs2.rename(staging, `files/${id}.pdf`);
-      } catch (err) {
-        await fs2.rm(staging);
-        throw err;
+        await fs2.rename(staging, target);
+        const doc = {
+          id,
+          title: stemOf(name),
+          fileName: name,
+          originalPath: null,
+          size,
+          hash,
+          addedAt: now().toISOString(),
+          openedAt: null,
+          openCount: 0,
+          categoryId: null,
+          tagIds: []
+        };
+        data.documents.push(doc);
+        try {
+          await save();
+        } catch (err) {
+          data.documents = data.documents.filter((d) => d !== doc);
+          throw err;
+        }
+        committed = true;
+        return doc;
+      } finally {
+        if (!committed) {
+          await fs2.rm(staging);
+          await fs2.rm(target);
+        }
       }
-      const doc = {
-        id,
-        title: stemOf(name),
-        fileName: name,
-        originalPath: null,
-        size,
-        hash,
-        addedAt: now().toISOString(),
-        openedAt: null,
-        openCount: 0,
-        categoryId: null,
-        tagIds: []
-      };
-      data.documents.push(doc);
-      await save();
-      return doc;
     }
     async function updateDoc(id, patch) {
       const doc = findDoc(id);
@@ -1740,13 +1801,20 @@
       }
       if (changed) await saveTextIndexMeta();
     }
-    async function migrateLegacyTextIndex() {
-      if (legacyMigrationDone) return;
-      legacyMigrationDone = true;
+    function migrateLegacyTextIndex() {
+      if (!legacyMigration) legacyMigration = migrateLegacyTextIndexNow();
+      return legacyMigration;
+    }
+    async function migrateLegacyTextIndexNow() {
       if (!await fs2.exists("textindex.json")) return;
       try {
         const old = JSON.parse(await fs2.readFileText("textindex.json"));
         for (const [id, e] of Object.entries(old || {})) {
+          try {
+            assertDocumentId(id);
+          } catch {
+            continue;
+          }
           if (!e || !Array.isArray(e.pages)) continue;
           await writeShard(id, e);
           textIndexMeta.entries[id] = { ver: Number(e.ver) || void 0, failed: !!e.failed, at: e.at };
@@ -1827,6 +1895,7 @@
     async function sweepOrphans() {
       await fs2.rm("library.json.tmp");
       await fs2.rm("textindex/index.json.tmp");
+      await fs2.rm("watch-state.json.tmp");
       let staged = [];
       try {
         staged = await fs2.readdir("files");
@@ -1844,7 +1913,7 @@
         if (APP_TMP_RE.test(e.name)) await fs2.rm(`textindex/${e.name}`);
       }
       if (!data.documents.length) return;
-      const ids = new Set(data.documents.map((d) => d.id));
+      const ids = new Set(data.documents.map((d) => d.id.toLowerCase()));
       for (const sub of ["files", "covers"]) {
         let entries;
         try {
@@ -1854,7 +1923,7 @@
         }
         for (const e of entries) {
           const m = APP_FILE_RE.exec(e.name);
-          if (!m || ids.has(m[1])) continue;
+          if (!m || ids.has(m[1].toLowerCase())) continue;
           await fs2.rm(`${sub}/${e.name}`);
         }
       }
@@ -2070,7 +2139,15 @@
       notes2.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
       return { notes: notes2 };
     }
-    async function create(docId, payload = {}) {
+    let createChain = Promise.resolve();
+    function create(docId, payload = {}) {
+      const run = createChain.then(() => createLocked(docId, payload));
+      createChain = run.then(() => {
+      }, () => {
+      });
+      return run;
+    }
+    async function createLocked(docId, payload = {}) {
       const dir = docDir(docId);
       await fs2.mkdirp(dir);
       const t = now();
@@ -2188,7 +2265,7 @@
     let callbacks = null;
     let scanSeq = 0;
     let lastScanAt = 0;
-    const RESCAN_THROTTLE_MS = 12e4;
+    const RESCAN_THROTTLE_MS = 3e4;
     const failed = /* @__PURE__ */ new Map();
     let notifyQueue = [];
     let notifyTimer = null;
@@ -2366,7 +2443,8 @@
     let entries = null;
     try {
       const r = await pickPdfs();
-      if (!r.canceled) entries = r.files || [];
+      if (r.canceled) return { imported: [], errors: [], duplicates: [] };
+      entries = r.files || [];
     } catch {
     }
     const files = entries || await pickPdfFiles();
@@ -2501,6 +2579,7 @@
   ready.then(() => {
     setTimeout(() => watch.scan({ force: true }).catch(() => {
     }), 3e3);
+  }).catch(() => {
   });
   App.addListener("appStateChange", ({ isActive }) => {
     if (isActive) watch.scan().catch(() => {
@@ -2525,11 +2604,13 @@
       const ev = new CustomEvent("solace-close-request", { cancelable: true });
       dlg.dispatchEvent(ev);
       if (!ev.defaultPrevented) dlg.close();
+      lastBackAt = 0;
       return;
     }
     const overlay = document.getElementById("previewOverlay");
     if (overlay && !overlay.hidden) {
       document.getElementById("btnPreviewClose")?.click();
+      lastBackAt = 0;
       return;
     }
     const sidebar = document.querySelector(".sidebar");
@@ -2537,6 +2618,7 @@
       sidebar.classList.remove("open");
       const bd = document.getElementById("drawerBackdrop");
       if (bd) bd.hidden = true;
+      lastBackAt = 0;
       return;
     }
     const now = Date.now();
@@ -2560,5 +2642,6 @@
         clearInterval(timer);
       }
     }, 250);
+  }).catch(() => {
   });
 })();

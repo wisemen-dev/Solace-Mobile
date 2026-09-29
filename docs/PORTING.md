@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 30 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 31 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -34,7 +34,7 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 30 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 31 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
 ### index.html（9 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
@@ -70,11 +70,13 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 4. 批删笔记确认文案：同上
 5. 删除结果 toast：回收站字样改为平板端表述
 
-### settings.js（4 处）
+### settings.js（5 处）
 1. 监视文件夹显示名：平板端显示 SAF 目录名（watchFolderName）
-2. 「浏览…」走 SAF 目录选择器，返回 { uri, name } 落 watchTreeUri
-3. 监视文件夹输入框 change 短路（只读，用户不会触发）
-4. Olib 包名保存与「检测…」自动发现（多结果走选择框）
+2. 启用开关状态判据：平板端看 watchTreeUri（watchFolder 恒不存在，否则
+   勾选框永远显示「关」而自动入库实际在跑，且无法从界面停用）
+3. 「浏览…」走 SAF 目录选择器，返回 { uri, name } 落 watchTreeUri
+4. 监视文件夹输入框 change 短路（只读，用户不会触发）
+5. Olib 包名保存与「检测…」自动发现（多结果走选择框）
 
 ### notespanel.js（3 处）
 1. `openOne`：桥返回 `{ inApp: true, content }` 时交给内置编辑器
@@ -112,10 +114,11 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
    textindex 的 pdf.js 加载统一 `getDocument({ url })`（pdf.js 在自己的
    worker 里 fetch，主线程不碰字节）。服务端不支持 Range → pdf.js 自动
    整取，仍是全速（30.8MB≈220ms）。
-2. **导入哈希**：`hashUri(uri)` 原生流式 SHA-256（MessageDigest，
-   30.8MB≈278ms）。
-3. **导入复制**：`copyUri(uri, destPath)` 原生流式复制进资料库
-   （30.8MB≈58ms）；失败自动清掉半截文件。
+2. **导入（哈希 + 复制一次完成）**：`copyAndHash(uri, destPath)` 一次读取
+   同时做流式 SHA-256 与复制（30.8MB≈280ms），哈希与副本内容严格同源；
+   失败自动清掉半截文件。
+3. **库内文件哈希**：`hashLibraryPath(relPath)` 原生流式 SHA-256，旧库
+   条目回填 hash 用（不走 base64 过桥的 JS 慢路径）。
 
 导入内核 `library-core.importWith(meta, performCopy)`：meta 携带
 { fileName, size, hash }，performCopy(destRelPath) 由调用方注入原生实现

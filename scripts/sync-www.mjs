@@ -4,6 +4,7 @@
 //
 // 用法：node scripts/sync-www.mjs [--src <桌面仓库路径>]
 //   或设环境变量 SOLACE_DESKTOP
+import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -217,6 +218,10 @@ patch('js/settings.js', [
   [`  $('#setWatchFolder').value = s.watchFolder || ''`,
    `  $('#setWatchFolder').value = window.solace.isMobile ? (s.watchFolderName || '') : (s.watchFolder || '')
   $('#setOlibPackage').value = s.externalToolPackage || ''`],
+  // 启用开关的状态判据：平板端看 watchTreeUri（SAF 授权目录，watchFolder 恒不存在）
+  // ——沿用 watchFolder 会让勾选框永远显示「关」而自动入库实际在跑，且无法停用
+  [`  $('#setWatchEnabled').checked = !!s.watchFolder && s.watchEnabled !== false`,
+   `  $('#setWatchEnabled').checked = (window.solace.isMobile ? !!s.watchTreeUri : !!s.watchFolder) && s.watchEnabled !== false`],
   // 「浏览…」：平板端走 SAF 系统目录选择器，返回 { uri, name }
   [`$('#btnBrowseWatch').addEventListener('click', async () => {
   if (relocating) return
@@ -321,4 +326,10 @@ btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×9, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×4, notespanel.js×3（共30）')
+console.log('补丁：index.html×9, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共31）')
+
+// 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
+// （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」
+// 会把缺桥的渲染层打进包（window.solace 不存在，界面整体不可用）
+const bridge = spawnSync(process.execPath, [join(root, 'scripts/build-bridge.mjs')], { stdio: 'inherit' })
+if (bridge.status !== 0) process.exit(bridge.status || 1)

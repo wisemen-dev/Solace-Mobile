@@ -7,7 +7,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
-import android.util.Base64;
 
 import androidx.activity.result.ActivityResult;
 
@@ -19,7 +18,6 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -33,7 +31,7 @@ import java.util.concurrent.Executors;
  * - 按包名拉起外部应用（Olib 下载器），按关键字检索可启动应用
  * - SAF 目录授权（ACTION_OPEN_DOCUMENT_TREE + 持久化读权限）
  * - 递归枚举授权目录下的 PDF（DocumentsContract 树查询）
- * - 读取 SAF 文档内容为 base64（桥内转 Uint8Array 走既有导入链）
+ * - 原生流式复制 + SHA-256（内容不过 JS 桥的导入管线）
  *
  * 文件 IO 走单线程执行器：插件方法默认在主线程执行，枚举/读取大文件
  * 必须让出（call.resolve 线程安全，从工作线程回包没有问题）。
@@ -48,43 +46,50 @@ public class SolaceNativePlugin extends Plugin {
     @PluginMethod
     public void findApps(PluginCall call) {
         String keyword = call.getString("keyword", "");
-        String kw = keyword == null ? "" : keyword.toLowerCase();
-        Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> apps = getContext().getPackageManager().queryIntentActivities(main, 0);
-        JSArray out = new JSArray();
-        for (ResolveInfo app : apps) {
-            String pkg = app.activityInfo.packageName;
-            String label = String.valueOf(app.loadLabel(getContext().getPackageManager()));
-            if (!kw.isEmpty() && !pkg.toLowerCase().contains(kw) && !label.toLowerCase().contains(kw)) continue;
-            JSObject o = new JSObject();
-            o.put("package", pkg);
-            o.put("label", label);
-            out.put(o);
-        }
-        JSObject res = new JSObject();
-        res.put("apps", out);
-        call.resolve(res);
+        // 全量枚举 + 逐个 loadLabel 都是重活（Olib 检测还会按多关键字连查），
+        // 必须让出主线程，否则设置面板「检测…」期间界面冻结
+        io.execute(() -> {
+            String kw = keyword == null ? "" : keyword.toLowerCase();
+            Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            List<ResolveInfo> apps = getContext().getPackageManager().queryIntentActivities(main, 0);
+            JSArray out = new JSArray();
+            for (ResolveInfo app : apps) {
+                String pkg = app.activityInfo.packageName;
+                String label = String.valueOf(app.loadLabel(getContext().getPackageManager()));
+                if (!kw.isEmpty() && !pkg.toLowerCase().contains(kw) && !label.toLowerCase().contains(kw)) continue;
+                JSObject o = new JSObject();
+                o.put("package", pkg);
+                o.put("label", label);
+                out.put(o);
+            }
+            JSObject res = new JSObject();
+            res.put("apps", out);
+            call.resolve(res);
+        });
     }
 
     @PluginMethod
     public void launchApp(PluginCall call) {
         String pkg = call.getString("package", "");
-        JSObject res = new JSObject();
-        try {
-            Intent intent = pkg == null ? null : getContext().getPackageManager().getLaunchIntentForPackage(pkg);
-            if (intent == null) {
+        // 包解析同样是 PackageManager 查询，放到 io 线程与 findApps 保持一致
+        io.execute(() -> {
+            JSObject res = new JSObject();
+            try {
+                Intent intent = pkg == null ? null : getContext().getPackageManager().getLaunchIntentForPackage(pkg);
+                if (intent == null) {
+                    res.put("ok", false);
+                    call.resolve(res);
+                    return;
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+                res.put("ok", true);
+            } catch (Exception e) {
                 res.put("ok", false);
-                call.resolve(res);
-                return;
+                res.put("error", String.valueOf(e.getMessage()));
             }
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            getContext().startActivity(intent);
-            res.put("ok", true);
-        } catch (Exception e) {
-            res.put("ok", false);
-            res.put("error", String.valueOf(e.getMessage()));
-        }
-        call.resolve(res);
+            call.resolve(res);
+        });
     }
 
     /* ---- SAF 目录授权（对应桌面端的「选择监视文件夹」） ---- */
@@ -105,6 +110,14 @@ public class SolaceNativePlugin extends Plugin {
             return;
         }
         Uri uri = result.getData().getData();
+        if (uri == null) {
+            // 个别 ROM 会回 RESULT_OK 但不带 URI：按取消处理，否则 io 线程 NPE
+            // 会让 JS 端 promise 永不落定（「浏览…」静默卡死）
+            JSObject canceled = new JSObject();
+            canceled.put("canceled", true);
+            call.resolve(canceled);
+            return;
+        }
         // 持久化授权与目录名查询都是磁盘 IO，统一挪到 io 线程
         io.execute(() -> {
             JSObject res = new JSObject();
@@ -174,7 +187,11 @@ public class SolaceNativePlugin extends Plugin {
                 long size = c.getLong(3);
                 long mtime = c.getLong(4);
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
-                    walkTree(tree, id, out, depth + 1);
+                    try {
+                        walkTree(tree, id, out, depth + 1);
+                    } catch (Exception ignored) {
+                        // 单个子目录读取失败（Provider 抖动/权限受限）不中断整轮枚举
+                    }
                 } else if (name != null && name.toLowerCase().endsWith(".pdf")) {
                     JSObject o = new JSObject();
                     o.put("name", name);
@@ -187,29 +204,10 @@ public class SolaceNativePlugin extends Plugin {
         }
     }
 
-    @PluginMethod
-    public void readFileBase64(PluginCall call) {
-        String uri = call.getString("uri", "");
-        io.execute(() -> {
-            JSObject res = new JSObject();
-            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
-                if (in == null) throw new IllegalStateException("无法打开文件");
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                byte[] chunk = new byte[65536];
-                int n;
-                while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
-                res.put("base64", Base64.encodeToString(buf.toByteArray(), Base64.NO_WRAP));
-            } catch (Exception e) {
-                res.put("error", "读取失败：" + e.getMessage());
-            }
-            call.resolve(res);
-        });
-    }
-
     /* ---- 原生导入管线（性能关键路径） ----
        文件内容经 JS 桥以 base64 往返会让主线程卡死数秒（实测纯 JS 编码
-       10MB≈1.1s，全部阻塞 UI）；以下三条方法让内容全程不过 JS：
-       SAF 多选 → 原生流式哈希 → 原生流式复制进资料库 */
+       10MB≈1.1s，全部阻塞 UI）；以下方法让内容全程不过 JS：
+       SAF 多选 → 原生流式（复制 + 哈希一次完成）进资料库 */
 
     @PluginMethod
     public void pickPdfs(PluginCall call) {
@@ -272,62 +270,6 @@ public class SolaceNativePlugin extends Plugin {
     private File libraryFile(String relPath) {
         File base = new File(getContext().getExternalFilesDir(null), "SolaceLibrary");
         return new File(base, relPath == null ? "" : relPath);
-    }
-
-    // 流式 SHA-256（MessageDigest 原生实现，~GB/s 级），内容不过 JS
-    @PluginMethod
-    public void hashUri(PluginCall call) {
-        String uri = call.getString("uri", "");
-        io.execute(() -> {
-            JSObject res = new JSObject();
-            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
-                if (in == null) throw new IllegalStateException("无法打开文件");
-                MessageDigest md = MessageDigest.getInstance("SHA-256");
-                byte[] buf = new byte[262144];
-                long total = 0;
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    md.update(buf, 0, n);
-                    total += n;
-                }
-                res.put("hash", toHex(md.digest()));
-                res.put("size", total);
-            } catch (Exception e) {
-                res.put("error", String.valueOf(e.getMessage()));
-            }
-            call.resolve(res);
-        });
-    }
-
-    // 流式复制 SAF 文档 → 资料库相对路径；失败清掉半截文件
-    @PluginMethod
-    public void copyUri(PluginCall call) {
-        String uri = call.getString("uri", "");
-        String destPath = call.getString("destPath", "");
-        io.execute(() -> {
-            JSObject res = new JSObject();
-            File dest = libraryFile(destPath);
-            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
-                if (in == null) throw new IllegalStateException("无法打开文件");
-                //noinspection ResultOfMethodCallIgnored
-                dest.getParentFile().mkdirs();
-                long total = 0;
-                try (FileOutputStream out = new FileOutputStream(dest)) {
-                    byte[] buf = new byte[262144];
-                    int n;
-                    while ((n = in.read(buf)) > 0) {
-                        out.write(buf, 0, n);
-                        total += n;
-                    }
-                }
-                res.put("size", total);
-            } catch (Exception e) {
-                //noinspection ResultOfMethodCallIgnored
-                dest.delete();
-                res.put("error", "复制失败：" + e.getMessage());
-            }
-            call.resolve(res);
-        });
     }
 
     // 复制的同时计算 SHA-256：一次读取完成两件事，且哈希与副本内容严格

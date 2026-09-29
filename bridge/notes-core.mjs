@@ -47,9 +47,18 @@ export function createNotes ({ fs, now = () => new Date() }) {
     return { notes }
   }
 
+  // 新建串行化：文件名「检查 → 写入」跨 await，同秒并发双击会算出同名
+  // 文件互相覆盖（桌面端同步 IO 天然原子）；排队后与桌面行为等价
+  let createChain = Promise.resolve()
+  function create (docId, payload = {}) {
+    const run = createChain.then(() => createLocked(docId, payload))
+    createChain = run.then(() => {}, () => {})
+    return run
+  }
+
   // 一键新建：文件名「日期 时间（含秒）」，模板含书名/时间/建笔记时的页码，
   // 与桌面端完全一致（桌面端可把同一目录下建出的笔记拿到 Typora 续写）
-  async function create (docId, payload = {}) {
+  async function createLocked (docId, payload = {}) {
     const dir = docDir(docId)
     await fs.mkdirp(dir)
     const t = now()

@@ -13,10 +13,12 @@ button,
   touch-action: manipulation;
 }
 
-/* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出 */
+/* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出。
+   先给 vh 兜底（老 WebView 无 dvh），支持 dvh 的浏览器再覆盖 */
 body,
 .layout,
 .main {
+  height: 100vh;
   height: 100dvh;
 }
 
@@ -41,10 +43,8 @@ body,
 #settingsNav button[data-sec='notes'] { display: none; }
 .settings-group[data-sec='notes'],
 .settings-group[data-sec='notes'].active { display: none !important; }
-.settings-group[data-sec='library'] .settings-row:has(#setRootPath) { display: none; }
-/* 「阅读与索引」分区只留索引上限与恢复开关 */
-.settings-group[data-sec='reading'] .settings-row:has(#setPdfReader),
-.settings-group[data-sec='reading'] .settings-row:has(#setTool) { display: none; }
+/* 桌面专属行（资料库位置 / 阅读器 / 外部工具）的隐藏由 mobile.js 运行时
+   等价实现——:has() 要 Chrome 105+，老 WebView 上这些行会显出来且点不动 */
 
 /* ---------- 窄屏（竖屏/分屏）：侧栏抽屉化 ---------- */
 @media (max-width: 899.98px) {
@@ -118,6 +118,7 @@ body,
 /* ---------- 笔记编辑器（移动端内置，替代桌面端 Typora） ---------- */
 .note-editor-dialog {
   width: min(94vw, 720px);
+  height: min(86vh, 880px);
   height: min(86dvh, 880px);
 }
 .note-editor-dialog[open] { display: flex; flex-direction: column; }

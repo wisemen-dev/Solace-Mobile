@@ -171,6 +171,30 @@ function APP_STAGING_NAME (name) {
   return /^\.incoming-[0-9a-f-]{36}\.pdf$/i.test(name)
 }
 
+test('导入落库失败：条目回滚、副本清除，不留半截状态给清扫', async () => {
+  const base = createMemFs()
+  let failLibraryWrites = false
+  const fs = {
+    ...base,
+    async writeFileAtomicText (p, text) {
+      if (failLibraryWrites && p === 'library.json') throw new Error('磁盘写入失败（模拟）')
+      return base.writeFileAtomicText(p, text)
+    }
+  }
+  const lib = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date('2026-09-26T10:00:00') })
+  await lib.init()
+  failLibraryWrites = true
+  await assert.rejects(
+    () => lib.importFile({ fileName: '失败.pdf', size: PDF_A.length, bytes: PDF_A }),
+    /磁盘写入失败/
+  )
+  assert.equal(lib.getData().documents.length, 0, '失败条目不得留在内存库')
+  assert.equal((await base.readdir('files')).length, 0, '副本必须清掉（与桌面 importPdfLocked 同法）')
+  failLibraryWrites = false
+  const doc = await lib.importFile({ fileName: '重试.pdf', size: PDF_A.length, bytes: PDF_A })
+  assert.ok(doc.id, '故障排除后可正常导入')
+})
+
 test('importFile 入库、去重、写副本；removeDoc 连带清理', async () => {
   const { fs, lib } = createHarness()
   await lib.init()
@@ -229,6 +253,52 @@ test('library.json 损坏：改名留档重建空库，files/ 副本不被清扫
   assert.ok(second.getStartupNotice(), '应给出损坏告示')
   assert.ok(await fs.exists('library.json.corrupt'), '坏文件留档')
   assert.ok(await fs.exists(`files/${doc.id}.pdf`), '孤儿清扫被跳过，副本保留')
+})
+
+test('文档条目缺 id：按损坏处理，files/ 副本不被清扫', async () => {
+  const fs = createMemFs()
+  const make = (t) => createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => t })
+  const lib = make(new Date('2026-09-26T10:00:00'))
+  await lib.init()
+  const doc = await lib.importFile({ fileName: '书.pdf', size: PDF_A.length, bytes: PDF_A })
+  // 手工抹掉条目 id（模拟人工编辑 / 半还原的备份）：合法 JSON 但清扫失去比对基准
+  const raw = JSON.parse(await fs.readFileText('library.json'))
+  delete raw.documents[0].id
+  await fs.writeFileAtomicText('library.json', JSON.stringify(raw))
+
+  const second = make(new Date('2026-09-26T11:00:00'))
+  await second.init()
+  assert.ok(second.getStartupNotice(), '缺 id 必须判为损坏（否则清扫会把副本全删）')
+  assert.ok(await fs.exists('library.json.corrupt'), '坏库留档')
+  assert.ok(await fs.exists(`files/${doc.id}.pdf`), '清扫被跳过，副本保留')
+})
+
+test('损坏备份重名自动编号：第二次损坏不覆盖上一份', async () => {
+  const fs = createMemFs()
+  const make = () => createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date('2026-09-26T10:00:00') })
+  await make().init()
+  await fs.writeFileAtomicText('library.json', '{ 坏一次')
+  await make().init()
+  await fs.writeFileAtomicText('library.json', '{ 坏两次')
+  await make().init()
+  assert.ok(await fs.exists('library.json.corrupt'))
+  assert.ok(await fs.exists('library.json.corrupt.1'), '重名时应顺延编号')
+})
+
+test('library.json 读取失败（瞬时错误）：init 上抛，不误判损坏', async () => {
+  const base = createMemFs()
+  await base.writeText('library.json', JSON.stringify({ version: 1, documents: [], categories: [], tags: [] }))
+  const fs = {
+    ...base,
+    async readFileText (p) {
+      if (p === 'library.json') throw new Error('EIO: 读取失败（模拟磁盘/权限异常）')
+      return base.readFileText(p)
+    }
+  }
+  const lib = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date() })
+  await assert.rejects(() => lib.init(), /EIO/)
+  assert.ok(await base.exists('library.json'), '完好库文件不得被改名')
+  assert.equal(await base.exists('library.json.corrupt'), false)
 })
 
 /* ---- 分类树 ---- */
@@ -329,6 +399,22 @@ test('桌面端旧版单文件索引自动搬迁为分片', async () => {
   assert.ok(await fs.exists('textindex.json.migrated'))
 })
 
+test('旧版单文件索引搬迁：非法 id 键跳过，不写出库外路径', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const doc = await lib.importFile({ fileName: '合法.pdf', size: PDF_A.length, bytes: PDF_A })
+  await fs.writeText('textindex.json', JSON.stringify({
+    [doc.id]: { pages: ['正文'], ver: 1 },
+    '../../evil': { pages: ['注入'] }
+  }))
+  const lib2 = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date() })
+  await lib2.init()
+  const status = await lib2.getTextIndexStatus()
+  assert.equal(Object.keys(status).length, 1, '非法 id 键应被跳过')
+  assert.ok(status[doc.id])
+  assert.equal([...fs.files.keys()].some(k => k.includes('..')), false, '不得通过 id 写出库外路径')
+})
+
 /* ---- 设置白名单 ---- */
 
 test('updateSettings 白名单收敛：非法枚举拒绝、数值下界卡住', async () => {
@@ -370,6 +456,15 @@ test('笔记：create 模板/list 排序/write 读回/trash 删除与路径防�
   // 路径穿越防御
   await assert.rejects(() => notes.read(id, '../library.json'), /非法/)
   await assert.rejects(() => notes.list('bad/id'), /非法/)
+})
+
+test('笔记并发新建（同秒双击）：文件名顺延，不互相覆盖', async () => {
+  const fs = createMemFs()
+  const notes = createNotes({ fs, now: () => new Date('2026-09-26T09:08:07') }) // 固定时钟：两次同秒
+  const id = '00000000-0000-4000-8000-000000000001'
+  const [a, b] = await Promise.all([notes.create(id, { title: '书' }), notes.create(id, { title: '书' })])
+  assert.notEqual(a.file, b.file, '同秒并发必须得到两个不同文件名')
+  assert.equal((await notes.list(id)).notes.length, 2)
 })
 
 /* ---- base64 往返（桥内自实现，两端一致性关键） ---- */

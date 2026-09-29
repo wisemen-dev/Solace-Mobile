@@ -20,23 +20,34 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   let data = null
   let startupNotice = null
   let textIndexMeta = { version: 1, entries: {} }
-  let legacyMigrationDone = false
+  let legacyMigration = null // 旧索引搬迁的 in-flight promise（并发调用等同一轮完成）
 
   /* ---- 启动与加载 ---- */
+
+  // 损坏备份名：重名顺延编号（与桌面端 library.js 同规则），第二次损坏
+  // 不覆盖上一份可抢救的副本
+  async function nextCorruptName (p) {
+    let backup = `${p}.corrupt`
+    let suffix = 1
+    while (await fs.exists(backup)) backup = `${p}.corrupt.${suffix++}`
+    return backup
+  }
 
   async function init () {
     startupNotice = null
     try {
       await loadRoot()
     } catch (err) {
-      // 默认库损坏（library.json 解析失败/结构缺失）：不能把应用挡在门外。
-      // 坏文件改名留档为 .corrupt 供抢救，原地重建空库；本次跳过孤儿清扫
-      // ——库已空，清扫会把 files/ 下的 PDF 副本全删掉，而它们可能是用户
-      // 唯一的副本（与桌面端同一取舍）
-      try { await fs.rename('library.json', 'library.json.corrupt') } catch { /* 改不了名则本次启动仍会失败 */ }
-      // textindex/ 一律原地不动：docId 没变，从 library.json.corrupt 里抢救回
-      // 条目后索引还能直接复用
-      startupNotice = '资料库数据文件损坏，已新建空资料库。\n原文件保留为资料库内 library.json.corrupt，库内 PDF 副本与全文索引未删除，可手动取回或重新导入。'
+      // 只有库文件确实损坏才走恢复重建；磁盘满/读取失败等瞬时错误照抛，
+      // 由启动错误页兜底——绝不能把完好的 library.json 改名重建
+      if (err.code !== 'LIBRARY_CORRUPT') throw err
+      // 坏库不能把应用挡在门外：改名留档供抢救，原地重建空库；本次跳过
+      // 孤儿清扫——库已空，清扫会把 files/ 下的 PDF 副本全删掉，而它们
+      // 可能是用户唯一的副本（与桌面端同一取舍）
+      const backup = await nextCorruptName('library.json')
+      try { await fs.rename('library.json', backup) } catch { /* 改不了名则本次启动仍会失败 */ }
+      // textindex/ 一律原地不动：docId 没变，从备份里抢救回条目后索引还能直接复用
+      startupNotice = `资料库数据文件损坏，已新建空资料库。\n原文件保留为资料库内 ${backup}，库内 PDF 副本与全文索引未删除，可手动取回或重新导入。`
       await loadRoot({ sweep: false })
     }
   }
@@ -46,8 +57,15 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     await fs.mkdirp('covers')
     await fs.mkdirp('textindex')
     if (await fs.exists('library.json')) {
-      data = JSON.parse(await fs.readFileText('library.json'))
-      assertLibraryShape()
+      // 读取失败是瞬时错误（磁盘/权限），不标损坏；只有解析/校验失败才是坏库
+      const raw = await fs.readFileText('library.json')
+      try {
+        data = JSON.parse(raw)
+        assertLibraryShape()
+      } catch (err) {
+        err.code = 'LIBRARY_CORRUPT'
+        throw err
+      }
     } else {
       data = {
         version: 1,
@@ -69,7 +87,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     normalizeOpenDays()
     shardCache.clear()
     shardCacheChars = 0
-    legacyMigrationDone = false
+    legacyMigration = null
     textIndexMeta = await readTextIndexMeta()
     if (opts.sweep !== false) await pruneTextIndexMeta()
     if (opts.sweep !== false) await sweepOrphans()
@@ -85,13 +103,30 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     return startupNotice
   }
 
-  // 结构校验：合法 JSON 不代表是本应用的库。缺核心集合时抛错走「损坏恢复」
-  // 路径，绝不能顺成空库继续跑——紧接着的孤儿清扫会把 files/ 下的 PDF 副本
-  // 全判为孤儿永久删掉（不可逆），与桌面端 assertLibraryShape 同一防御
+  // 文档标识形状校验：与桌面 library-paths.assertDocumentId 同义。库内文档
+  // 一律以 UUID 命名（files/<id>.pdf、covers/<id>.jpg、notes/<id>/），id 非法
+  // 会让孤儿清扫失去比对基准——只认 UUID 形状的文件会被全数误删
+  const DOC_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  function assertDocumentId (id) {
+    if (typeof id !== 'string' || !DOC_ID_RE.test(id)) throw new Error('非法文档标识')
+    return id
+  }
+
+  // 结构校验：合法 JSON 不代表是本应用的库。缺核心集合或文档条目 id 非法/
+  // 重复时抛错走「损坏恢复」路径，绝不能顺成空库继续跑——紧接着的孤儿清扫
+  // 会把 files/ 下的 PDF 副本全判为孤儿永久删掉（不可逆）。逐条 id 校验是
+  // 桌面端 assertLibraryShape 的同款防线
   function assertLibraryShape (obj = data) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('不是对象')
     for (const key of ['documents', 'categories', 'tags']) {
       if (!Array.isArray(obj[key])) throw new Error(`缺少 ${key} 集合`)
+    }
+    const ids = new Set()
+    for (const doc of obj.documents) {
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('非法文档条目')
+      const id = assertDocumentId(doc.id).toLowerCase()
+      if (ids.has(id)) throw new Error('文档标识重复')
+      ids.add(id)
     }
   }
 
@@ -181,23 +216,37 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       throw err
     }
     const id = randomUUID()
-    await performCopy(`files/${id}.pdf`)
-    const doc = {
-      id,
-      title: stemOf(name),
-      fileName: name,
-      originalPath: null, // 平板端拿不到来源路径；字段保留，两端数据形状一致
-      size,
-      hash,
-      addedAt: now().toISOString(),
-      openedAt: null,
-      openCount: 0,
-      categoryId: null,
-      tagIds: []
+    const target = `files/${id}.pdf`
+    let committed = false
+    try {
+      await performCopy(target)
+      const doc = {
+        id,
+        title: stemOf(name),
+        fileName: name,
+        originalPath: null, // 平板端拿不到来源路径；字段保留，两端数据形状一致
+        size,
+        hash,
+        addedAt: now().toISOString(),
+        openedAt: null,
+        openCount: 0,
+        categoryId: null,
+        tagIds: []
+      }
+      data.documents.push(doc)
+      try {
+        await save()
+      } catch (err) {
+        // 落库失败：撤条目并清掉刚写的副本，别让「文件在、册上无」的半截
+        // 状态留给下次启动的孤儿清扫连坐（与桌面 importPdfLocked 同法）
+        data.documents = data.documents.filter(d => d !== doc)
+        throw err
+      }
+      committed = true
+      return doc
+    } finally {
+      if (!committed) await fs.rm(target)
     }
-    data.documents.push(doc)
-    await save()
-    return doc
   }
 
   // JS 兜底导入（WebView 文件选择器返回 File 对象时；单测也走这里）。
@@ -231,16 +280,18 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     if (!name.toLowerCase().endsWith('.pdf')) throw new Error('仅支持 PDF 文件')
     const id = randomUUID()
     const staging = `files/.incoming-${id}.pdf`
-    let info
+    const target = `files/${id}.pdf`
+    let committed = false
     try {
-      info = await performCopyAndHash(staging)
-    } catch (err) {
-      await fs.rm(staging) // 原生失败已自清，这里兜底实现未清的情况
-      throw err
-    }
-    const size = Math.floor(Number(info.size))
-    const hash = String(info.hash || '')
-    try {
+      let info
+      try {
+        info = await performCopyAndHash(staging)
+      } catch (err) {
+        await fs.rm(staging) // 原生失败已自清，这里兜底实现未清的情况
+        throw err
+      }
+      const size = Math.floor(Number(info.size))
+      const hash = String(info.hash || '')
       if (!Number.isFinite(size) || size < 0 || !hash) throw new Error('导入结果不完整')
       const dup = await findDuplicate(hash, size)
       if (dup) {
@@ -248,27 +299,36 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         err.duplicate = { title: dup.title, docId: dup.id }
         throw err
       }
-      await fs.rename(staging, `files/${id}.pdf`)
-    } catch (err) {
-      await fs.rm(staging)
-      throw err
+      await fs.rename(staging, target)
+      const doc = {
+        id,
+        title: stemOf(name),
+        fileName: name,
+        originalPath: null,
+        size,
+        hash,
+        addedAt: now().toISOString(),
+        openedAt: null,
+        openCount: 0,
+        categoryId: null,
+        tagIds: []
+      }
+      data.documents.push(doc)
+      try {
+        await save()
+      } catch (err) {
+        data.documents = data.documents.filter(d => d !== doc)
+        throw err
+      }
+      committed = true
+      return doc
+    } finally {
+      // 未走到落库成功：暂存与正式副本都不留（失败/查重/落库失败全覆盖）
+      if (!committed) {
+        await fs.rm(staging)
+        await fs.rm(target)
+      }
     }
-    const doc = {
-      id,
-      title: stemOf(name),
-      fileName: name,
-      originalPath: null,
-      size,
-      hash,
-      addedAt: now().toISOString(),
-      openedAt: null,
-      openCount: 0,
-      categoryId: null,
-      tagIds: []
-    }
-    data.documents.push(doc)
-    await save()
-    return doc
   }
 
   /* ---- 文档：编辑 / 删除 / 进度 ---- */
@@ -510,14 +570,19 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     if (changed) await saveTextIndexMeta()
   }
 
-  // 0.15.x 桌面端的单文件索引 → 分片，一次性搬迁（推库过来的旧桌面库兼容）
-  async function migrateLegacyTextIndex () {
-    if (legacyMigrationDone) return
-    legacyMigrationDone = true
+  // 0.15.x 桌面端的单文件索引 → 分片，一次性搬迁（推库过来的旧桌面库兼容）。
+  // 共享 in-flight promise：并发调用者等同一轮完成，不会读到半成品
+  function migrateLegacyTextIndex () {
+    if (!legacyMigration) legacyMigration = migrateLegacyTextIndexNow()
+    return legacyMigration
+  }
+
+  async function migrateLegacyTextIndexNow () {
     if (!await fs.exists('textindex.json')) return
     try {
       const old = JSON.parse(await fs.readFileText('textindex.json'))
       for (const [id, e] of Object.entries(old || {})) {
+        try { assertDocumentId(id) } catch { continue } // 非法键跳过（与桌面端同款防御）
         if (!e || !Array.isArray(e.pages)) continue
         await writeShard(id, e)
         textIndexMeta.entries[id] = { ver: Number(e.ver) || undefined, failed: !!e.failed, at: e.at }
@@ -608,6 +673,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   async function sweepOrphans () {
     await fs.rm('library.json.tmp')
     await fs.rm('textindex/index.json.tmp')
+    await fs.rm('watch-state.json.tmp') // 自动入库状态文件的原子写残留（平板端特有）
     let staged = []
     try { staged = await fs.readdir('files') } catch { /* 目录尚未建立 */ }
     for (const e of staged) {
@@ -619,13 +685,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       if (APP_TMP_RE.test(e.name)) await fs.rm(`textindex/${e.name}`)
     }
     if (!data.documents.length) return
-    const ids = new Set(data.documents.map(d => d.id))
+    // 两侧统一小写比较（模式串带 /i，捕获名是原样大小写；与桌面端同规则）
+    const ids = new Set(data.documents.map(d => d.id.toLowerCase()))
     for (const sub of ['files', 'covers']) {
       let entries
       try { entries = await fs.readdir(sub) } catch { continue }
       for (const e of entries) {
         const m = APP_FILE_RE.exec(e.name)
-        if (!m || ids.has(m[1])) continue
+        if (!m || ids.has(m[1].toLowerCase())) continue
         await fs.rm(`${sub}/${e.name}`)
       }
     }

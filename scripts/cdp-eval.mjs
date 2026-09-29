@@ -5,13 +5,17 @@
 // WebView 的 DevTools socket 名带进程号，这里自动探测，避免每次手查。
 import { spawnSync } from 'node:child_process'
 
-const sock = spawnSync('adb', ['shell', 'cat /proc/net/unix'], { encoding: 'utf8' })
-  .stdout.match(/@(webview_devtools_remote_\d+)/)?.[1]
+const out = spawnSync('adb', ['shell', 'cat /proc/net/unix'], { encoding: 'utf8' })
+const sock = String(out.stdout || '').match(/@(webview_devtools_remote_\d+)/)?.[1]
 if (!sock) {
-  console.error('未找到 WebView devtools socket（应用要在前台运行）')
+  console.error('未找到 WebView devtools socket（adb 不可用，或应用未在前台运行）')
   process.exit(1)
 }
-spawnSync('adb', ['forward', 'tcp:9222', `localabstract:${sock}`], { stdio: 'ignore' })
+const fwd = spawnSync('adb', ['forward', 'tcp:9222', `localabstract:${sock}`], { stdio: 'ignore' })
+if (fwd.status !== 0) {
+  console.error('adb forward 失败（9222 端口可能被占用）')
+  process.exit(1)
+}
 
 const list = await (await fetch('http://127.0.0.1:9222/json')).json()
 const page = list.find(t => t.type === 'page' && t.url.includes('localhost'))

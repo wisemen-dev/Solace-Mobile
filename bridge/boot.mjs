@@ -99,8 +99,10 @@ async function importDialog () {
   let entries = null
   try {
     const r = await pickPdfs()
-    if (!r.canceled) entries = r.files || []
-  } catch { /* 走兜底 */ }
+    // 用户取消：直接结束（entries 保持 null 会落进下面兜底，再弹一次选择器）
+    if (r.canceled) return { imported: [], errors: [], duplicates: [] }
+    entries = r.files || []
+  } catch { /* 原生选择器异常：回落 WebView 文件选择 */ }
   const files = entries || await pickPdfFiles()
   for (const f of files) {
     try {
@@ -243,7 +245,7 @@ window.solace = solace
 // （用户从 Olib 下载完切回来的主路径）。节流在 watch.scan 内部
 ready.then(() => {
   setTimeout(() => watch.scan({ force: true }).catch(() => {}), 3000)
-})
+}).catch(() => {}) // init 失败已有错误页兜底，这里避免额外的 unhandled rejection 噪声
 App.addListener('appStateChange', ({ isActive }) => {
   if (isActive) watch.scan().catch(() => {})
 })
@@ -269,6 +271,8 @@ const dialogStack = []
   }, true)
 }
 
+// 「再按一次退出」的计时只在根界面有效：被浮层消费掉的返回键一律清零，
+// 否则关掉预览/抽屉后 2 秒内再按会直接退出（与防误触意图相悖）
 let lastBackAt = 0
 
 App.addListener('backButton', () => {
@@ -279,12 +283,14 @@ App.addListener('backButton', () => {
     const ev = new CustomEvent('solace-close-request', { cancelable: true })
     dlg.dispatchEvent(ev)
     if (!ev.defaultPrevented) dlg.close()
+    lastBackAt = 0
     return
   }
   const overlay = document.getElementById('previewOverlay')
   if (overlay && !overlay.hidden) {
     // 走按钮链路：app.js 的 closePreviewAndRefresh 会先落库进度再刷新
     document.getElementById('btnPreviewClose')?.click()
+    lastBackAt = 0
     return
   }
   const sidebar = document.querySelector('.sidebar')
@@ -292,6 +298,7 @@ App.addListener('backButton', () => {
     sidebar.classList.remove('open')
     const bd = document.getElementById('drawerBackdrop')
     if (bd) bd.hidden = true
+    lastBackAt = 0
     return
   }
   // 根界面：再按一次退出（Android 惯例，防误触）；2 秒窗口
@@ -319,4 +326,4 @@ ready.then(async () => {
       clearInterval(timer)
     }
   }, 250)
-})
+}).catch(() => {})

@@ -34,6 +34,14 @@ document.body.addEventListener('click', (e) => {
   setTimeout(closeDrawer, 140)
 })
 
+/* ========== 桌面专属设置行隐藏（:has() 的等价运行时实现） ========== */
+
+// 原以 .settings-row:has(#setRootPath) 等选择器隐藏；:has() 需要较新的
+// WebView，改为运行时等价隐藏（元素随设置面板静态存在，加载时即可处理）
+for (const id of ['setRootPath', 'setPdfReader', 'setTool']) {
+  document.getElementById(id)?.closest('.settings-row')?.style.setProperty('display', 'none')
+}
+
 /* ================= 预览手势：滑动翻页 + 边缘点按翻页 ================= */
 
 // 用 Pointer Events 而非 Touch Events：previewBody 是 overflow:auto 的
@@ -43,24 +51,28 @@ const previewBody = $('#previewBody')
 const btnNext = $('#btnNextPage')
 const btnPrev = $('#btnPrevPage')
 
-let ptrX = 0
-let ptrY = 0
-let ptrT = 0
-let ptrId = -1
+// 活跃指针集合：第二根手指落下即放弃本轮手势并复位——双指轻点/搭屏
+// （横屏双手持机时很常见）不应被当成单指点按或滑动误翻页
+const activePtrs = new Set()
+let ptr = null // 单指手势起点 { id, x, y, t }
 
 previewBody.addEventListener('pointerdown', (e) => {
-  ptrId = e.pointerId
-  ptrX = e.clientX
-  ptrY = e.clientY
-  ptrT = Date.now()
+  activePtrs.add(e.pointerId)
+  if (activePtrs.size > 1) {
+    ptr = null
+    return
+  }
+  ptr = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() }
 }, { passive: true })
 
 previewBody.addEventListener('pointerup', (e) => {
-  if (e.pointerId !== ptrId) return
-  ptrId = -1
-  const dx = e.clientX - ptrX
-  const dy = e.clientY - ptrY
-  const dt = Date.now() - ptrT
+  activePtrs.delete(e.pointerId)
+  if (!ptr || e.pointerId !== ptr.id) return
+  const p = ptr
+  ptr = null
+  const dx = e.clientX - p.x
+  const dy = e.clientY - p.y
+  const dt = Date.now() - p.t
   const dist = Math.hypot(dx, dy)
 
   // 快速点按（非滑动）：左右 20% 是翻页热区，中央留给原生点击行为
@@ -79,7 +91,10 @@ previewBody.addEventListener('pointerup', (e) => {
   }
 }, { passive: true })
 
-previewBody.addEventListener('pointercancel', () => { ptrId = -1 }, { passive: true })
+previewBody.addEventListener('pointercancel', (e) => {
+  activePtrs.delete(e.pointerId)
+  if (ptr && e.pointerId === ptr.id) ptr = null
+}, { passive: true })
 
 /* ================= 内置笔记编辑器（桌面端经 Typora 打开的等价物） ===== */
 

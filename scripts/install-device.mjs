@@ -18,6 +18,10 @@ function run (cmd, args, opts = {}) {
 }
 
 if (process.argv.includes('--rebuild')) {
+  // 与 npm run apk 同链：重建桥 → 资产同步进 Android 工程 → 出包。
+  // 只跑 gradle 会拿旧 assets 出包，静默装出陈旧版本
+  run('node', [join(root, 'scripts/build-bridge.mjs')])
+  run('cmd', ['/c', 'npx', 'cap', 'sync', 'android'], { cwd: root })
   run('node', [join(root, 'scripts/build-apk.mjs')])
 }
 

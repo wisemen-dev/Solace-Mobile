@@ -17,6 +17,23 @@ async function statOf (p) {
   return Filesystem.stat({ path: abs(p), directory: DIR })
 }
 
+// 原子写：临时文件 + 重命名，与桌面端 atomicWriteFile 同语义。
+// 同一目标串行化：WebView 里多个异步写可交错（A 写 tmp、B 写 tmp、A 先 rename
+// 把 tmp 搬走 → B rename 失败）；固定 tmp 名保持不变，崩溃残留仍可被启动清扫识别
+const writeChains = new Map()
+async function writeFileAtomicText (p, text) {
+  const prev = writeChains.get(p) || Promise.resolve()
+  const run = prev.then(async () => {
+    const tmp = `${p}.tmp`
+    await Filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 })
+    await Filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR })
+  })
+  const tail = run.then(() => {}, () => {})
+  writeChains.set(p, tail)
+  tail.then(() => { if (writeChains.get(p) === tail) writeChains.delete(p) })
+  return run
+}
+
 export const fs = {
   // 文本读写（library.json、索引分片、笔记）
   async readFileText (p) {
@@ -28,12 +45,7 @@ export const fs = {
     const r = await Filesystem.readFile({ path: abs(p), directory: DIR })
     return r.data
   },
-  // 原子写：临时文件 + 重命名，与桌面端 atomicWriteFile 同语义
-  async writeFileAtomicText (p, text) {
-    const tmp = `${p}.tmp`
-    await Filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 })
-    await Filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR })
-  },
+  writeFileAtomicText,
   async writeText (p, text) {
     await Filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 })
   },
