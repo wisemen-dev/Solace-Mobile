@@ -150,3 +150,59 @@ body,
   user-select: text;
   -webkit-user-select: text;
 }
+
+/* ---------- 手写标注层（ink.js 动态创建） ---------- */
+/* 墨迹层：绝对定位对齐 #previewCanvas（previewBody 已 position:relative）。
+   z-index 2——在页面 canvas 之上、错误浮层(5)与目录/笔记面板(6)之下。
+   touch-action:none：墨迹层的触摸全部给绘制（原生滚动让位，P3 做双指滚动） */
+.ink-layer {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+  pointer-events: auto;
+}
+.ink-layer[hidden] { display: none; }
+.ink-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* 指针事件统一由 .ink-layer 接收 */
+}
+
+/* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
+   深浅色主题下都可读 */
+.ink-toolbar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 74px; /* preview-foot(58px) + 间隙 */
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(18, 22, 27, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.ink-toolbar[hidden] { display: none; }
+.ink-btn {
+  border: none;
+  background: transparent;
+  color: #e8edf2;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ink-btn:active { background: rgba(255, 255, 255, 0.12); }
+.ink-btn.active {
+  background: var(--accent, #e03131);
+  color: #fff;
+}
+.ink-btn + .ink-btn { margin-left: 2px; }

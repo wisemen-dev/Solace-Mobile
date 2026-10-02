@@ -1,7 +1,9 @@
 // 平板端触屏适配层：与桌面渲染代码并存，不改其结构。
 // 1. 侧栏抽屉（窄屏） 2. 预览滑动/边缘点按翻页 3. 内置笔记编辑器
 // 4. 抽屉内选择后自动收起 5. Android 返回键语义（桥负责，这里只兜底）
+// 手写标注层（ink.js）独立成模块，在此挂载
 import { askConfirm } from '../dialog.js'
+import './ink.js'
 
 const $ = (sel) => document.querySelector(sel)
 
@@ -52,11 +54,13 @@ const btnNext = $('#btnNextPage')
 const btnPrev = $('#btnPrevPage')
 
 // 活跃指针集合：第二根手指落下即放弃本轮手势并复位——双指轻点/搭屏
-// （横屏双手持机时很常见）不应被当成单指点按或滑动误翻页
+// （横屏双手持机时很常见）不应被当成单指点按或滑动误翻页。
+// 标注模式下（window.inkActive）单指让位给绘制，手势逻辑整体短路
 const activePtrs = new Set()
 let ptr = null // 单指手势起点 { id, x, y, t }
 
 previewBody.addEventListener('pointerdown', (e) => {
+  if (window.inkActive) return
   activePtrs.add(e.pointerId)
   if (activePtrs.size > 1) {
     ptr = null
@@ -67,6 +71,7 @@ previewBody.addEventListener('pointerdown', (e) => {
 
 previewBody.addEventListener('pointerup', (e) => {
   activePtrs.delete(e.pointerId)
+  if (window.inkActive) return
   if (!ptr || e.pointerId !== ptr.id) return
   const p = ptr
   ptr = null

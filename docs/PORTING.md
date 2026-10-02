@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 31 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 34 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -34,9 +34,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 31 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 34 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
-### index.html（9 处）
+### index.html（10 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
@@ -47,13 +47,20 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js）
 8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI）
 9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
+10. 预览顶栏 `#btnNotes` 后加 `#btnInk`「✏️ 标注」按钮（手写标注入口，
+    v0.4.0）
 
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 
-### preview.js（1 处，v0.3.0）
-预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
-优先、字节路径回落；会话守卫保留在异步解析之后。
+### preview.js（3 处）
+1. 预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
+   优先、字节路径回落；会话守卫保留在异步解析之后（v0.3.0）
+2. 页面布局尺寸设定后 dispatch `solace-ink-layout`（detail：docId/页码/
+   设备像素 w·h/显示 cssW·cssH/存储坐标 baseW·baseH）——手写标注层
+   （mobile.js → ink.js）据此对齐墨迹画布并换算坐标（v0.4.0）
+3. `closePreview()` 开头 dispatch `solace-ink-close`——墨迹层冲刷保存并
+   弃内存模型，重开从盘上重读（v0.4.0）
 
 ### covers.js（2 处，v0.3.0）
 1. 封面生成的 PDF 加载同上 URL 直读

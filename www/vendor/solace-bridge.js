@@ -2191,6 +2191,76 @@
     return { list, create, read, write, trash };
   }
 
+  // bridge/annotations-core.mjs
+  function createAnnotations({ fs: fs2 }) {
+    function docFile(docId) {
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ""))) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
+      return `annotations/${docId}.json`;
+    }
+    function validate(data) {
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("\u975E\u6CD5\u6807\u6CE8\u6570\u636E");
+      if (data.version !== 1) throw new Error("\u4E0D\u652F\u6301\u7684\u6807\u6CE8\u6570\u636E\u7248\u672C");
+      if (!data.pages || typeof data.pages !== "object" || Array.isArray(data.pages)) throw new Error("\u975E\u6CD5\u6807\u6CE8\u9875\u8868");
+      for (const key of Object.keys(data.pages)) {
+        if (!/^\d{1,5}$/.test(key) || Number(key) < 1) throw new Error("\u975E\u6CD5\u9875\u7801\u952E");
+        const page = data.pages[key];
+        if (!page || typeof page !== "object" || Array.isArray(page)) throw new Error("\u975E\u6CD5\u9875\u6570\u636E");
+        if (!(Number.isFinite(page.w) && page.w > 0) || !(Number.isFinite(page.h) && page.h > 0)) throw new Error("\u975E\u6CD5\u9875\u5C3A\u5BF8");
+        if (!Array.isArray(page.strokes)) throw new Error("\u975E\u6CD5\u7B14\u8FF9\u5217\u8868");
+        for (const s2 of page.strokes) {
+          if (!s2 || typeof s2 !== "object" || Array.isArray(s2)) throw new Error("\u975E\u6CD5\u7B14\u8FF9");
+          if (s2.tool !== "pen" && s2.tool !== "hl") throw new Error("\u975E\u6CD5\u7B14\u8FF9\u5DE5\u5177");
+          if (typeof s2.color !== "string" || !s2.color) throw new Error("\u975E\u6CD5\u7B14\u8FF9\u989C\u8272");
+          if (!(Number.isFinite(s2.width) && s2.width > 0)) throw new Error("\u975E\u6CD5\u7B14\u8FF9\u5BBD\u5EA6");
+          if (s2.pressure !== 0 && s2.pressure !== 1) throw new Error("\u975E\u6CD5\u538B\u611F\u6807\u8BB0");
+          if (!Array.isArray(s2.pts)) throw new Error("\u975E\u6CD5\u70B9\u96C6");
+        }
+      }
+    }
+    async function read(docId) {
+      const p = docFile(docId);
+      if (!await fs2.exists(p)) return { version: 1, pages: {} };
+      const raw = await fs2.readFileText(p);
+      try {
+        const data = JSON.parse(raw);
+        validate(data);
+        return data;
+      } catch {
+        let n = 1;
+        while (await fs2.exists(`annotations/${docId}.corrupt-${n}.json`)) n++;
+        try {
+          await fs2.rename(p, `annotations/${docId}.corrupt-${n}.json`);
+        } catch {
+        }
+        return { version: 1, pages: {}, notice: "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 annotations \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" };
+      }
+    }
+    let writeChain = Promise.resolve();
+    async function write(docId, data) {
+      validate(data);
+      const run = writeChain.then(() => writeLocked(docId, data));
+      writeChain = run.then(() => {
+      }, () => {
+      });
+      return run;
+    }
+    async function writeLocked(docId, data) {
+      const p = docFile(docId);
+      const pages = {};
+      for (const key of Object.keys(data.pages)) {
+        if (data.pages[key].strokes.length) pages[key] = data.pages[key];
+      }
+      if (!Object.keys(pages).length) {
+        if (!await fs2.rm(p)) throw new Error("\u5220\u9664\u6807\u6CE8\u6587\u4EF6\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09");
+        return true;
+      }
+      await fs2.mkdirp("annotations");
+      await fs2.writeFileAtomicText(p, JSON.stringify({ version: 1, pages }));
+      return true;
+    }
+    return { read, write };
+  }
+
   // bridge/sha256.mjs
   async function sha256Hex(data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -2391,6 +2461,7 @@
   };
   var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath });
   var notes = createNotes({ fs });
+  var annotations = createAnnotations({ fs });
   var watch = createWatch({ lib, fs, getSettings: () => lib.getData().settings || {} });
   var ready = lib.init();
   ready.catch((err) => {
@@ -2572,6 +2643,9 @@
     // 移动端内置编辑器专用：读写笔记正文
     readNote: gate((id, file) => notes.read(id, file)),
     writeNote: gate((id, file, text) => notes.write(id, file, text)),
+    // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
+    readAnnotations: gate((id) => annotations.read(id)),
+    writeAnnotations: gate((id, data) => annotations.write(id, data)),
     // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
     getStartupNotice: () => lib.getStartupNotice()
   };

@@ -26,3 +26,20 @@ await build({
 
 // write:true（默认）时 esbuild 不返回 outputFiles，体积直接从产物读
 console.log(`solace-bridge.js ${(statSync(outfile).size / 1024).toFixed(1)} KB`)
+
+// perfect-freehand（MIT）单独打包成 ESM：ink.js 经相对路径 import，不进
+// 桥 bundle（桥是 IIFE 经典脚本，全局 window.solace；墨迹库保持模块化）
+const pfOut = join(root, 'www/vendor/perfect-freehand.js')
+await build({
+  entryPoints: [join(root, 'node_modules/perfect-freehand/dist/esm/index.mjs')],
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2022',
+  outfile: pfOut,
+  legalComments: 'none',
+  minify: true,
+  sourcemap: false,
+  logLevel: 'info'
+})
+console.log(`perfect-freehand.js ${(statSync(pfOut).size / 1024).toFixed(1)} KB`)

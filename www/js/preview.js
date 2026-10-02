@@ -85,6 +85,7 @@ export function closePreview () {
   // 关闭前把还没落库的进度立刻写掉，避免丢掉最后翻到的那一页。
   // 返回落库的 Promise：调用方（app.js）须等它完成再刷新列表，
   // 否则 getLibrary 与 setProgress 并发竞争，会读回旧进度。
+  window.dispatchEvent(new CustomEvent('solace-ink-close'))
   const flushed = flushProgress()
   resetDocument()
   closeNotes()
@@ -176,6 +177,13 @@ async function renderPage () {
     canvas.height = fitted.height
     canvas.style.width = (fitted.viewport.width / dpr) + 'px'
     canvas.style.height = (fitted.viewport.height / dpr) + 'px'
+    window.dispatchEvent(new CustomEvent('solace-ink-layout', { detail: {
+      docId: currentDoc && currentDoc.id,
+      page: targetPage,
+      w: fitted.width, h: fitted.height,
+      cssW: fitted.viewport.width / dpr, cssH: fitted.viewport.height / dpr,
+      baseW: base.width, baseH: base.height
+    } }))
 
     const task = page.render({ canvasContext: canvas.getContext('2d'), viewport: fitted.viewport })
     state.task = task

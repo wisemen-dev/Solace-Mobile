@@ -94,6 +94,9 @@ patch('index.html', [
   // 桥（经典脚本，同步执行，先于一切模块）+ 移动端适配模块 + 原有 app.js
   ['  <script type="module" src="js/app.js"></script>',
    '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>'],
+  // 手写标注入口按钮（预览顶栏；ink.js 由 mobile.js 静态 import 挂载）
+  ['        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>',
+   '        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>\n        <button id="btnInk" class="btn-ghost" title="手写标注">✏️ 标注</button>'],
   // 监视文件夹输入框：平板端只读（目录经 SAF 授权选择，不能手输 URI）
   ['<input id="setWatchFolder" class="field-input" type="text" placeholder="D:\\Downloads\\books" />',
    '<input id="setWatchFolder" class="field-input" type="text" readonly placeholder="点「浏览…」选择 Olib 的保存目录" />'],
@@ -126,6 +129,7 @@ patch('js/pdfjs.js', [
 
 // 加载点统一换 URL 直读（_capacitor_file_ 由 WebView 原生拦截流式返回，
 // 内容不过 JS 桥；桌面端同步渲染层无此方法，自动回落字节路径）
+// 布局完成/关闭预览两个事件供墨迹层（ink.js）对齐与冲刷（solace-ink-*）
 patch('js/preview.js', [
   [`    const buffer = await window.solace.readPreview(id, sessionId)
     if (!isCurrentSession(token)) return
@@ -137,7 +141,27 @@ patch('js/preview.js', [
       ? { url: await window.solace.getDocUrl(id), ...docParams }
       : { data: await window.solace.readPreview(id, sessionId), ...docParams }
     if (!isCurrentSession(token)) return
-    const task = pdfjsLib.getDocument(loadOpts)`]
+    const task = pdfjsLib.getDocument(loadOpts)`],
+  // 页面布局尺寸设定后通知墨迹层：w/h 设备像素尺寸，cssW/cssH 显示尺寸，
+  // baseW/baseH 是存储坐标系（scale=1 视口）尺寸——kx 由两者相除得出
+  [`    canvas.style.width = (fitted.viewport.width / dpr) + 'px'
+    canvas.style.height = (fitted.viewport.height / dpr) + 'px'`,
+   `    canvas.style.width = (fitted.viewport.width / dpr) + 'px'
+    canvas.style.height = (fitted.viewport.height / dpr) + 'px'
+    window.dispatchEvent(new CustomEvent('solace-ink-layout', { detail: {
+      docId: currentDoc && currentDoc.id,
+      page: targetPage,
+      w: fitted.width, h: fitted.height,
+      cssW: fitted.viewport.width / dpr, cssH: fitted.viewport.height / dpr,
+      baseW: base.width, baseH: base.height
+    } }))`],
+  // 关闭预览：墨迹层冲刷保存并复位（在进度落库之前，避免与 closePreview
+  // 的异步 flush 竞争——墨迹冲刷自身是异步的，失败各自 toast）
+  [`  const flushed = flushProgress()
+  resetDocument()`,
+   `  window.dispatchEvent(new CustomEvent('solace-ink-close'))
+  const flushed = flushProgress()
+  resetDocument()`]
 ])
 
 patch('js/covers.js', [
@@ -326,7 +350,7 @@ btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×9, pdfjs.js×4, preview.js×1, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共31）')
+console.log('补丁：index.html×10, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共34）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

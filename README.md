@@ -57,7 +57,7 @@ npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
-`scripts/sync-www.mjs` 搬运并施加 **31 处移动端补丁**（锚点校验：上游改动
+`scripts/sync-www.mjs` 搬运并施加 **34 处移动端补丁**（锚点校验：上游改动
 导致锚点消失会显式报错，防止静默漂移）。桌面端更新后：
 
 ```bash
@@ -93,14 +93,16 @@ SolaceMobile/
 ├── bridge/          # window.solace 桥接层源码（esbuild 打包进 www/vendor/）
 │   ├── library-core.mjs   # 桌面端 library.js 的异步移植（数据格式一致）
 │   ├── notes-core.mjs     # 笔记数据层移植
+│   ├── annotations-core.mjs # 手写标注数据层（annotations/<id>.json）
 │   ├── fs-adapter.mjs     # Capacitor Filesystem 封装（Directory.External）
 │   ├── olib-watch.mjs     # 自动入库：SAF 目录补扫（watcher.js 的等价物）
 │   ├── native.mjs         # SolaceNative 原生插件的 JS 封装
 │   ├── boot.mjs           # window.solace 组装 + 返回键 + 补扫触发
 │   └── base64.mjs / sha256.mjs
 ├── mobile-web/      # 移动端适配层（sync 时拷入 www/）
-│   ├── css/mobile.css     # 抽屉侧栏、触屏控件、悬停改点按
+│   ├── css/mobile.css     # 抽屉侧栏、触屏控件、悬停改点按、墨迹层
 │   └── js/mobile/mobile.js# 手势、内置笔记编辑器、抽屉
+│   └── js/mobile/ink.js   # 手写标注层：双 canvas 墨迹 + perfect-freehand
 ├── www/             # Capacitor webDir：桌面渲染层 + 补丁 + vendor 资产
 ├── android/         # Capacitor Android 工程（含 SolaceNativePlugin.java）
 ├── test/            # 数据层单测（node:test + 内存 fs）
@@ -118,6 +120,7 @@ SolaceMobile/
 ├── files/         # PDF 副本（UUID 命名，与桌面端同规则）
 ├── covers/        # 封面缩略图缓存
 ├── textindex/     # 全文索引分片（可删，自动重建）
+├── annotations/   # 手写标注（移动端专有，桌面端静默忽略）
 └── notes/         # 每本书的 Markdown 笔记
 ```
 
