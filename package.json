@@ -10,7 +10,7 @@
     "bridge": "node scripts/build-bridge.mjs",
     "www": "node scripts/sync-www.mjs",
     "sync": "node scripts/build-bridge.mjs && npx cap sync android",
-    "test": "node --test test/annotations-core.test.js test/library-core.test.js",
+    "test": "node --test test/annotations-core.test.js test/library-core.test.js test/link-md.test.js",
     "android": "npx cap open android",
     "apk": "node scripts/build-bridge.mjs && npx cap sync android && node scripts/build-apk.mjs",
     "install:device": "node scripts/install-device.mjs",
