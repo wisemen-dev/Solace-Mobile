@@ -44,7 +44,8 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 side-foot 收尾行防上游新增
    aside 时静默重复插入）
 6. 底部加 `vendor/solace-bridge.js`（经典脚本，先于模块执行）
-7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js）
+7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js；与第 6 条同一锚点一次替换，
+   合计 1 对）
 8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI）
 9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
 10. 预览顶栏 `#btnNotes` 后加 `#btnInk`「✏️ 标注」按钮（手写标注入口，

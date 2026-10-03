@@ -24,6 +24,7 @@ window.inkActive = false // mobile.js 的翻页/点按手势在标注模式下�
 let lastLayout = null    // 最近一次 layout 事件 detail（含 docId/page/尺寸）
 let book = { version: 1, pages: {} } // 整本书内存模型；防抖写盘
 let loadedDoc = null     // book 当前归属的 docId（null = 空置，等 layout 对账）
+let loadSeq = 0          // 内存模型代数：每次归位/关闭 +1，作废旧的在途读取
 let dirty = false
 let saveTimer = 0
 let pendingWrite = null  // 在途写盘；loadBook 前须等它完成，防旧盘态覆盖新内存
@@ -80,6 +81,8 @@ function setActive (on) {
     }
     // applyLayout 重设 canvas 尺寸必清空位图（即使尺寸未变），必须重画
     redrawStatic()
+  } else {
+    flushSave() // 退出标注立即冲刷（不等 1.5s 防抖）
   }
   // 退出不隐藏墨迹层：批注在阅读模式持续可见（passive = 手势穿透）
   updateLayerVisibility()
@@ -101,15 +104,24 @@ window.addEventListener('solace-ink-layout', (e) => {
   updateLayerVisibility()
 })
 
-window.addEventListener('solace-ink-close', () => {
+window.addEventListener('solace-ink-close', async () => {
   if (!layer) return
-  flushSave()
   active = false
   window.inkActive = false
   layer.hidden = true
   layer.classList.remove('ink-passive')
   toolbar.hidden = true
-  // 关预览即弃内存模型：重开（哪怕同一本书）从盘上重读，内存永不比盘旧
+  // 先冲刷再决定是否弃模型：flushSave 可能先补写重试队列（含 await），
+  // 若提前同步重置 loadedDoc，守卫会把当前脏书拦下——笔迹静默丢失。
+  // 冲刷失败（dirty 被置回）则保留模型不弃：重开同书直接复用（内存 ⊇ 盘），
+  // 换书走 syncBookToDoc 的既有重试队列；成功才作废在途读取并弃模型
+  const layoutAtClose = lastLayout
+  await flushSave()
+  if (pendingWrite) await pendingWrite.catch(() => {})
+  if (dirty) return
+  // 冲刷期间用户已重开（新 layout 已到）：模型归新会话，不得再清
+  if (lastLayout !== layoutAtClose) return
+  loadSeq++
   loadedDoc = null
   book = { version: 1, pages: {} }
 })
@@ -143,10 +155,10 @@ function syncBookToDoc (docId) {
   clearTimeout(saveTimer)
   saveTimer = 0
   book = { version: 1, pages: {} }
-  loadBook(docId)
+  loadBook(docId, ++loadSeq)
 }
 
-async function loadBook (docId) {
+async function loadBook (docId, seq) {
   // 在途写盘先等完（退出标注→立刻重进的窗口：不等会读回旧盘态覆盖内存）
   if (pendingWrite) await pendingWrite.catch(() => {})
   let res = null
@@ -155,7 +167,9 @@ async function loadBook (docId) {
   } catch (err) {
     window.toast?.(`标注读取失败：${err.message || err}`)
   }
-  // 读取期间又换书/关预览：本次结果作废（book 已归属别的 docId）
+  // 代数作废：期间发生过归位/关闭（换书、关后重开——同书快速关开会有
+  // 两个在途读取，仅比对 docId 区分不开，旧结果合并会把同一批笔迹翻倍）
+  if (seq !== loadSeq) return
   if (loadedDoc !== docId) return
   if (res) {
     if (res.notice) window.toast?.(res.notice)

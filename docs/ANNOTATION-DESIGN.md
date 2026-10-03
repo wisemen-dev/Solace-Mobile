@@ -48,8 +48,7 @@ www/index.html（补丁 +1）
 
 www/js/preview.js（补丁 +2）
   ├─ 页面布局尺寸设定后 dispatch 'solace-ink-layout'
-  │    detail: { docId, sessionId, token, page, total,
-  │              kx, w, h, cssW, cssH, baseW, baseH }
+  │    detail: { docId, page, w, h, cssW, cssH, baseW, baseH }
   └─ closePreview() 内 dispatch 'solace-ink-close'（冲刷保存）
 
 mobile-web/js/mobile/ink.js（新增，~450 行，sync 原样拷入）
@@ -142,7 +141,8 @@ SolaceLibrary/
 ### 6.1 入口与模式切换
 
 - 预览顶栏 `#btnNotes` 旁新增「✏️ 标注」按钮（index.html 补丁 +1，锚点 `#btnNotes` 行，稳定）。
-- 点击进入标注模式：工具栏从底部滑入（墨迹层出现并加载本书墨迹），再点「完成」退出（冲刷保存，工具栏滑出，墨迹层保留淡显 0.5s 后隐藏——不退出也能看见批注）。
+- 点击进入标注模式：工具栏从底部滑入（墨迹层出现并加载本书墨迹），再点「完成」退出（立即冲刷保存，工具栏滑出）。
+- 退出后墨迹**常显**于页面（阅读模式可见批注；2026-10-03 真机测试后拍板，原「淡显后隐藏」废弃）——有墨迹的页显示墨迹层（`ink-passive`：pointer-events 关闭，滚动/翻页手势穿透），无墨迹的页不占交互；关预览才隐藏。
 - 标注模式下顶栏按钮（目录/笔记/外部打开）保持可用；目录/笔记面板打开时自动暂挂绘制（面板关闭恢复），不强制互斥退出。
 
 ### 6.2 工具栏（动态创建，不占 index.html）
@@ -200,11 +200,11 @@ Saber 的做法照搬思路：荧光笔笔画先画进**离屏层**（不透明�
 ### 7.4 会话守卫
 
 `solace-ink-layout` 事件携带 docId；ink.js 以 `loadedDoc`（内存模型当前归属）
-对账——事件到达时若与内存归属不符（换书/关后重开/激活早于首次 layout），
-先冲刷旧书再弃内存重读，加载在途的旧结果按 docId 作废。与 token 校验等价
-（docId 变化必经新 layout，而 dispatch 点在 preview.js 补丁锚点内、上游已有
-双重 isCurrentSession 拦截，过期渲染无法走到 dispatch），且顺带覆盖
-「同书重开」场景。
++ `loadSeq`（模型代数）双重对账——归位/关闭时代数 +1，在途读取按代数作废
+（同书快速关开会有两个在途读取，仅比 docId 区分不开，旧结果合并会把同一批
+笔迹翻倍）。事件到达时若与内存归属不符（换书/关后重开/激活早于首次
+layout），先冲刷旧书再弃内存重读。dispatch 点在 preview.js 补丁锚点内、
+上游已有双重 isCurrentSession 拦截，过期渲染无法走到 dispatch。
 
 ### 7.5 内存预算
 

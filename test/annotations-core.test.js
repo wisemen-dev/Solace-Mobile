@@ -98,6 +98,18 @@ test('损坏后写回不覆盖留档：主文件恢复、留档仍在', async ()
   assert.equal(await fs.exists(`annotations/${ID}.corrupt-1.json`), true)
 })
 
+test('合法 JSON 但结构非法：读侧同样走损坏留档回退', async () => {
+  const { fs, ann } = harness()
+  await fs.mkdirp('annotations')
+  // 能 parse 但 validate 拒绝（页码键非数字）
+  await fs.writeText(`annotations/${ID}.json`, JSON.stringify({ version: 1, pages: { x: {} } }))
+  const res = await ann.read(ID)
+  assert.deepEqual(res.pages, {})
+  assert.ok(res.notice && res.notice.includes('损坏'))
+  assert.equal(await fs.exists(`annotations/${ID}.corrupt-1.json`), true)
+  assert.equal(await fs.exists(`annotations/${ID}.json`), false)
+})
+
 /* ---- 结构校验 ---- */
 
 test('结构校验：非法 payload 拒绝写盘且不落任何文件', async () => {
