@@ -206,3 +206,15 @@ body,
   color: #fff;
 }
 .ink-btn + .ink-btn { margin-left: 2px; }
+
+/* 墨迹 canvas 必须透明：桌面 style.css 的 `.preview-body canvas` 会给
+   页面区所有 canvas 上白底/阴影/圆角（对 PDF 页 canvas 是需要的），
+   墨迹 canvas 被命中会整页盖白。选择器加一层 .ink 前缀抬高特异性覆盖 */
+.preview-body .ink-canvas {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* 阅读模式：墨迹常显但手势穿透（滚动/翻页照常走 previewBody） */
+.ink-layer.ink-passive { pointer-events: none; }

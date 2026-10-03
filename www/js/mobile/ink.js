@@ -74,14 +74,15 @@ function setActive (on) {
   window.inkActive = on
   toolbar.hidden = !on
   if (on) {
-    layer.hidden = false
-    applyLayout(lastLayout)
-    if (lastLayout) syncBookToDoc(lastLayout.docId)
-    else redrawStatic()
-  } else {
-    flushSave()
-    layer.hidden = true
+    if (lastLayout) {
+      applyLayout(lastLayout)
+      syncBookToDoc(lastLayout.docId)
+    }
+    // applyLayout 重设 canvas 尺寸必清空位图（即使尺寸未变），必须重画
+    redrawStatic()
   }
+  // 退出不隐藏墨迹层：批注在阅读模式持续可见（passive = 手势穿透）
+  updateLayerVisibility()
 }
 
 document.getElementById('btnInk')?.addEventListener('click', () => setActive(!active))
@@ -91,11 +92,13 @@ document.getElementById('btnInk')?.addEventListener('click', () => setActive(!ac
 window.addEventListener('solace-ink-layout', (e) => {
   const d = e.detail
   if (!d || !d.docId) return
+  ensureDom()
+  if (!layer) return
   lastLayout = d
-  if (!active || !layer) return
-  syncBookToDoc(d.docId)
+  syncBookToDoc(d.docId) // 阅读模式也要加载墨迹数据（换书才真正读盘）
   applyLayout(d)
   redrawStatic()
+  updateLayerVisibility()
 })
 
 window.addEventListener('solace-ink-close', () => {
@@ -104,6 +107,7 @@ window.addEventListener('solace-ink-close', () => {
   active = false
   window.inkActive = false
   layer.hidden = true
+  layer.classList.remove('ink-passive')
   toolbar.hidden = true
   // 关预览即弃内存模型：重开（哪怕同一本书）从盘上重读，内存永不比盘旧
   loadedDoc = null
@@ -112,11 +116,21 @@ window.addEventListener('solace-ink-close', () => {
 
 /* ================= 数据加载与保存 ================= */
 
+// 墨迹层可见性：标注模式必显；阅读模式仅当当前页有墨迹时显示（passive：
+// pointer-events 关闭，滚动/翻页手势穿透到 previewBody）
+function updateLayerVisibility () {
+  if (!layer || !lastLayout) return
+  const pageObj = book.pages[String(lastLayout.page)]
+  const hasInk = !!(pageObj && pageObj.strokes.length)
+  layer.hidden = !(active || hasInk)
+  layer.classList.toggle('ink-passive', !active)
+}
+
 // book 与当前 docId 的对账：换书/关后重开/激活早于首次 layout 都经此归位。
 // 旧书若脏：先落盘再换（此刻 book/loadedDoc 仍属于旧书）；写失败入重试
 // 队列（快照已脱离引用，不会污染新书的 dirty 语义）
 function syncBookToDoc (docId) {
-  if (loadedDoc === docId) { redrawStatic(); return }
+  if (loadedDoc === docId) { redrawStatic(); updateLayerVisibility(); return }
   if (loadedDoc && dirty) {
     const oldDoc = loadedDoc
     const oldBook = book
@@ -162,6 +176,7 @@ async function loadBook (docId) {
     book = { version: 1, pages: {} }
   }
   redrawStatic()
+  updateLayerVisibility()
 }
 
 function scheduleSave () {
