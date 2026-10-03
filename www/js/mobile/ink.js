@@ -4,12 +4,39 @@
 // 单位 = 页面单位），渲染时统一乘 kx（设备像素/页面单位）——与 dpr、
 // fitWidth、设备无关，任意倍率重绘不失真。
 //
+// P3：工具栏（笔/荧光笔/橡皮/撤销重做/色板/粗细/清页）、荧光笔「不叠深不
+// 盖字」（离屏并集 + multiply）、会话级撤销栈、双指滚动、返回键退出。
+//
 // 生命周期：preview.js 每次页面布局完成 dispatch 'solace-ink-layout'
 // （detail 携带 docId/页码/尺寸/变换系数），关闭预览 dispatch
 // 'solace-ink-close'。本模块惰性建 DOM：首次进入标注模式才挂墨迹层。
 import { getStroke } from '../../vendor/perfect-freehand.js'
+import { askConfirm } from '../dialog.js'
 
-const PEN = { color: '#e03131', width: 2.5 } // P2 默认红笔；色板/粗细 P3 进工具栏
+// 工具配置：色板与粗细按工具独立（拍板：笔 5 色、荧光笔独立 1 色；粗细三档）
+const TOOLS = {
+  pen: { colors: ['#212529', '#e03131', '#1971c2', '#2f9e44', '#868e96'], widths: [1.5, 2.5, 4.0] },
+  hl: { colors: ['#fff00a'], widths: [8, 12, 18] }
+}
+const TOOL_STATE_KEY = 'solace.ink.tools'
+const ERASE_R = 10 // 橡皮命中半径（页面单位）
+// 工具/颜色/粗细记忆：各工具一套，跨会话保留（localStorage，不进 library.json）
+const toolMemo = { tool: 'pen', pen: { color: '#e03131', width: 2.5 }, hl: { color: '#fff00a', width: 12 } }
+{
+  try {
+    const raw = JSON.parse(localStorage.getItem(TOOL_STATE_KEY) || '{}')
+    if (raw.tool === 'eraser' || TOOLS[raw.tool]) toolMemo.tool = raw.tool
+    for (const t of ['pen', 'hl']) {
+      const m = raw[t]
+      if (m && TOOLS[t].colors.includes(m.color) && TOOLS[t].widths.includes(m.width)) toolMemo[t] = { color: m.color, width: m.width }
+    }
+  } catch { /* 存值损坏回默认 */ }
+}
+let tool = toolMemo.tool
+function saveToolState () {
+  try { localStorage.setItem(TOOL_STATE_KEY, JSON.stringify(toolMemo)) } catch { /* 存不进则仅本次会话生效 */ }
+}
+function curTool () { return toolMemo[tool] }
 
 let host = null          // #previewBody（滚动容器，已 position:relative）
 let pdfCanvas = null     // #previewCanvas（定位锚，尺寸锚）
@@ -37,9 +64,15 @@ const retryWrites = []   // 换书时写失败的旧书快照（docId 已换不�
 let switchFlush = Promise.resolve()
 let failToastAt = 0      // 写失败 toast 节流（持续失败时不刷屏）
 
-let drawing = null       // 活动笔画 { ptr, pts: [{x,y,p}], color, width }
+let drawing = null       // 活动笔画 { ptr, docId, pts:[{x,y,p}], tool, color, width }
 let rafPending = false
 let penDown = false      // 手写笔在屏期间忽略 touch：防手掌误触（已确认用笔）
+let erasing = null       // 橡皮手势 { ptr, page, docId, removed: [{index, stroke}] }
+const pointers = new Map() // 活动指针（双指滚动仲裁）：pointerId → { x, y }
+let scrolling = null     // 双指滚动中：两指中点（页面 client 坐标）
+const undoStack = []     // 会话级操作栈（关预览/换书清空）；op：add / remove
+const redoStack = []
+let hlOff = null         // 荧光笔离屏并集层（重绘时用）
 
 /* ================= DOM（惰性） ================= */
 
@@ -67,11 +100,112 @@ function ensureDom () {
   toolbar.className = 'ink-toolbar'
   toolbar.hidden = true
   toolbar.innerHTML = `
-    <button class="ink-btn ink-tool active" data-tool="pen" title="画笔">✏️ 笔</button>
-    <button class="ink-btn" id="btnInkDone" title="退出标注并保存">✓ 完成</button>`
+    <button class="ink-btn ink-tool" data-tool="pen" title="画笔">✏️ 笔</button>
+    <button class="ink-btn ink-tool" data-tool="hl" title="荧光笔">🖍️ 荧光</button>
+    <button class="ink-btn ink-tool" data-tool="eraser" title="橡皮（划过整笔删除）">🧽 橡皮</button>
+    <span class="ink-sep"></span>
+    <button class="ink-btn" id="btnInkUndo" title="撤销">↶</button>
+    <button class="ink-btn" id="btnInkRedo" title="重做">↷</button>
+    <span class="ink-sep"></span>
+    <button class="ink-btn" id="btnInkPalette" title="颜色"><i class="ink-dot" id="inkDot"></i></button>
+    <button class="ink-btn" id="btnInkWidth" title="粗细">━</button>
+    <span class="ink-sep"></span>
+    <button class="ink-btn" id="btnInkClear" title="清空本页">🗑 清页</button>
+    <button class="ink-btn" id="btnInkDone" title="退出标注并保存">✓ 完成</button>
+    <div class="ink-pop" id="inkPalette" hidden></div>
+    <div class="ink-pop" id="inkWidths" hidden></div>`
   document.getElementById('previewOverlay')?.appendChild(toolbar)
+  toolbar.querySelectorAll('.ink-tool').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)))
   toolbar.querySelector('#btnInkDone').addEventListener('click', () => setActive(false))
-  // P3：荧光笔/橡皮/撤销重做/色板/粗细/清页在此扩展
+  toolbar.querySelector('#btnInkUndo').addEventListener('click', () => doUndo())
+  toolbar.querySelector('#btnInkRedo').addEventListener('click', () => doRedo())
+  toolbar.querySelector('#btnInkClear').addEventListener('click', () => clearPage())
+  toolbar.querySelector('#btnInkPalette').addEventListener('click', () => togglePop('inkPalette'))
+  toolbar.querySelector('#btnInkWidth').addEventListener('click', () => togglePop('inkWidths'))
+  // 弹层外点按收起（toolbar 内点击不关）
+  document.addEventListener('pointerdown', (e) => {
+    if (popOpen && !toolbar.contains(e.target)) closePops()
+  })
+  syncToolbarUI()
+}
+
+/* ---- 工具栏状态与弹层（色板 / 粗细） ---- */
+
+let popOpen = null
+function togglePop (id) {
+  if (popOpen === id) closePops()
+  else openPop(id)
+}
+function openPop (id) {
+  if (tool === 'eraser') return // 橡皮无颜色/粗细
+  closePops()
+  buildPops()
+  popOpen = id
+  document.getElementById(id).hidden = false
+}
+function closePops () {
+  popOpen = null
+  const a = document.getElementById('inkPalette')
+  const b = document.getElementById('inkWidths')
+  if (a) a.hidden = true
+  if (b) b.hidden = true
+}
+function buildPops () {
+  const pal = document.getElementById('inkPalette')
+  pal.innerHTML = ''
+  for (const c of TOOLS[tool].colors) {
+    const b = document.createElement('button')
+    b.className = 'ink-color' + (c === curTool().color ? ' on' : '')
+    b.dataset.color = c
+    b.style.background = c
+    b.title = c
+    b.addEventListener('click', () => {
+      curTool().color = c
+      saveToolState()
+      closePops()
+      syncToolbarUI()
+    })
+    pal.appendChild(b)
+  }
+  const ws = document.getElementById('inkWidths')
+  ws.innerHTML = ''
+  TOOLS[tool].widths.forEach((w, i) => {
+    const b = document.createElement('button')
+    b.className = 'ink-width' + (w === curTool().width ? ' on' : '')
+    b.dataset.width = String(w)
+    b.innerHTML = `<i style="height:${[4, 6, 9][i] || 5}px"></i>`
+    b.title = String(w)
+    b.addEventListener('click', () => {
+      curTool().width = w
+      saveToolState()
+      closePops()
+      syncToolbarUI()
+    })
+    ws.appendChild(b)
+  })
+}
+function setTool (t) {
+  if (t === tool) return
+  if (t !== 'eraser' && !TOOLS[t]) return // 橡皮无颜色/粗细配置，不走 TOOLS
+  tool = t
+  toolMemo.tool = t
+  saveToolState()
+  closePops()
+  syncToolbarUI()
+}
+function syncToolbarUI () {
+  if (!toolbar) return
+  toolbar.querySelectorAll('.ink-tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool))
+  const dot = document.getElementById('inkDot')
+  if (dot) dot.style.background = tool === 'eraser' ? 'transparent' : curTool().color
+  const palBtn = document.getElementById('btnInkPalette')
+  const wBtn = document.getElementById('btnInkWidth')
+  if (palBtn) palBtn.disabled = tool === 'eraser'
+  if (wBtn) wBtn.disabled = tool === 'eraser'
+  const undo = document.getElementById('btnInkUndo')
+  const redo = document.getElementById('btnInkRedo')
+  if (undo) undo.disabled = !undoStack.length
+  if (redo) redo.disabled = !redoStack.length
 }
 
 function setActive (on) {
@@ -128,7 +262,12 @@ window.addEventListener('solace-ink-close', async () => {
   loadSeq++
   loadedDoc = null
   book = emptyBook()
+  clearHistory() // 关预览即会话结束：重开从零开始
 })
+
+// Android 返回键：标注模式激活时优先退出标注（boot.mjs 返回键链派发）。
+// 退出即冲刷保存、无需确认；写失败有 toast + 重试 + 保留模型兜底
+window.addEventListener('solace-ink-exit-request', () => { if (active) setActive(false) })
 
 /* ================= 数据加载与保存 ================= */
 
@@ -148,6 +287,7 @@ function updateLayerVisibility () {
 // 入快照队列；loadBook 读前等链结算。快照已脱离引用，不污染新书的 dirty
 function syncBookToDoc (docId) {
   if (loadedDoc === docId) { redrawStatic(); updateLayerVisibility(); return }
+  clearHistory() // 会话边界：操作栈不跨书（条目只对当前书的页数组有效）
   if (loadedDoc && (dirty || pendingWrite)) {
     const oldDoc = loadedDoc
     const oldBook = book
@@ -173,9 +313,10 @@ async function loadBook (docId, seq) {
   if (pendingWrite) await pendingWrite.catch(() => {})
   // 过期 load 先拦：防止下面的快照回灌被已作废的会话取走
   if (seq !== loadSeq) return
-  // 该书存在换书写失败的快照：快照 ⊇ 盘上态（写从未成功过；P2 笔迹只增
-  // 不减才成立，P3 引入删改需复核），直接作内存基准并置脏补写。读盘会
-  // 读回缺笔迹的旧态，之后任何以内存为准的成功写都会把快照里的笔迹覆盖丢
+  // 该书存在换书写失败的快照：直接作内存基准并置脏补写（2026-10-03 复核：
+  // 含删改仍成立——写从未成功过，快照即内存最新态，其中的「删」是用户意图，
+  // 覆盖盘上旧态正是目的；反之读盘会读回缺笔迹的旧态，之后任何以内存为准
+  // 的成功写都会把快照里的笔迹覆盖丢）
   const wi = retryWrites.findIndex(w => w.docId === docId)
   if (wi >= 0) {
     book = retryWrites.splice(wi, 1)[0].data
@@ -262,39 +403,171 @@ async function flushSave () {
   if (dirty) scheduleSave()
 }
 
-/* ================= 指针绘制 ================= */
+/* ================= 撤销/重做（会话级操作栈） ================= */
 
-function toPageXY (e) {
-  // 显示矩形换算（rect 是实际渲染盒，天然兼容 css 尺寸与滚动）
+// op：{ type:'add', page, index, stroke } | { type:'remove', page, removed:[{index, stroke}] }
+// remove 的下标是「移除当时」的数组下标——撤销按记录反序插回即可精确还原
+
+function pushOp (op) {
+  undoStack.push(op)
+  redoStack.length = 0
+  syncToolbarUI()
+}
+
+function applyOp (op, inverse) {
+  const pageObj = book.pages[op.page]
+  if (!pageObj) return
+  if (op.type === 'add') {
+    if (inverse) {
+      const i = pageObj.strokes[op.index] === op.stroke ? op.index : pageObj.strokes.indexOf(op.stroke)
+      if (i >= 0) pageObj.strokes.splice(i, 1)
+    } else {
+      pageObj.strokes.splice(Math.min(op.index, pageObj.strokes.length), 0, op.stroke)
+    }
+  } else if (inverse) {
+    for (let i = op.removed.length - 1; i >= 0; i--) pageObj.strokes.splice(op.removed[i].index, 0, op.removed[i].stroke)
+  } else {
+    for (const r of op.removed) {
+      const i = pageObj.strokes.indexOf(r.stroke)
+      if (i >= 0) pageObj.strokes.splice(i, 1)
+    }
+  }
+}
+
+// 撤销目标页非当前页时跳过去（复用页码输入框回车跳转）：改了哪能看见
+function ensurePageVisible (page) {
+  if (!lastLayout || String(lastLayout.page) === String(page)) return
+  const input = document.getElementById('pageJump')
+  if (!input) return
+  input.value = String(page)
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+}
+
+function afterHistoryChange (op) {
+  ensurePageVisible(op.page)
+  redrawStatic()
+  updateLayerVisibility()
+  scheduleSave()
+  syncToolbarUI()
+}
+
+function doUndo () {
+  const op = undoStack.pop()
+  if (!op) return
+  applyOp(op, true)
+  redoStack.push(op)
+  afterHistoryChange(op)
+}
+
+function doRedo () {
+  const op = redoStack.pop()
+  if (!op) return
+  applyOp(op, false)
+  undoStack.push(op)
+  afterHistoryChange(op)
+}
+
+function clearHistory () {
+  undoStack.length = 0
+  redoStack.length = 0
+  syncToolbarUI()
+}
+
+async function clearPage () {
+  if (!active || !lastLayout) return
+  const pageKey = String(lastLayout.page)
+  const pageObj = book.pages[pageKey]
+  if (!pageObj || !pageObj.strokes.length) return
+  const r = await askConfirm({ title: '清空本页', text: `清空第 ${pageKey} 页的全部手写标注？（可用「撤销」恢复）`, okText: '清空' })
+  if (!r || !r.ok) return
+  // 对话框期间可能翻页/换书：对账后才动手
+  if (!active || !lastLayout || String(lastLayout.page) !== pageKey || loadedDoc !== lastLayout.docId) return
+  const cur = book.pages[pageKey]
+  if (!cur || !cur.strokes.length) return
+  const removed = cur.strokes.map((s, i) => ({ index: i, stroke: s }))
+  cur.strokes.length = 0
+  pushOp({ type: 'remove', page: pageKey, removed })
+  redrawStatic()
+  updateLayerVisibility()
+  scheduleSave()
+}
+
+/* ================= 指针绘制 / 擦除 / 双指滚动 ================= */
+
+function toPageXY (e, t = tool) {
+  // 显示矩形换算（rect 是实际渲染盒，天然兼容 css 尺寸与滚动）；
+  // 荧光笔恒无压感（恒定宽度），只有真笔的笔工具才记压感
   const r = pdfCanvas.getBoundingClientRect()
   return {
     x: (e.clientX - r.left) / r.width * lastLayout.baseW,
     y: (e.clientY - r.top) / r.height * lastLayout.baseH,
-    p: e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5
+    p: (t === 'pen' && e.pointerType === 'pen') ? (e.pressure || 0.5) : 0.5
   }
+}
+
+function twoMid () {
+  const it = pointers.values()
+  const a = it.next().value
+  const b = it.next().value
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+}
+
+// 面板（目录/笔记）或对话框打开期间不起笔（关闭后恢复）
+function suspendDrawing () {
+  return !!document.querySelector('dialog[open], .toc-panel:not([hidden])')
 }
 
 function onDown (e) {
   if (!active || !lastLayout) return
-  if (e.pointerType === 'pen') penDown = true
-  else if (e.pointerType === 'touch' && penDown) return // 手掌：笔在屏，忽略
-  if (drawing) return // 已有一笔进行中：第二根手指不起新笔（P3 做双指滚动）
   if (e.button !== undefined && e.button !== 0) return
+  if (suspendDrawing()) return
+  if (e.pointerType === 'pen') penDown = true
+  else if (e.pointerType === 'touch' && penDown) return // 手掌：笔在屏，绘制与滚动都让位
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  if (pointers.size >= 2) {
+    // 第二指落下：进行中的笔画作废，进入双指滚动（单指手势在本层已全部让位）
+    if (drawing) { drawing = null; clearLive() }
+    settleErase(erasing)
+    erasing = null
+    e.preventDefault()
+    if (pointers.size === 2) scrolling = twoMid()
+    return
+  }
   e.preventDefault()
-  layer.setPointerCapture?.(e.pointerId)
+  try { layer.setPointerCapture?.(e.pointerId) } catch { /* 合成事件无真实指针，可忽略 */ }
+  if (tool === 'eraser') {
+    erasing = { ptr: e.pointerId, page: String(lastLayout.page), docId: lastLayout.docId, removed: [] }
+    eraseAt(toPageXY(e))
+    return
+  }
   drawing = {
     ptr: e.pointerId,
     docId: lastLayout.docId, // 提交时对账：画到一半换书则这笔作废（坐标系已变）
     pts: [toPageXY(e)],
-    color: PEN.color,
-    width: PEN.width,
+    tool,
+    color: curTool().color,
+    width: curTool().width,
     simPressure: e.pointerType !== 'pen'
   }
 }
 
 function onMove (e) {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  if (scrolling) {
+    if (pointers.size >= 2) {
+      const m = twoMid()
+      host.scrollTop -= m.y - scrolling.y // 双指拖动滚页（自然方向）
+      scrolling = m
+    }
+    return
+  }
+  if (erasing) {
+    if (e.pointerId !== erasing.ptr) return
+    eraseAt(toPageXY(e))
+    return
+  }
   if (!drawing || e.pointerId !== drawing.ptr) return
-  const pt = toPageXY(e)
+  const pt = toPageXY(e, drawing.tool)
   const last = drawing.pts[drawing.pts.length - 1]
   // 抽稀：<1 页面单位的移动不采（2 秒笔画约省一半点）
   if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 1) return
@@ -310,8 +583,87 @@ function onMove (e) {
 
 function onUp (e) {
   if (e.pointerType === 'pen') penDown = false
+  pointers.delete(e.pointerId)
+  if (scrolling) {
+    if (pointers.size < 2) scrolling = null
+    return
+  }
+  if (erasing) {
+    if (e.pointerId !== erasing.ptr) return
+    const g = erasing
+    erasing = null
+    if (settleErase(g)) updateLayerVisibility()
+    return
+  }
   if (!drawing || e.pointerId !== drawing.ptr) return
   commitStroke()
+}
+
+/* ---- 橡皮（笔画级：点距遍历命中整笔删除） ---- */
+
+function segDist2 (x, y, x1, y1, x2, y2) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len2 = dx * dx + dy * dy
+  let t = len2 ? ((x - x1) * dx + (y - y1) * dy) / len2 : 0
+  t = Math.max(0, Math.min(1, t))
+  const ex = x1 + t * dx - x
+  const ey = y1 + t * dy - y
+  return ex * ex + ey * ey
+}
+
+function strokeHit (s, pt, r) {
+  const P = s.pts
+  const step = s.pressure ? 3 : 2
+  const r2 = r * r
+  let px = P[0]
+  let py = P[1]
+  if ((pt.x - px) ** 2 + (pt.y - py) ** 2 <= r2) return true
+  for (let i = step; i + 1 < P.length; i += step) {
+    const x = P[i]
+    const y = P[i + 1]
+    if (segDist2(pt.x, pt.y, px, py, x, y) <= r2) return true
+    px = x
+    py = y
+  }
+  return false
+}
+
+// 擦除手势被中止（第二指落下转滚动 / 中途翻页）：已删的保持删除，但必须补齐
+// 记录与落盘——否则屏幕已删、盘未删，且撤销栈缺条（§12.5 一次手势 = 一条记录）
+function settleErase (g) {
+  if (!g || !g.removed.length || loadedDoc !== g.docId) return false // 书已换：旧模型已弃，无从补写
+  pushOp({ type: 'remove', page: g.page, removed: g.removed })
+  scheduleSave()
+  return true
+}
+
+function eraseAt (pt) {
+  if (!erasing) return
+  // 手势中途翻页/换书：放弃后续擦除；已删的保持删除并补齐记录与落盘（同书），
+  // 书已换则旧模型已弃，无从补写（操作栈随换书清空）
+  if (loadedDoc !== erasing.docId || String(lastLayout.page) !== erasing.page) {
+    const g = erasing
+    erasing = null
+    settleErase(g)
+    redrawStatic()
+    updateLayerVisibility()
+    return
+  }
+  const pageObj = book.pages[erasing.page]
+  if (!pageObj) return
+  let hit = false
+  for (let i = pageObj.strokes.length - 1; i >= 0; i--) {
+    if (strokeHit(pageObj.strokes[i], pt, ERASE_R)) {
+      const [s] = pageObj.strokes.splice(i, 1)
+      erasing.removed.push({ index: i, stroke: s })
+      hit = true
+    }
+  }
+  if (hit) {
+    redrawStatic()
+    updateLayerVisibility()
+  }
 }
 
 function commitStroke () {
@@ -330,7 +682,9 @@ function commitStroke () {
     flat.push(pt.x, pt.y)
     if (!uniform) flat.push(pt.p)
   }
-  pageObj.strokes.push({ tool: 'pen', color: d.color, width: d.width, pressure: uniform ? 0 : 1, pts: flat })
+  const stroke = { tool: d.tool, color: d.color, width: d.width, pressure: uniform ? 0 : 1, pts: flat }
+  pageObj.strokes.push(stroke)
+  pushOp({ type: 'add', page: key, index: pageObj.strokes.length - 1, stroke })
   redrawStatic()
   scheduleSave()
 }
@@ -368,12 +722,13 @@ function decodePts (s) {
 }
 
 function strokeOpts (s, live) {
+  const hl = s.tool === 'hl'
   return {
     size: s.width,
-    thinning: 0.5,
+    thinning: hl ? 0 : 0.5, // 荧光笔恒定宽度（不随速度/压感粗细）
     smoothing: 0.5,
     streamline: 0.5,
-    simulatePressure: !s.pressure, // 无真压感：按速度模拟（重绘结果一致）
+    simulatePressure: hl ? false : !s.pressure, // 无真压感：按速度模拟（重绘结果一致）
     last: !live // 活动笔画不算收尾（末端不 taper）
   }
 }
@@ -405,7 +760,29 @@ function redrawStatic () {
   const k = pageKx()
   ctx.setTransform(k, 0, 0, k, 0, 0) // 之后一律页面坐标空间
   const pageObj = book.pages[String(lastLayout.page)]
-  if (pageObj) for (const s of pageObj.strokes) paintStroke(ctx, s, false)
+  if (!pageObj) return
+  let hasHl = false
+  for (const s of pageObj.strokes) {
+    if (s.tool === 'hl') { hasHl = true; continue }
+    paintStroke(ctx, s, false)
+  }
+  if (!hasHl) return
+  // 荧光笔「不叠深」：同页荧光先在不透明离屏层并集（重叠颜色恒定），再以
+  // multiply 一次性合成（压在其下的笔迹透出）；与 PDF 的相乘由 .ink-layer
+  // 的 mix-blend-mode 负责（见 mobile.css）——合起来即「不叠深、不盖字」
+  if (!hlOff) hlOff = document.createElement('canvas')
+  if (hlOff.width !== staticCv.width) hlOff.width = staticCv.width
+  if (hlOff.height !== staticCv.height) hlOff.height = staticCv.height
+  const octx = hlOff.getContext('2d')
+  octx.setTransform(1, 0, 0, 1, 0, 0)
+  octx.clearRect(0, 0, hlOff.width, hlOff.height)
+  octx.setTransform(k, 0, 0, k, 0, 0)
+  for (const s of pageObj.strokes) if (s.tool === 'hl') paintStroke(octx, s, false)
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'multiply'
+  ctx.drawImage(hlOff, 0, 0)
+  ctx.restore()
 }
 
 function drawLive () {
@@ -413,7 +790,7 @@ function drawLive () {
   const ctx = resetCanvas(liveCv)
   const k = pageKx()
   ctx.setTransform(k, 0, 0, k, 0, 0)
-  paintStroke(ctx, { pts: drawing.pts, color: drawing.color, width: drawing.width, pressure: drawing.simPressure ? 0 : 1 }, true)
+  paintStroke(ctx, { pts: drawing.pts, color: drawing.color, width: drawing.width, tool: drawing.tool, pressure: drawing.simPressure ? 0 : 1 }, true)
 }
 
 function clearLive () {

@@ -2696,6 +2696,11 @@
       lastBackAt = 0;
       return;
     }
+    if (window.inkActive) {
+      window.dispatchEvent(new CustomEvent("solace-ink-exit-request"));
+      lastBackAt = 0;
+      return;
+    }
     const overlay = document.getElementById("previewOverlay");
     if (overlay && !overlay.hidden) {
       document.getElementById("btnPreviewClose")?.click();

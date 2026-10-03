@@ -292,6 +292,12 @@ App.addListener('backButton', () => {
     lastBackAt = 0
     return
   }
+  // 标注模式：先退出标注（ink 退出即冲刷保存），而不是直接关预览
+  if (window.inkActive) {
+    window.dispatchEvent(new CustomEvent('solace-ink-exit-request'))
+    lastBackAt = 0
+    return
+  }
   const overlay = document.getElementById('previewOverlay')
   if (overlay && !overlay.hidden) {
     // 走按钮链路：app.js 的 closePreviewAndRefresh 会先落库进度再刷新

@@ -160,6 +160,9 @@ body,
   z-index: 2;
   touch-action: none;
   pointer-events: auto;
+  /* 荧光笔「不盖字」：整层与下方 PDF 相乘（黑字保持、白底透黄）。
+     层内静态/活动两层先自行组合（层内是普通叠加，不互相变深） */
+  mix-blend-mode: multiply;
 }
 .ink-layer[hidden] { display: none; }
 .ink-canvas {
@@ -206,6 +209,61 @@ body,
   color: #fff;
 }
 .ink-btn + .ink-btn { margin-left: 2px; }
+.ink-btn:disabled { opacity: 0.35; cursor: default; }
+.ink-btn:disabled:active { background: transparent; }
+.ink-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.16);
+  margin: 0 4px;
+}
+.ink-dot {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  vertical-align: -2px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: #e03131;
+}
+/* 色板/粗细弹层：浮在工具栏上方 */
+.ink-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(18, 22, 27, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.ink-pop[hidden] { display: none; }
+.ink-color {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.ink-color.on { border-color: #fff; }
+.ink-width {
+  width: 42px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ink-width.on { border-color: #fff; background: rgba(255, 255, 255, 0.12); }
+.ink-width i { display: block; width: 22px; background: #e8edf2; border-radius: 3px; }
 
 /* 墨迹 canvas 必须透明：桌面 style.css 的 `.preview-body canvas` 会给
    页面区所有 canvas 上白底/阴影/圆角（对 PDF 页 canvas 是需要的），
