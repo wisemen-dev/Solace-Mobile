@@ -2,7 +2,9 @@
 // 数据格式两端一致，推过去即可续读；进度、分类、笔记全部保留。
 //
 // 用法：npm run push:library [-- --wipe]
-//   --wipe  先清掉平板上的 SolaceLibrary（否则 adb push 会往里合并）
+//   --wipe  先清掉平板上的 SolaceLibrary（否则 adb push 会往里合并）；
+//           平板端专有的手写标注（annotations/）随之清掉，桌面端没有这份
+//           数据，无从恢复
 //
 // 前提：平板已连 adb 且应用至少启动过一次（目录已建立）；
 // 目标路径是应用专属外部目录（debug 包可被 adb 写入）：
@@ -30,6 +32,7 @@ if (!existsSync(join(SRC, 'library.json'))) {
 
 if (process.argv.includes('--wipe')) {
   console.log('清空平板端资料库…')
+  console.log('注意：--wipe 会同时清掉平板端手写标注（annotations/，桌面端无此数据，不可恢复）')
   run('adb', ['shell', 'rm', '-rf', DST])
 }
 

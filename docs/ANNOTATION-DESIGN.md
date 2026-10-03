@@ -1,6 +1,7 @@
 # 方案书：预览手写标注（墨迹层）
 
-> 状态：P1 数据层、P2 渲染核心、P3 交互已实现并真机验证（2026-10-03）；P4 收尾待做。评审决策见 §12。
+> 状态：P1 数据层、P2 渲染核心、P3 交互、P4 收尾全部完成并真机验证
+> （2026-10-03）。评审决策见 §12。
 > 前置调研：Saber（github.com/saber-notes/saber）实现方式总结见会话记录
 > （2026-10-02）；本方案借鉴其思路，不引用其 GPL-3.0 代码。
 
@@ -228,6 +229,12 @@ layout），先冲刷旧书再弃内存重读。冲刷挂入结算链（含在�
 
 写操作在 annotations-core 内用 promise 链串行化（同 notes-core 的 createChain 模式），冲刷与防抖写并发时只落最终状态；读排队于写链尾，不返回在途写结算前的旧态。
 
+回后台冲刷的真机实测边界（2026-10-03，详见 PORTING.md「手写标注」章）：
+`solace-ink-flush` 约在收笔后 1.8s 才到页面（HOME 注入 + onPause + 过桥），
+而本机 WebView 在后台仍继续跑 JS 定时器，1.5s 防抖通常已先写完。因此后台
+冲刷是**独立于定时器的第二条保险**（OEM 冻结后台 JS 时定时器不响、原生
+事件仍派发），不是更快的那条路；真机判据取「事件必达 + 笔迹不丢」。
+
 ## 9. 桥接层改动
 
 ```js
@@ -255,9 +262,25 @@ annotations-core.mjs：docId 白名单（同 notes-core 的正则）、read（�
 | P1 数据层 | annotations-core + boot 桥方法 + 损坏回退 | bridge/ 两文件 | test/annotations-core.test.js（读写回环、路径穿越拒绝、损坏回退、并发写串行化） |
 | P2 渲染核心 | perfect-freehand vendor 产物、墨迹双 canvas、layout/close 事件补丁、静态层重绘 | ink.js 骨架、补丁 3 处 | 浏览器：画一笔→翻页回来还在；旋转屏幕不错位 |
 | P3 交互 | 工具栏全套、笔/荧光笔/橡皮、撤销重做、手势仲裁、返回键、清页确认 | ink.js 完整、mobile.js 守卫 | 浏览器 + 平板真机 |
-| P4 收尾 | 防抖/冲刷复核、后台冲刷、PORTING.md/CHANGELOG、push:library 提示 | 文档 + 全量回归 | npm test 全绿 + 真机全流程（画→关→重开→橡皮→卸载重装数据还在） |
+| P4 收尾 | 防抖/冲刷复核、后台冲刷、PORTING.md/CHANGELOG、push:library 提示 | 文档 + 全量回归 | npm test 全绿 + 真机全流程（画→关→重开→橡皮→**覆盖安装**后数据还在） |
 
-进度（2026-10-03）：P1、P2、P3 已完成并真机验证；P4 待做。
+> P4 自测口径修正（2026-10-03）：原写「卸载重装数据还在」不成立——资料库
+> 在应用专属外部目录 `Android/data/<pkg>/files/`，Android 卸载应用时必然
+> 删除该目录（真卸载会连带毁掉平板上的真实资料库与全部标注）。改为验证
+> **覆盖安装**（`adb install -r`）后标注仍在，即数据不落在会被清的 cache
+> 目录；「卸载即丢失」已作为存储告警写进 PORTING.md。
+
+进度（2026-10-03）：P1、P2、P3、P4 全部完成并真机验证。
+
+P4 交付明细：① 补齐 §8 缺失的「`appStateChange` → 后台冲刷」（boot.mjs
+派发 `solace-ink-flush`、ink.js 收到即 `flushSave()`，不设 active 守卫——
+阅读模式下模型仍可能带脏）；② 六个触发点逐条复核（提交/撤销/重做/清页
+重置防抖、防抖到期原子写、退出标注、关预览、回后台、换书挂结算链）；
+③ PORTING.md 新增「手写标注（墨迹层，0.4.0）」章 + 数据兼容与存储位置
+补 `annotations/` 不变量与卸载告警；④ CHANGELOG 新增 `[0.4.0] - 2026-10-03` 并定版（package.json 0.4.0、
+versionCode 400）；⑤ push-library `--wipe` 提示；⑥ 回归：单测 38/38、
+浏览器 harness 竞态 6（新增回后台冲刷场景，先 RED 后 GREEN）+ P3 专测 11
++ 目视 6、真机全流程 + 覆盖安装持久性（173 笔逐字节完好）。
 
 工作量估算：新增 ~950 行（ink.js 450 / core 120 / 测试 200 / css 120 / 补丁+杂项 60），改动 ~60 行（boot.mjs、mobile.js、sync-www.mjs、push-library.mjs）。
 

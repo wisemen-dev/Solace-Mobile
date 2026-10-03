@@ -30,6 +30,10 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 - 全文索引分片结构一致（textindex/index.json + <id>.json），桌面端 0.15.x
   的单文件索引在平板端会自动搬迁
 - 笔记是普通 .md 文件，桌面端 Typora 与平板端内置编辑器编辑同一份文件
+- 手写标注是平板端专有：`annotations/<docId>.json` 随整库搬运，桌面端
+  不识别即静默忽略；`notes/<docId>/` 只放 .md、`listNotes` 只认 .md，
+  两条路径永不相交（Typora 互通不变量零影响）。孤儿清扫只扫 `files/`、
+  `covers/`，不碰 `annotations/`
 
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
@@ -104,6 +108,7 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 | 拉起外部工具 | spawn(exe) | getLaunchIntentForPackage | 平板无外部程序概念，有应用 |
 | relocate | 指针文件 | 固定位置 | 应用专属目录即一切 |
 | Typora/外部程序 | spawn | 内置编辑器 | 沙箱无外部程序 |
+| 手写标注 | ❌ 不渲染（`annotations/` 静默共存） | ✅ 墨迹层（笔/荧光笔/橡皮） | 平板端手写笔场景专有 |
 | Ctrl+K | 键盘 | ⌘K 按钮 | 无键盘（按钮本就存在） |
 
 ## 性能架构（0.3.0，重要）
@@ -174,6 +179,54 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 - **边缘点按翻页**：快速点按（<300ms、位移 <12px）落在容器左右 20%
   热区时点 `#btnPrevPage/#btnNextPage`（复用按钮链路，进度/足迹逻辑不变）。
 
+## 手写标注（墨迹层，0.4.0）
+
+设计与数据格式的权威文档是 `docs/ANNOTATION-DESIGN.md`（§12 已拍板）；
+这里只记移植落点与踩过的坑。代码在 `mobile-web/js/mobile/ink.js`（自有
+资产，非补丁）+ `bridge/annotations-core.mjs`，补丁只 3 处。
+
+- **三层画布**：`#previewCanvas`（pdf.js）+ `#inkStaticCanvas`（已提交
+  墨迹）+ `#inkLiveCanvas`（正在画的这一笔），尺寸全等、绝对定位对齐。
+- **荧光笔「不叠深、不盖字」要两层机制合起来**：同页荧光先画进不透明
+  离屏层求并集（重叠处颜色恒定），再以 `globalCompositeOperation =
+  'multiply'` 合成进墨迹层；而「PDF 文字透出」靠 `.ink-layer` 的 CSS
+  `mix-blend-mode: multiply` 对整个下层元素相乘——画布内的 multiply 够
+  不到 PDF（它只作用于同一 canvas 内部），少了 CSS 这一层就会盖住字。
+- **坐标系**：存 `page.getViewport({ scale: 1 })` 空间（PDF 用户单位、
+  左上原点、y 向下），渲染时乘 `kx = fitted.width / baseW` 一个系数——
+  与 dpr、fitWidth、设备无关，任意倍率重绘不失真。将来加捏合缩放沿用
+  同一事件同一管线。
+- **事件契约**：`solace-ink-layout`（preview.js 布局尺寸设定后派发，
+  detail 带 docId / 页码 / 设备像素 w·h / 显示 cssW·cssH / 存储坐标
+  baseW·baseH）、`solace-ink-close`（closePreview 开头）为补丁派发；
+  `solace-ink-exit-request`（返回键链）、`solace-ink-flush`（回后台）由
+  boot.mjs 派发。ink.js 一律经 window 事件解耦，不 import 桥。
+- **会话守卫**：`loadedDoc`（内存归属）+ `loadSeq`（模型代数）双重对账。
+  同书快速关开会有两个在途 read，只比 docId 区分不开——旧结果合并会把
+  同一批笔迹翻倍。
+- **保存管线**：1.5s 防抖；退出标注 / 关预览 / 回后台 / 换书四处立即
+  冲刷。写在 annotations-core 内 promise 链串行化，读排队于写链尾（否则
+  「退出→立刻重进」会读回旧盘态覆盖内存）。冲刷失败 → `dirty` 复位由
+  防抖重试；换书时失败 → 快照入队，重进该书时回灌内存并置脏补写（读盘
+  会拿回缺笔迹的旧态，之后任何以内存为准的成功写都会把快照覆盖丢）。
+- **回后台冲刷的实测边界**（2026-10-03，平板 80b6f44d）：`appStateChange`
+  的 `!isActive` 分支派发 `solace-ink-flush`，ink.js 收到即 `flushSave()`。
+  真机以页面侧时钟探针测得：事件约在收笔后 1782ms 才到（HOME 注入 +
+  onPause + 过桥），而这台机器的 WebView 在后台仍继续跑 JS 定时器，1.5s
+  防抖已在 1532ms 写完。所以**后台冲刷不是更快的那条路，而是独立于定时器
+  的第二条保险**（OEM 冻结后台 JS 时定时器不响，原生事件仍会派发）。
+  真机判据只能是「事件必达 + 笔迹不丢」，别断言「必须早于防抖」。
+  另：计时必须取页面侧时钟——平板与本机时钟不同源，跨机相减无意义。
+- **手势仲裁**：标注模式下单指横滑/纵滑从「翻页/滚动」改为「画笔」，
+  `mobile.js` 指针段加 `window.inkActive` 守卫；双指拖动改为滚动页面。
+  **防手掌误触默认开**：本会话内一旦收到 `pointerType === 'pen'` 的
+  pointerdown，后续 touch 指针在绘制与双指滚动仲裁上一概忽略（抬笔恢复）。
+- **返回键**：boot.mjs 的 backButton 链在「对话框 → 预览」之间插一级
+  `window.inkActive` 检查，退出标注即冲刷保存、不弹确认。
+- **内存**：两层 canvas ≈ 2 × fitted.w × fitted.h × 4B（dpr=2、
+  1600×2200 CSS → 每层约 56MB），仅预览打开期间存在。低端机吃紧时的
+  退路：活动层降 dpr=1，或合并单层 + 脏矩形重绘。
+
 ## 存储位置
 
 `Directory.External`（应用专属外部目录
@@ -183,6 +236,8 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 - 免任何运行时权限
 - debug 包可被 adb 读写（`npm run push:library` 依赖此）
 - 卸载应用随之删除——重要资料库请保持桌面端为母本
+- 手写标注（`annotations/`）没有桌面端母本：**卸载应用即永久丢失**，
+  覆盖安装（`adb install -r`）/ 杀进程 / 重启设备都不丢
 
 注意：不要用 `Directory.Documents`——那是公共目录，Android 11+ 作用域
 存储下应用只能访问自己创建的文件，行为不可靠。

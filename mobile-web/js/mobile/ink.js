@@ -269,6 +269,11 @@ window.addEventListener('solace-ink-close', async () => {
 // 退出即冲刷保存、无需确认；写失败有 toast + 重试 + 保留模型兜底
 window.addEventListener('solace-ink-exit-request', () => { if (active) setActive(false) })
 
+// 回后台冲刷（boot.mjs 的 appStateChange 派发）：进程可能被系统直接杀掉，
+// 防抖窗口内的笔画必须立刻落盘。不设 active 守卫——阅读模式下模型仍可能带脏
+// （写失败的快照队列），flushSave 内部自有 dirty 与归属校验
+window.addEventListener('solace-ink-flush', () => { flushSave() })
+
 /* ================= 数据加载与保存 ================= */
 
 // 墨迹层可见性：标注模式必显；阅读模式仅当当前页有墨迹时显示（passive：

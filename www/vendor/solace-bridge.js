@@ -2671,8 +2671,12 @@
   }).catch(() => {
   });
   App.addListener("appStateChange", ({ isActive }) => {
-    if (isActive) watch.scan().catch(() => {
-    });
+    if (isActive) {
+      watch.scan().catch(() => {
+      });
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("solace-ink-flush"));
   });
   var dialogStack = [];
   {

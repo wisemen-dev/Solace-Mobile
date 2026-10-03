@@ -252,8 +252,11 @@ window.solace = solace
 ready.then(() => {
   setTimeout(() => watch.scan({ force: true }).catch(() => {}), 3000)
 }).catch(() => {}) // init 失败已有错误页兜底，这里避免额外的 unhandled rejection 噪声
+// 回后台冲刷墨迹：Android 随时可能回收进程，防抖窗口（1.5s）内的笔画必须
+// 立刻落盘。墨迹层由 ink.js 动态创建，未创建时这次派发没有监听者，无害
 App.addListener('appStateChange', ({ isActive }) => {
-  if (isActive) watch.scan().catch(() => {})
+  if (isActive) { watch.scan().catch(() => {}); return }
+  window.dispatchEvent(new CustomEvent('solace-ink-flush'))
 })
 
 // Android 返回键语义：关最上层的浮层（对话框 > 预览 > 抽屉），都没有才
