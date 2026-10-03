@@ -2276,6 +2276,135 @@
     return { read, write };
   }
 
+  // bridge/links-core.mjs
+  function createLinks({ fs: fs2 }) {
+    function docFile(docId) {
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ""))) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
+      return `links/${docId}.json`;
+    }
+    function checkFile(file) {
+      const name = String(file || "");
+      if (!name || name.length > 120 || name !== name.trim() || name.startsWith(".") || /[\\/:*?"<>|]/.test(name) || !name.toLowerCase().endsWith(".md")) {
+        throw new Error("\u975E\u6CD5\u8BB0\u5F55\u6587\u4EF6\u540D");
+      }
+      return name;
+    }
+    function validateEntry(file, entry) {
+      checkFile(file);
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("\u975E\u6CD5\u951A\u70B9\u6761\u76EE");
+      if (!Array.isArray(entry.excerpts) || !entry.excerpts.length) throw new Error("\u951A\u70B9\u6761\u76EE\u9700\u81F3\u5C11\u4E00\u5904\u6458\u5F55");
+      for (const e of entry.excerpts) {
+        if (!e || typeof e !== "object") throw new Error("\u975E\u6CD5\u6458\u5F55");
+        if (!Number.isInteger(e.page) || e.page < 1) throw new Error("\u975E\u6CD5\u6458\u5F55\u9875\u7801");
+        if (typeof e.text !== "string" || !e.text.trim()) throw new Error("\u975E\u6CD5\u6458\u5F55\u6587\u672C");
+        if (e.hint != null && (typeof e.hint !== "object" || !Number.isInteger(e.hint.item) || !Number.isInteger(e.hint.char))) {
+          throw new Error("\u975E\u6CD5\u5B9A\u4F4D\u63D0\u793A");
+        }
+      }
+    }
+    function validate(data) {
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("\u975E\u6CD5\u94FE\u63A5\u6570\u636E");
+      if (data.version !== 1) throw new Error("\u4E0D\u652F\u6301\u7684\u94FE\u63A5\u6570\u636E\u7248\u672C");
+      if (!data.records || typeof data.records !== "object" || Array.isArray(data.records)) throw new Error("\u975E\u6CD5\u8BB0\u5F55\u8868");
+      for (const [file, entry] of Object.entries(data.records)) validateEntry(file, entry);
+    }
+    const emptyData = () => ({ version: 1, records: {} });
+    async function loadValidated(docId) {
+      const p = docFile(docId);
+      if (!await fs2.exists(p)) return emptyData();
+      const raw = await fs2.readFileText(p);
+      try {
+        const d = JSON.parse(raw);
+        validate(d);
+        return d;
+      } catch {
+        let n = 1;
+        while (await fs2.exists(`links/${docId}.corrupt-${n}.json`)) n++;
+        const archive = `links/${docId}.corrupt-${n}.json`;
+        let archived = false;
+        try {
+          await fs2.rename(p, archive);
+          archived = true;
+        } catch {
+          try {
+            await fs2.writeText(archive, raw);
+            archived = true;
+            await fs2.rm(p);
+          } catch {
+          }
+        }
+        return {
+          ...emptyData(),
+          notice: archived ? "\u8FD9\u672C\u4E66\u7684\u6458\u5F55\u94FE\u63A5\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 links \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" : "\u8FD9\u672C\u4E66\u7684\u6458\u5F55\u94FE\u63A5\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u7559\u6863\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09\uFF0C\u518D\u6B21\u5199\u5165\u5C06\u8986\u76D6\u635F\u574F\u6587\u4EF6\u3002"
+        };
+      }
+    }
+    let writeChain = Promise.resolve();
+    async function read(docId, validFiles) {
+      await writeChain.catch(() => {
+      });
+      const data = await loadValidated(docId);
+      if (validFiles instanceof Set) {
+        let pruned = false;
+        for (const key of Object.keys(data.records)) {
+          if (!validFiles.has(key)) {
+            delete data.records[key];
+            pruned = true;
+          }
+        }
+        if (pruned) await write(docId, data);
+      }
+      return data;
+    }
+    async function write(docId, data) {
+      validate(data);
+      const run = writeChain.then(() => writeLocked(docId, data));
+      writeChain = run.then(() => {
+      }, () => {
+      });
+      return run;
+    }
+    async function writeLocked(docId, data) {
+      const p = docFile(docId);
+      const records = {};
+      for (const [file, entry] of Object.entries(data.records)) {
+        if (entry.excerpts.length) records[file] = entry;
+      }
+      if (!Object.keys(records).length) {
+        if (!await fs2.rm(p)) throw new Error("\u5220\u9664\u94FE\u63A5\u6587\u4EF6\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09");
+        return true;
+      }
+      await fs2.mkdirp("links");
+      await fs2.writeFileAtomicText(p, JSON.stringify({ version: 1, records }));
+      return true;
+    }
+    function mutate(docId, fn) {
+      const run = writeChain.then(async () => {
+        const data = await loadValidated(docId);
+        fn(data);
+        return writeLocked(docId, data);
+      });
+      writeChain = run.then(() => {
+      }, () => {
+      });
+      return run;
+    }
+    async function setEntry(docId, file, entry) {
+      if (entry == null) return removeEntry(docId, file);
+      validateEntry(file, entry);
+      return mutate(docId, (d) => {
+        d.records[file] = JSON.parse(JSON.stringify(entry));
+      });
+    }
+    async function removeEntry(docId, file) {
+      checkFile(file);
+      return mutate(docId, (d) => {
+        delete d.records[file];
+      });
+    }
+    return { read, write, setEntry, removeEntry };
+  }
+
   // bridge/sha256.mjs
   async function sha256Hex(data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -2477,6 +2606,7 @@
   var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath });
   var notes = createNotes({ fs });
   var annotations = createAnnotations({ fs });
+  var links = createLinks({ fs });
   var watch = createWatch({ lib, fs, getSettings: () => lib.getData().settings || {} });
   var ready = lib.init();
   ready.catch((err) => {
@@ -2652,12 +2782,24 @@
       const content = await notes.read(id, file);
       return { inApp: true, title: doc && doc.title || "\u7B14\u8BB0", content };
     }),
-    trashNote: gate((id, file) => notes.trash(id, file)),
+    // 删除笔记：同链清掉摘录链接的侧车条目（该书没有 links 文件时，rm 对
+    // 不存在的文件返回 true = 无可清理视为成功，故对没有摘录的书是无害操作）
+    trashNote: gate(async (id, file) => {
+      await notes.trash(id, file);
+      await links.removeEntry(id, file);
+    }),
     revealNote: gate(async () => true),
     // 无「在文件夹中查看」，按钮已隐藏
     // 移动端内置编辑器专用：读写笔记正文
     readNote: gate((id, file) => notes.read(id, file)),
     writeNote: gate((id, file, text) => notes.write(id, file, text)),
+    // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）
+    readNoteLinks: gate(async (id) => {
+      const { notes: files } = await notes.list(id);
+      return links.read(id, new Set(files.map((f2) => f2.file)));
+    }),
+    setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
+    // entry=null → 删除
     // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
     readAnnotations: gate((id) => annotations.read(id)),
     writeAnnotations: gate((id, data) => annotations.write(id, data)),

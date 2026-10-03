@@ -11,6 +11,7 @@ import { fs, rootUri, fileUrl } from './fs-adapter.mjs'
 import { createLibrary } from './library-core.mjs'
 import { createNotes } from './notes-core.mjs'
 import { createAnnotations } from './annotations-core.mjs'
+import { createLinks } from './links-core.mjs'
 import { sha256Hex } from './sha256.mjs'
 import { App } from '@capacitor/app'
 import { findApps, findOlibCandidates, launchApp, pickFolder, pickPdfs, copyAndHash, hashLibraryPath } from './native.mjs'
@@ -30,6 +31,7 @@ const randomUUID = () => {
 const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath })
 const notes = createNotes({ fs })
 const annotations = createAnnotations({ fs })
+const links = createLinks({ fs })
 
 // 自动入库（Olib 下载目录补扫）：settings 随取随读，配置变更即时生效
 const watch = createWatch({ lib, fs, getSettings: () => (lib.getData().settings || {}) })
@@ -231,11 +233,23 @@ const solace = {
     const content = await notes.read(id, file)
     return { inApp: true, title: (doc && doc.title) || '笔记', content }
   }),
-  trashNote: gate((id, file) => notes.trash(id, file)),
+  // 删除笔记：同链清掉摘录链接的侧车条目（该书没有 links 文件时，rm 对
+  // 不存在的文件返回 true = 无可清理视为成功，故对没有摘录的书是无害操作）
+  trashNote: gate(async (id, file) => {
+    await notes.trash(id, file)
+    await links.removeEntry(id, file)
+  }),
   revealNote: gate(async () => true), // 无「在文件夹中查看」，按钮已隐藏
   // 移动端内置编辑器专用：读写笔记正文
   readNote: gate((id, file) => notes.read(id, file)),
   writeNote: gate((id, file, text) => notes.write(id, file, text)),
+
+  // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）
+  readNoteLinks: gate(async (id) => {
+    const { notes: files } = await notes.list(id)
+    return links.read(id, new Set(files.map(f => f.file))) // 顺带孤儿剪除
+  }),
+  setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
 
   // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
   readAnnotations: gate((id) => annotations.read(id)),
