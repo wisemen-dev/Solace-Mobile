@@ -394,16 +394,39 @@ export function createLinks ({ fs }) {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `node --test test/links-core.test.js` → 10 用例全 PASS
+Run: `node --test test/links-core.test.js` → 9 用例全 PASS
 
 - [ ] **Step 5: 加进 npm test 并全跑**
 
-test 脚本追加 `test/links-core.test.js`；`npm test` → 54/54 PASS
+test 脚本追加 `test/links-core.test.js`；`npm test` → 53/53 PASS
+
+**实施偏差（2026-10-04，已征得同意）**
+
+1. `setEntry` / `removeEntry` 由普通函数改为 **`async function`**。原写法在
+   校验失败时同步抛错，而 Step 1 的测试用 `assert.rejects(() => links.setEntry(...))`
+   ——实测 Node 的 `assert.rejects` 遇同步抛错会把错误**原样抛出**而非判定
+   通过，「docId 白名单」与「entry 校验」两用例必然失败。改 async 后同步
+   抛错即 Promise 拒绝，与 `annotations-core.write` 的既有约定一致（「async
+   函数内同步抛错 = Promise 拒绝，调用方统一 try/catch」）；桥层 `gate()`
+   本就是 async，渲染侧行为不变。
+2. `FILE_RE` 换成 `checkFile()`，与 notes-core `notePath` 的约束逐条对齐：
+   禁路径成分、**禁以 `.` 开头**、**禁首尾空白**、`.md` 结尾（判据用
+   `toLowerCase()`，同 `notes.list` 的过滤）、长度 ≤120。原正则放行
+   `.x.md` / ` x.md`，会存下 notes 侧永远匹配不上的孤儿条目。**内部空格
+   必须放行**（notes-core 生成的文件名形如 `2026-10-03 10.00.00.md`）。
+3. 用例数记账更正：本任务实为 **9** 个用例（原写 10），故 `npm test` 为
+   **53/53**（原写 54/54）。测试里另补了 4 条文件名校验断言（`.hidden.md`
+   / ` x.md` / `x.md ` / `removeEntry` 路径穿越）覆盖偏差 2。
+
+已核实**不是**问题的一处：`removeEntry` 在 `links/<docId>.json` 不存在时会
+走到 `writeLocked` 的空表分支调 `fs.rm`——mem-fs 与 fs-adapter 的 `rm` 对
+不存在的文件都返回 `true`（「无可清理视为成功」），故删笔记联动清侧车对
+没有摘录的书确实是无害操作。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add bridge/links-core.mjs test/links-core.test.js package.json
+git add bridge/links-core.mjs test/links-core.test.js package.json docs/EXCERPT-LINK-PLAN.md
 git commit -m "feat: 摘录链接 P1——links-core 锚点数据层（原子写/串行化/损坏留档/孤儿剪除）"
 ```
 
