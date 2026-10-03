@@ -1,5 +1,6 @@
 // 手写标注数据层（bridge/annotations-core.mjs）单测：内存 fs，验证
-// 读空回环、docId 白名单、损坏留档回退、结构校验、空墨迹删文件与并发串行化。
+// 读空回环、docId 白名单、损坏留档回退（含 rename 失败的兜底）、结构校验、
+// 空墨迹删文件、并发写串行化与读排队于写链。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createAnnotations } from '../bridge/annotations-core.mjs'
@@ -98,6 +99,37 @@ test('损坏后写回不覆盖留档：主文件恢复、留档仍在', async ()
   assert.equal(await fs.exists(`annotations/${ID}.corrupt-1.json`), true)
 })
 
+test('留档 rename 失败：writeText 兜底落副本，主路径清掉', async () => {
+  const mem = createMemFs()
+  const fsNoRename = { ...mem, rename: async () => { throw new Error('EBUSY') } }
+  const ann = createAnnotations({ fs: fsNoRename })
+  await mem.mkdirp('annotations')
+  await mem.writeText(`annotations/${ID}.json`, '{oops')
+  const res = await ann.read(ID)
+  assert.deepEqual(res.pages, {})
+  assert.ok(res.notice && res.notice.includes('损坏'))
+  // 兜底副本在：后续写回不会丢掉唯一留档
+  assert.equal(await mem.exists(`annotations/${ID}.corrupt-1.json`), true)
+  assert.equal(await mem.readFileText(`annotations/${ID}.corrupt-1.json`), '{oops')
+  assert.equal(await mem.exists(`annotations/${ID}.json`), false)
+})
+
+test('留档 rename 与兜底 copy 都失败：notice 如实说明留档失败', async () => {
+  const mem = createMemFs()
+  const fsBad = {
+    ...mem,
+    rename: async () => { throw new Error('EBUSY') },
+    writeText: async () => { throw new Error('EBUSY') }
+  }
+  const ann = createAnnotations({ fs: fsBad })
+  await mem.mkdirp('annotations')
+  await mem.writeText(`annotations/${ID}.json`, '{oops')
+  const res = await ann.read(ID)
+  assert.deepEqual(res.pages, {})
+  assert.ok(res.notice && res.notice.includes('留档失败'))
+  assert.equal(await mem.exists(`annotations/${ID}.corrupt-1.json`), false)
+})
+
 test('合法 JSON 但结构非法：读侧同样走损坏留档回退', async () => {
   const { fs, ann } = harness()
   await fs.mkdirp('annotations')
@@ -186,4 +218,26 @@ test('并发写串行化：全部完成且最终落盘为最后一次调用', as
   const p3 = payload()
   await Promise.all([ann.write(ID, p1), ann.write(ID, p2), ann.write(ID, p3)])
   assert.deepEqual(await ann.read(ID), p3)
+})
+
+test('读排队于写链：在途写未结算前 read 不返回旧态', async () => {
+  const mem = createMemFs()
+  let release
+  const gate = new Promise((r) => { release = r })
+  let armed = false
+  const fsGated = {
+    ...mem,
+    writeFileAtomicText: async (p, t) => {
+      if (!armed) { armed = true; await gate }
+      return mem.writeFileAtomicText(p, t)
+    }
+  }
+  const ann = createAnnotations({ fs: fsGated })
+  const w = ann.write(ID, payload())
+  while (!armed) await new Promise((r) => setTimeout(r)) // 确保写真正卡在磁盘步骤
+  const r = ann.read(ID)
+  release()
+  await w
+  // 旧实现读不等写：这里会读到「文件不存在」的空态
+  assert.deepEqual(await r, payload())
 })

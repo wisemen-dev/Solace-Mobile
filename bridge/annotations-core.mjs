@@ -34,14 +34,24 @@ export function createAnnotations ({ fs }) {
     }
   }
 
+  // 写串行化：校验 → 归一化（丢空页）→ 空墨迹删文件 / 原子写。
+  // promise 链排队（同 notes-core 的 createChain 模式），防抖写与冲刷
+  // 并发时只落最终状态。读也排队于链尾：在途写未结算前读会拿到写入前的
+  // 旧态（换书冲刷/退出即冲刷与紧接着的重读窗口都靠这条保证）
+  let writeChain = Promise.resolve()
+
+  // 空结构工厂：读缺失/损坏回退共用（形状单一定义，防字面量漂移）
+  const emptyData = () => ({ version: 1, pages: {} })
+
   // 读：文件不存在 = 没画过（不预建空文件，零成本默认路径）；读取失败
   // （磁盘/权限等瞬时错误）向上抛——吞成「没画过」会让渲染层用空书覆写
-  // 盘上墨迹。损坏/结构非法 = 改名留档（顺延编号）后按空墨迹继续，不阻断
-  // 阅读。并发的第二次损坏读会因文件已被搬走而走 ENOENT 分支，最坏各自
-  // 报一次 notice
+  // 盘上墨迹。损坏/结构非法 = 改名留档（顺延编号；rename 失败用已读到的
+  // 原文落副本兜底）后按空墨迹继续，不阻断阅读。并发的第二次损坏读会因
+  // 文件已被搬走而走 ENOENT 分支，最坏各自报一次 notice
   async function read (docId) {
+    await writeChain.catch(() => {}) // 等全部在途写结算，不读旧态
     const p = docFile(docId)
-    if (!await fs.exists(p)) return { version: 1, pages: {} }
+    if (!await fs.exists(p)) return emptyData()
     const raw = await fs.readFileText(p)
     try {
       const data = JSON.parse(raw)
@@ -50,17 +60,31 @@ export function createAnnotations ({ fs }) {
     } catch {
       let n = 1
       while (await fs.exists(`annotations/${docId}.corrupt-${n}.json`)) n++
-      try { await fs.rename(p, `annotations/${docId}.corrupt-${n}.json`) } catch { /* 搬不动则放弃留档 */ }
-      return { version: 1, pages: {}, notice: '这本书的手写标注数据损坏，已重置；原文件保留为资料库内 annotations 下的 .corrupt 备份。' }
+      const archive = `annotations/${docId}.corrupt-${n}.json`
+      let archived = false
+      try {
+        await fs.rename(p, archive)
+        archived = true
+      } catch {
+        // rename 失败（被占用等）：用原文直接落副本兜底，再尽力清主路径——
+        // 副本在，后续写回就不会丢掉唯一留档；都失败则 notice 如实说明
+        try {
+          await fs.writeText(archive, raw)
+          archived = true
+          await fs.rm(p)
+        } catch { /* 留档失败：notice 如实说明，见下方 */ }
+      }
+      return {
+        ...emptyData(),
+        notice: archived
+          ? '这本书的手写标注数据损坏，已重置；原文件保留为资料库内 annotations 下的 .corrupt 备份。'
+          : '这本书的手写标注数据损坏，已重置；原文件留档失败（文件可能被占用），再次写入将覆盖损坏文件。'
+      }
     }
   }
 
-  // 写串行化：校验 → 归一化（丢空页）→ 空墨迹删文件 / 原子写。
-  // promise 链排队（同 notes-core 的 createChain 模式），防抖写与冲刷
-  // 并发时只落最终状态
-  let writeChain = Promise.resolve()
-  // async 保证校验失败以 Promise 拒绝返回（而非同步抛出），调用方统一
-  // try/catch 即可
+  // 校验失败在排队前就拒绝（async 函数内同步抛错 = Promise 拒绝，
+  // 调用方统一 try/catch 即可）
   async function write (docId, data) {
     validate(data) // 非法数据在排队前就拒绝，不占队列
     const run = writeChain.then(() => writeLocked(docId, data))

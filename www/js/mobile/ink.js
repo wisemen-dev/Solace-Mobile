@@ -19,16 +19,22 @@ let liveCv = null        // 正在画的这一笔：每 rAF 清空重画
 let toolbar = null
 
 let active = false
-window.inkActive = false // mobile.js 的翻页/点按手势在标注模式下让位给绘制
+// mobile.js 的翻页/点按手势在标注模式下让位给绘制；getter 只读视图，单一状态源
+Object.defineProperty(window, 'inkActive', { get: () => active })
 
 let lastLayout = null    // 最近一次 layout 事件 detail（含 docId/page/尺寸）
-let book = { version: 1, pages: {} } // 整本书内存模型；防抖写盘
+const emptyBook = () => ({ version: 1, pages: {} }) // 空墨迹模型工厂
+let book = emptyBook()   // 整本书内存模型；防抖写盘
 let loadedDoc = null     // book 当前归属的 docId（null = 空置，等 layout 对账）
 let loadSeq = 0          // 内存模型代数：每次归位/关闭 +1，作废旧的在途读取
 let dirty = false
 let saveTimer = 0
 let pendingWrite = null  // 在途写盘；loadBook 前须等它完成，防旧盘态覆盖新内存
-const retryWrites = []   // 换书时写失败的旧书快照（docId 已换，不能走 dirty 重试）
+const retryWrites = []   // 换书时写失败的旧书快照（docId 已换不能走 dirty 重试；
+                         // 重进该书时回灌内存，见 loadBook）
+// 换书旧书写盘的结算链（含失败入快照）：loadBook 读前必须等完——不等的话
+// 读取可能赶在「写失败入队」之前结算，把快照当成盘上旧态丢弃
+let switchFlush = Promise.resolve()
 let failToastAt = 0      // 写失败 toast 节流（持续失败时不刷屏）
 
 let drawing = null       // 活动笔画 { ptr, pts: [{x,y,p}], color, width }
@@ -72,7 +78,6 @@ function setActive (on) {
   ensureDom()
   if (!layer) return
   active = on
-  window.inkActive = on
   toolbar.hidden = !on
   if (on) {
     if (lastLayout) {
@@ -107,7 +112,6 @@ window.addEventListener('solace-ink-layout', (e) => {
 window.addEventListener('solace-ink-close', async () => {
   if (!layer) return
   active = false
-  window.inkActive = false
   layer.hidden = true
   layer.classList.remove('ink-passive')
   toolbar.hidden = true
@@ -123,7 +127,7 @@ window.addEventListener('solace-ink-close', async () => {
   if (lastLayout !== layoutAtClose) return
   loadSeq++
   loadedDoc = null
-  book = { version: 1, pages: {} }
+  book = emptyBook()
 })
 
 /* ================= 数据加载与保存 ================= */
@@ -139,14 +143,18 @@ function updateLayerVisibility () {
 }
 
 // book 与当前 docId 的对账：换书/关后重开/激活早于首次 layout 都经此归位。
-// 旧书若脏：先落盘再换（此刻 book/loadedDoc 仍属于旧书）；写失败入重试
-// 队列（快照已脱离引用，不会污染新书的 dirty 语义）
+// 旧书有未落盘内容或有在途写：先挂入结算链落盘再换——在途写的结算结果
+// 未知（可能失败），必须等它结算后再补写一次旧书（引用最新、幂等），失败
+// 入快照队列；loadBook 读前等链结算。快照已脱离引用，不污染新书的 dirty
 function syncBookToDoc (docId) {
   if (loadedDoc === docId) { redrawStatic(); updateLayerVisibility(); return }
-  if (loadedDoc && dirty) {
+  if (loadedDoc && (dirty || pendingWrite)) {
     const oldDoc = loadedDoc
     const oldBook = book
-    doWrite(oldDoc, oldBook).then((ok) => {
+    const inflight = pendingWrite
+    switchFlush = switchFlush.then(async () => {
+      if (inflight) await inflight.catch(() => {})
+      const ok = await doWrite(oldDoc, oldBook)
       if (!ok) retryWrites.push({ docId: oldDoc, data: oldBook })
     })
   }
@@ -154,13 +162,29 @@ function syncBookToDoc (docId) {
   dirty = false
   clearTimeout(saveTimer)
   saveTimer = 0
-  book = { version: 1, pages: {} }
+  book = emptyBook()
   loadBook(docId, ++loadSeq)
 }
 
 async function loadBook (docId, seq) {
-  // 在途写盘先等完（退出标注→立刻重进的窗口：不等会读回旧盘态覆盖内存）
+  // 在途写盘先等完（退出标注→立刻重进的窗口：不等会读回旧盘态覆盖内存）；
+  // 换书写盘链同样等完——它的失败入队要在下面查快照之前结算
+  await switchFlush.catch(() => {})
   if (pendingWrite) await pendingWrite.catch(() => {})
+  // 过期 load 先拦：防止下面的快照回灌被已作废的会话取走
+  if (seq !== loadSeq) return
+  // 该书存在换书写失败的快照：快照 ⊇ 盘上态（写从未成功过；P2 笔迹只增
+  // 不减才成立，P3 引入删改需复核），直接作内存基准并置脏补写。读盘会
+  // 读回缺笔迹的旧态，之后任何以内存为准的成功写都会把快照里的笔迹覆盖丢
+  const wi = retryWrites.findIndex(w => w.docId === docId)
+  if (wi >= 0) {
+    book = retryWrites.splice(wi, 1)[0].data
+    dirty = true
+    scheduleSave()
+    redrawStatic()
+    updateLayerVisibility()
+    return
+  }
   let res = null
   try {
     res = await window.solace.readAnnotations(docId)
@@ -187,7 +211,7 @@ async function loadBook (docId, seq) {
     }
     book = { version: 1, pages: merged }
   } else if (!dirty) {
-    book = { version: 1, pages: {} }
+    book = emptyBook()
   }
   redrawStatic()
   updateLayerVisibility()
@@ -215,11 +239,15 @@ async function doWrite (docId, data) {
 async function flushSave () {
   clearTimeout(saveTimer)
   saveTimer = 0
-  // 先补写换书时失败的旧书快照（与当前书无关；仍失败则留在队列）
+  // 先补写换书时失败的旧书快照（与当前书无关；仍失败则留在队列）。
+  // 按身份移除而非 shift：写盘在途时条目可能已被 loadBook 的回灌取走，
+  // 位置 shift 会误删排在后面的别的书快照
   while (retryWrites.length) {
     const w = retryWrites[0]
-    if (await doWrite(w.docId, w.data)) retryWrites.shift()
-    else break
+    if (await doWrite(w.docId, w.data)) {
+      const i = retryWrites.indexOf(w)
+      if (i >= 0) retryWrites.splice(i, 1)
+    } else break
   }
   if (!dirty || !lastLayout || loadedDoc !== lastLayout.docId) return
   dirty = false
@@ -363,11 +391,17 @@ function paintStroke (ctx, s, live) {
   ctx.fill()
 }
 
+// 画布复位：清位图并归还单位变换（页面坐标变换由调用方再设）
+function resetCanvas (cv) {
+  const ctx = cv.getContext('2d')
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, cv.width, cv.height)
+  return ctx
+}
+
 function redrawStatic () {
   if (!staticCv || !lastLayout) return
-  const ctx = staticCv.getContext('2d')
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-  ctx.clearRect(0, 0, staticCv.width, staticCv.height)
+  const ctx = resetCanvas(staticCv)
   const k = pageKx()
   ctx.setTransform(k, 0, 0, k, 0, 0) // 之后一律页面坐标空间
   const pageObj = book.pages[String(lastLayout.page)]
@@ -376,9 +410,7 @@ function redrawStatic () {
 
 function drawLive () {
   if (!drawing || !liveCv || !lastLayout) return
-  const ctx = liveCv.getContext('2d')
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-  ctx.clearRect(0, 0, liveCv.width, liveCv.height)
+  const ctx = resetCanvas(liveCv)
   const k = pageKx()
   ctx.setTransform(k, 0, 0, k, 0, 0)
   paintStroke(ctx, { pts: drawing.pts, color: drawing.color, width: drawing.width, pressure: drawing.simPressure ? 0 : 1 }, true)
@@ -386,7 +418,5 @@ function drawLive () {
 
 function clearLive () {
   if (!liveCv) return
-  const ctx = liveCv.getContext('2d')
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-  ctx.clearRect(0, 0, liveCv.width, liveCv.height)
+  resetCanvas(liveCv)
 }

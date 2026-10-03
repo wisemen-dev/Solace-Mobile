@@ -2217,9 +2217,13 @@
         }
       }
     }
+    let writeChain = Promise.resolve();
+    const emptyData = () => ({ version: 1, pages: {} });
     async function read(docId) {
+      await writeChain.catch(() => {
+      });
       const p = docFile(docId);
-      if (!await fs2.exists(p)) return { version: 1, pages: {} };
+      if (!await fs2.exists(p)) return emptyData();
       const raw = await fs2.readFileText(p);
       try {
         const data = JSON.parse(raw);
@@ -2228,14 +2232,25 @@
       } catch {
         let n = 1;
         while (await fs2.exists(`annotations/${docId}.corrupt-${n}.json`)) n++;
+        const archive = `annotations/${docId}.corrupt-${n}.json`;
+        let archived = false;
         try {
-          await fs2.rename(p, `annotations/${docId}.corrupt-${n}.json`);
+          await fs2.rename(p, archive);
+          archived = true;
         } catch {
+          try {
+            await fs2.writeText(archive, raw);
+            archived = true;
+            await fs2.rm(p);
+          } catch {
+          }
         }
-        return { version: 1, pages: {}, notice: "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 annotations \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" };
+        return {
+          ...emptyData(),
+          notice: archived ? "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 annotations \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" : "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u7559\u6863\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09\uFF0C\u518D\u6B21\u5199\u5165\u5C06\u8986\u76D6\u635F\u574F\u6587\u4EF6\u3002"
+        };
       }
     }
-    let writeChain = Promise.resolve();
     async function write(docId, data) {
       validate(data);
       const run = writeChain.then(() => writeLocked(docId, data));
