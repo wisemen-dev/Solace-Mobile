@@ -219,6 +219,26 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
 }
 .link-tray[hidden] { display: none; }
 
+/* 自由拖选（§6.6）：进行中/待确认的高亮——蓝底虚线，介于选中态（蓝紫）与
+   链接态（琥珀）之间的第三种视觉 */
+.ink-text-layer .lnk-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
+
+/* 拖选确认小条：托盘正上方居中（单选区模态：预览文字 + 端点步进 + 入选/取消） */
+.link-drag-bar {
+  position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; z-index: 6;
+  max-width: min(88vw, 680px);
+  padding: 7px 12px; border-radius: 12px;
+  background: rgba(18, 22, 27, 0.95); border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e8edf2; font-size: 13px;
+}
+.link-drag-bar[hidden] { display: none; }
+.link-drag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44vw; }
+.drag-step {
+  border: 1px solid rgba(255, 255, 255, 0.22); background: transparent; color: inherit;
+  border-radius: 8px; padding: 2px 10px; cursor: pointer; font-size: 15px; line-height: 1.2;
+}
+
 /* 记录编辑器的摘录 chips */
 .link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
 .link-chip {

@@ -60,6 +60,30 @@ export function sentenceAt (sentences, off) {
 
 export function normalizeText (s) { return String(s ?? '').replace(/\s+/g, ' ').trim() }
 
+// 自由选区（§6.6）：a/b 为页面文本偏移（方向不限，内部排序），返回与整句
+// 选集同形的 { text, hint }——text 承载选区全部信息，hint 取起点供重锚定
+// 消歧。空/纯空白返回 null（调用方丢弃，不出确认小条）
+export function makeFreeSelection (pageText, spans, offA, offB) {
+  const a = Math.max(0, Math.min(offA, offB))
+  const b = Math.min(pageText.length, Math.max(offA, offB))
+  const text = normalizeText(pageText.slice(a, b))
+  if (!text) return null
+  return { text, hint: offsetToItem(spans, a) }
+}
+
+// 端点步进（§6.6 确认小条 ‹/›）：向外移一字并跳过空白——落在空白上
+// 视觉无变化。dir<0 左端外扩（a 左移），dir>0 右端外扩（b 右移）
+export function stepEndpoint (pageText, off, dir) {
+  if (dir < 0) {
+    let a = off
+    while (a > 0 && /\s/.test(pageText[a - 1])) a--
+    return Math.max(0, a - 1)
+  }
+  let b = off
+  while (b < pageText.length && /\s/.test(pageText[b])) b++
+  return Math.min(pageText.length, b + 1)
+}
+
 export function buildSearchIndex (text) {
   let norm = ''
   const back = []

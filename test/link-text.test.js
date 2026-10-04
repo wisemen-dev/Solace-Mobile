@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildPageText, offsetToItem, splitSentences, sentenceAt,
-  normalizeText, buildSearchIndex, findRangeByText
+  normalizeText, buildSearchIndex, findRangeByText,
+  makeFreeSelection, stepEndpoint
 } from '../mobile-web/js/mobile/link-text.mjs'
 
 const items = [
@@ -88,4 +89,44 @@ test('findRangeByText：跨行目标（搜索侧归一化匹配）', () => {
   // 第一个原文字符上，故不含尾随空白——与上一条 'alpha'→{0,5} 同一口径
   const t = 'one\ntwo three'
   assert.deepEqual(findRangeByText(t, 'one two'), { start: 0, end: 7 })
+})
+
+/* ---- 自由选区（§6.6）：makeFreeSelection / stepEndpoint / 任意范围重锚定 ---- */
+
+test('makeFreeSelection：方向无关、空白归一、hint 取起点；空选区返回 null', () => {
+  const items = [{ str: '第一句。' }, { str: '第二句 words', hasEOL: true }, { str: '第三行' }]
+  const { text, spans } = buildPageText(items)
+  // item0 [0,4) item1 [4,14)+\n item2 [15,18)
+  const s = makeFreeSelection(text, spans, 4, 11) // 顺向：'第二句 wor'
+  assert.equal(s.text, '第二句 wor')
+  assert.deepEqual(s.hint, { item: 1, char: 0 })
+  const r = makeFreeSelection(text, spans, 11, 4) // 逆向同范围
+  assert.equal(r.text, s.text)
+  assert.deepEqual(r.hint, s.hint)
+  const cross = makeFreeSelection(text, spans, 2, 17) // 跨三个 item，含 \n
+  assert.equal(cross.text, '句。第二句 words 第三行')
+  assert.equal(makeFreeSelection(text, spans, 9, 9), null) // 空
+  assert.equal(makeFreeSelection(text, spans, 13, 14), null) // 仅一个换行符（索引 13 是 \n）
+  const clamped = makeFreeSelection(text, spans, -5, 999) // 越界 clamp
+  assert.ok(clamped.text.startsWith('第一句'))
+})
+
+test('makeFreeSelection → findRangeByText 往返：任意子串能重锚定回同一范围', () => {
+  const items = [{ str: 'alpha beta' }, { str: 'gamma', hasEOL: true }, { str: 'delta end' }]
+  const { text, spans } = buildPageText(items)
+  for (const [a, b] of [[0, 10], [6, 15], [2, 20], [11, 16]]) {
+    const sel = makeFreeSelection(text, spans, a, b)
+    const hint = spans[sel.hint.item].start + sel.hint.char
+    const r = findRangeByText(text, sel.text, hint)
+    assert.ok(r, `range ${a}-${b} 应能重锚定`)
+    assert.equal(text.slice(r.start, r.end).replace(/\s+/g, ' ').trim(), sel.text)
+  }
+})
+
+test('stepEndpoint：向外步进一字并跳过空白，边界 clamp', () => {
+  const t = 'abc  def\nghi'
+  assert.equal(stepEndpoint(t, 5, -1), 2)  // 'd' 前有双空格：跳过后再纳入 'c'
+  assert.equal(stepEndpoint(t, 0, -1), 0)  // 左边界
+  assert.equal(stepEndpoint(t, 8, 1), 10)  // 换行后第一个实字 'g' 被纳入
+  assert.equal(stepEndpoint(t, 12, 1), 12) // 右边界
 })

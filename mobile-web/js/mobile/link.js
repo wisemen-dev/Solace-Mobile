@@ -7,7 +7,7 @@ import pdfjsLib from '../pdfjs.js'
 import { askConfirm } from '../dialog.js'
 import { esc } from '../util.js'
 import { closeNotes } from '../notespanel.js'
-import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText } from './link-text.mjs'
+import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText, makeFreeSelection, stepEndpoint } from './link-text.mjs'
 import { generateRecordMd, parseRecordMd } from './link-md.mjs'
 import { jumpPage } from './page-jump.mjs'
 
@@ -35,6 +35,12 @@ let selections = []                  // [{ page, text, hint }]（选词模式的
 let tray = null                      // #linkTray（选词托盘，懒建）
 let pendingFlash = null              // { docId, file, page }：跳回定位待闪标记（同页当场闪，异页等渲染）
 let layerDown = null                 // 点按判定起点 { id, x, y, t }（与 mobile.js 同风格）
+let pressTimer = null                // 长按定时器（自由拖选入口，§6.6）
+let press = null                     // 长按观察中的按下 { id, x, y }
+let dragSel = null                   // 进行中的拖选 { ptr, a, b }（页面文本偏移）
+let dragPending = null               // 抬手后待确认的选区 { page, a, b, text, hint }
+let dragBar = null                   // 拖选确认小条（‹/›/入选/取消）
+let dragRaf = 0                      // 拖选预览的 rAF 节流句柄
 
 window.linkSelecting = false
 
@@ -87,6 +93,11 @@ function applyLayout (d) {
 
 async function buildLayer (d) {
   const seq = ++buildSeq
+  // 拖选确认是单页模态：翻页即丢弃待确认选区（§6.6）
+  if (dragPending && String(dragPending.page) !== String(d.page)) {
+    dragPending = null
+    if (dragBar) dragBar.hidden = true
+  }
   await loadLinks(d.docId)
   if (seq !== buildSeq) return
   if (!shouldBuild()) { layer.textContent = ''; layer.hidden = true; return }
@@ -206,6 +217,12 @@ function renderMarkers (d) {
       const r = findRangeByText(entry.pageText, sel.text, hint)
       if (r) rangesToItems(entry, r.start, r.end, '__sel__', 'lnk-sel', byItem)
     }
+    // 自由拖选（§6.6）：进行中与待确认共用 .lnk-drag；offset 是页面文本偏移，
+    // 无需重锚定搜索。与 .lnk 重叠时按 paintItem 先登记者规则以链接态优先
+    const drag = dragPending && String(dragPending.page) === String(d.page)
+      ? dragPending
+      : (dragSel ? { a: dragSel.a, b: dragSel.b } : null)
+    if (drag) rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), '__drag__', 'lnk-drag', byItem)
   }
   for (const [i, list] of byItem) {
     const el = layer.querySelector(`[data-item="${i}"]`)
@@ -260,6 +277,7 @@ async function openSelection () {
 
 function closeSelection (clear) {
   if (clear) selections = []
+  clearDragState() // 拖选/确认小条随模式退出一并清理（§6.6）
   window.linkSelecting = false
   document.body.classList.remove('link-selecting')
   if (tray) tray.hidden = true
@@ -272,6 +290,32 @@ document.getElementById('btnLink')?.addEventListener('click', () => openSelectio
 
 // 点按分流：记录标记优先（阅读模式也可点开，选中态标记不响应），其余走选词。
 // 选词时命中判据用 [data-item] 反查文本项，再把项内字符偏移换算成页面文本偏移
+// 坐标 → 页面文本偏移（§6.2 与 §6.6 共用：点选整句 / 长按拖选同一条命中链路）
+function caretToOffset (x, y) {
+  const caret = document.caretPositionFromPoint
+    ? document.caretPositionFromPoint(x, y)
+    : (document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null)
+  if (!caret) return null
+  const node = caret.offsetNode || caret.startContainer
+  const el = node && node.nodeType === 1 ? node : node && node.parentElement
+  const itemEl = el && el.closest('[data-item]')
+  if (!itemEl || !layer.contains(itemEl)) return null
+  const item = Number(itemEl.dataset.item)
+  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  if (!entry || !entry.spans[item]) return null
+  // caret 偏移要相对**整个文本项**量：标记 span 把项文本切成了多个节点，
+  // 直接取 caret.offset（相对所在文本节点）会算错
+  let charInItem
+  try {
+    const range = document.createRange()
+    range.selectNodeContents(itemEl)
+    range.setEnd(node, caret.offset !== undefined ? caret.offset : caret.startOffset)
+    charInItem = range.toString().length
+  } catch { return null }
+  const span = entry.spans[item]
+  return span.start + Math.min(charInItem, span.end - span.start)
+}
+
 function onLayerTap (e) {
   if (!lastLayout) return
   // 点按判定（§6.2，同 mobile.js 风格）：<300ms 且位移 <12px 才算点按。
@@ -287,28 +331,11 @@ function onLayerTap (e) {
     return
   }
   if (!window.linkSelecting) return
-  const caret = document.caretPositionFromPoint
-    ? document.caretPositionFromPoint(e.clientX, e.clientY)
-    : (document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null)
-  if (!caret) return
-  const node = caret.offsetNode || caret.startContainer
-  const el = node && node.nodeType === 1 ? node : node && node.parentElement
-  const itemEl = el && el.closest('[data-item]')
-  if (!itemEl || !layer.contains(itemEl)) return
-  const item = Number(itemEl.dataset.item)
+  if (dragPending) return // 确认小条模态中：点层已在 down 阶段取消小条，这里不再选句
+  const off = caretToOffset(e.clientX, e.clientY)
+  if (off == null) return
   const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
-  if (!entry || !entry.spans[item]) return
-  // caret 偏移要相对**整个文本项**量：标记 span 把项文本切成了多个节点，
-  // 直接取 caret.offset（相对所在文本节点）会算错
-  let charInItem
-  try {
-    const range = document.createRange()
-    range.selectNodeContents(itemEl)
-    range.setEnd(node, caret.offset !== undefined ? caret.offset : caret.startOffset)
-    charInItem = range.toString().length
-  } catch { return }
-  const span = entry.spans[item]
-  const off = span.start + Math.min(charInItem, span.end - span.start)
+  if (!entry) return
   const sentences = splitSentences(entry.pageText)
   const si = sentenceAt(sentences, off)
   const r = sentences[si]
@@ -322,6 +349,175 @@ function onLayerTap (e) {
   trayUpdate()
   buildLayer(lastLayout).catch(() => {}) // 重绘选中态（标记与选中态在一次重建里合并渲染）
 }
+
+/* ================= 自由拖选（§6.6：长按起点 + 拖动 + 确认小条） ============ */
+
+function ensureDragBar () {
+  if (dragBar) return
+  dragBar = document.createElement('div')
+  dragBar.id = 'linkDragBar'
+  dragBar.className = 'link-drag-bar'
+  dragBar.hidden = true
+  dragBar.innerHTML = `
+    <span class="link-drag-text"></span>
+    <button class="drag-step" title="左端向外一字">‹</button>
+    <button class="drag-step" title="右端向外一字">›</button>
+    <button class="btn-ghost">取消</button>
+    <button class="btn-primary">入选</button>`
+  document.getElementById('previewOverlay').appendChild(dragBar)
+  const [btnL, btnR, btnX, btnOk] = dragBar.querySelectorAll('button')
+  btnL.addEventListener('click', () => stepDrag(-1))
+  btnR.addEventListener('click', () => stepDrag(1))
+  btnX.addEventListener('click', () => cancelDragPending())
+  btnOk.addEventListener('click', () => commitDragPending())
+}
+
+function updateDragBarText () {
+  if (!dragBar || !dragPending) return
+  const t = dragPending.text
+  dragBar.querySelector('.link-drag-text').textContent = t.length > 24 ? `${t.slice(0, 24)}…` : t
+}
+
+// 端点步进后重算选区：text/hint 跟随端点变化（hint 恒为当前起点）
+function stepDrag (dir) {
+  if (!dragPending || !lastLayout) return
+  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  if (!entry) return
+  if (dir < 0) dragPending.a = stepEndpoint(entry.pageText, dragPending.a, -1)
+  else dragPending.b = stepEndpoint(entry.pageText, dragPending.b, 1)
+  const made = makeFreeSelection(entry.pageText, entry.spans, dragPending.a, dragPending.b)
+  if (!made) return
+  dragPending.text = made.text
+  dragPending.hint = made.hint
+  updateDragBarText()
+  renderMarkers(lastLayout)
+}
+
+function commitDragPending () {
+  if (!dragPending) return
+  const p = dragPending
+  // 与整句「再点取消」对称：完全相同的选区（页+文字+起点）再入 = 移除
+  const idx = selections.findIndex(s => s.page === p.page && s.text === p.text &&
+    s.hint.item === p.hint.item && s.hint.char === p.hint.char)
+  if (idx >= 0) {
+    selections.splice(idx, 1)
+    window.toast?.('已移除该选区')
+  } else {
+    selections.push({ page: p.page, text: p.text, hint: p.hint })
+  }
+  dragPending = null
+  dragBar.hidden = true
+  trayUpdate()
+  renderMarkers(lastLayout)
+}
+
+function cancelDragPending () {
+  if (!dragPending) return
+  dragPending = null
+  dragBar.hidden = true
+  if (lastLayout) renderMarkers(lastLayout)
+}
+
+function clearDragState () {
+  clearTimeout(pressTimer)
+  pressTimer = null
+  press = null
+  dragSel = null
+  dragPending = null
+  window.linkDragging = false
+  cancelAnimationFrame(dragRaf)
+  dragRaf = 0
+  if (dragBar) dragBar.hidden = true
+}
+
+// 拖选事件（capture 先于 §6.2 点判监听）：长按成立置 window.linkDragging，
+// mobile.js 手势整体让位（与 inkActive 同款惯例）——拖选期间不翻页不滚动
+const bodyEl = document.getElementById('previewBody')
+bodyEl?.addEventListener('pointerdown', (e) => {
+  if (!window.linkSelecting) return
+  if (dragPending) { cancelDragPending(); return } // 小条模态：点层即取消本次
+  if (press || dragSel) return
+  const { x, y } = { x: e.clientX, y: e.clientY }
+  press = { id: e.pointerId, x, y }
+  pressTimer = setTimeout(() => {
+    pressTimer = null
+    press = null
+    if (!lastLayout) return
+    const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+    if (!entry) return
+    const off = caretToOffset(x, y)
+    if (off == null) return
+    dragSel = { ptr: e.pointerId, a: off, b: off }
+    window.linkDragging = true
+    try { navigator.vibrate?.(8) } catch { /* 无振动模块忽略 */ }
+    try { layer.setPointerCapture?.(e.pointerId) } catch { /* 合成事件无真实指针 */ }
+    renderMarkers(lastLayout)
+  }, 400)
+}, true)
+bodyEl?.addEventListener('pointermove', (e) => {
+  // 长按窗口内位移超限 = 用户在滑动翻页，取消定时器让位
+  if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) >= 12) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+    press = null
+  }
+  if (dragSel && e.pointerId === dragSel.ptr) {
+    const off = caretToOffset(e.clientX, e.clientY)
+    if (off != null && off !== dragSel.b) {
+      dragSel.b = off
+      // rAF 节流：renderMarkers 重切 span 足够轻，但不随 move 事件频率跑
+      if (!dragRaf) {
+        dragRaf = requestAnimationFrame(() => {
+          dragRaf = 0
+          if (dragSel && lastLayout) renderMarkers(lastLayout)
+        })
+      }
+    }
+  }
+}, true)
+bodyEl?.addEventListener('pointerup', (e) => {
+  clearTimeout(pressTimer)
+  pressTimer = null
+  press = null
+  if (dragSel && e.pointerId === dragSel.ptr) {
+    const sel = dragSel
+    dragSel = null
+    window.linkDragging = false
+    // 拖选的抬手不携带任何翻页/点按语义：capture 阶段截断传播，否则
+    // mobile.js 在冒泡阶段看到的 linkDragging 已被清除，横拖会被判成
+    // 滑动翻页——翻页又触发「翻页取消小条」，选区被整体丢弃（真机实测）
+    e.stopPropagation()
+    if (!lastLayout) return
+    const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+    const made = entry && makeFreeSelection(entry.pageText, entry.spans, sel.a, sel.b)
+    if (!made) { renderMarkers(lastLayout); return } // 空选区：丢弃不出小条
+    dragPending = {
+      page: lastLayout.page,
+      a: Math.min(sel.a, sel.b),
+      b: Math.max(sel.a, sel.b),
+      text: made.text,
+      hint: made.hint
+    }
+    ensureDragBar()
+    updateDragBarText()
+    dragBar.hidden = false
+    renderMarkers(lastLayout)
+  }
+}, true)
+bodyEl?.addEventListener('pointercancel', (e) => {
+  clearTimeout(pressTimer)
+  pressTimer = null
+  press = null
+  if (dragSel && e.pointerId === dragSel.ptr) {
+    dragSel = null
+    window.linkDragging = false
+    if (lastLayout) renderMarkers(lastLayout)
+  }
+}, true)
+// 系统长按菜单（复制/分享）：选词与拖选期间全部抑制
+bodyEl?.addEventListener('contextmenu', (e) => {
+  if (window.linkSelecting || window.linkDragging) e.preventDefault()
+})
 
 // 记录编辑器：创建（整理本次选集）与编辑（回读 .md 正文）两条入口
 let edDlg = null

@@ -73,6 +73,7 @@ previewBody.addEventListener('pointerdown', (e) => {
 previewBody.addEventListener('pointerup', (e) => {
   activePtrs.delete(e.pointerId)
   if (window.inkActive) return
+  if (window.linkDragging) return // 自由拖选中（§6.6）：手势让位，抬手不翻页不点按
   if (!ptr || e.pointerId !== ptr.id) return
   const p = ptr
   ptr = null
