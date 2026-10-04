@@ -1436,6 +1436,21 @@ git add mobile-web/js/mobile/link.js mobile-web/css/mobile.css
 git commit -m "feat: 摘录链接 P3——正文标记渲染与重锚定（hint 消歧/闪烁定位基础）"
 ```
 
+**实施偏差（2026-10-04）**
+
+1. **标记与选中态合并成一遍重建**：计划按区间逐个改 DOM（wrapRange），两遍
+   时后一遍会拿原文本重切、把前一遍的标记覆盖掉（记录标记 + 选中态重叠时
+   必然发生）。实现改为「按文本项聚合区间 → 每项一次重切」，重叠区间取
+   先登记者（记录优先于选中态）。
+2. **CSS 收窄为 `.ink-text-layer > span`**：标记 span 是插在文本项**内部**的，
+   后代选择器会让它也被绝对定位 + 透明色，跑出行首、整体错位。
+3. **caret 偏移改用 Range 量**：标记把项文本切成多个节点后，
+   `caret.offset`（相对所在文本节点）不再等于项内偏移，直接相加会算错句子。
+4. textCache 键统一为 `${docId}:${page}`（计划写裸 page，与 T6 已改的键不符）。
+5. L4 三条计划外的强化断言：项内片段标记的 x 必须右移（内联定位的决定性
+   判据，实测 offsetX=170.6px）、重复句的 hint 必须命中第 5 项（第二处）、
+   标记纵向中心须落在所在文本行内。
+
 ### Task 9: 记录编辑器（创建/编辑/保存/失败重试/退化）
 
 **Files:**
@@ -1773,8 +1788,23 @@ window.openNoteEditor = function (docId, file, title, content) {
 Run: `node link-test.mjs` → 全过
 ```bash
 git add mobile-web/js/mobile/link.js mobile-web/js/mobile/mobile.js mobile-web/css/mobile.css scripts/sync-www.mjs www/
-git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/新建钩子/点击跳回定位）+ 补丁 34→37"
+git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/新建钩子/点击跳回定位）+ 补丁 35→38"
 ```
+
+**实施偏差（2026-10-04）**
+
+1. **多了第 3 个 notespanel 补丁，计数 35→38 而非 35→37**：Step 5 的 L7 要求
+   「面板删记录 → 标记消失」，但删除路径没有任何地方通知渲染侧——不补钩子
+   的话标记要等下次保存/重开预览才消失。新增「删除成功后回调
+   `__linkNoteDeleted`」。PORTING 补丁清单已同步（notespanel 6 处，共 38）。
+2. `jumpToExcerpt` 顺手 `closeNotes()`：不收起面板的话跳过去也被面板挡着，
+   看不见闪烁的目标。（`__linkNewOverride` 进选词前本来就要收面板，一致。）
+3. **修 harness mock 的 bug**：计划给的 `listNotes` mock 返回**裸数组**，而
+   真桥与 notespanel 的约定是 `{ notes: [...] }`——`const { notes } = await
+   ...` 解构出 undefined，列表渲染抛「Cannot read properties of undefined
+   (reading 'length')」。L6 是第一个用到笔记列表的场景，这个坑到此刻才暴露。
+4. L6 的闪烁断言用 **class 属性的 MutationObserver**（`lnk-flash` 是给已存在
+   元素加类，childList 观察不到）；L7 驱动删除确认对话框（`#confirmDialogOk`）。
 
 ---
 
