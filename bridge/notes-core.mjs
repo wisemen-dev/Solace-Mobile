@@ -19,31 +19,42 @@ export function createNotes ({ fs, now = () => new Date() }) {
     return `${docDir(docId)}/${name}`
   }
 
+  // 「不存在」类错误分类：只有它才是正常空态。Capacitor 原生侧（IONFILE
+  // DoesNotExist）报 "... does not exist."（code OS-PLUG-FILE-0008）；
+  // 内存/web 实现为 ENOENT / "no such"。分不清的一律上抛——宁可让调用方
+  // 看到错误，也不能把真故障谎报成空列表
+  const isNotFoundError = (e) => {
+    if (e && e.code === 'OS-PLUG-FILE-0008') return true
+    return /does not exist|ENOENT|no such/i.test(String((e && e.message) || e || ''))
+  }
+
   async function list (docId) {
     const dir = docDir(docId)
     let entries
     try {
       entries = await fs.readdir(dir)
-    } catch {
-      return { notes: [] } // 这本书还没有笔记目录
+    } catch (e) {
+      // 目录不存在 = 这本书还没有笔记（目录由 createNote 懒建）；其余读失败
+      // 必须上抛：这份列表是摘录锚点「.md 真不在」的唯一判据，谎报空列表
+      // 会被孤儿剪除当成「笔记全被删了」而清光整本侧车（数据损失）
+      if (isNotFoundError(e)) return { notes: [] }
+      throw e
     }
     const notes = []
     for (const ent of entries) {
       if (ent.type === 'directory' || !ent.name.toLowerCase().endsWith('.md')) continue
-      let st
+      let st = null
       try {
         st = await fs.stat(`${dir}/${ent.name}`)
-      } catch {
-        continue // readdir 与 stat 的间隙里被删的文件：跳过
-      }
+      } catch { /* stat 失败不得丢条目：漏出会被孤儿剪除误删该条锚点，元数据置空即可 */ }
       notes.push({
         file: ent.name,
-        mtime: new Date(st.mtime).toISOString(),
-        birth: new Date(st.ctime ?? st.mtime).toISOString(),
-        size: st.size
+        mtime: st ? new Date(st.mtime).toISOString() : null,
+        birth: st ? new Date(st.ctime ?? st.mtime).toISOString() : null,
+        size: st ? st.size : 0
       })
     }
-    notes.sort((a, b) => new Date(b.mtime) - new Date(a.mtime)) // 最近修改在上
+    notes.sort((a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0)) // 最近修改在上
     return { notes }
   }
 

@@ -2112,31 +2112,35 @@
       }
       return `${docDir(docId)}/${name}`;
     }
+    const isNotFoundError = (e) => {
+      if (e && e.code === "OS-PLUG-FILE-0008") return true;
+      return /does not exist|ENOENT|no such/i.test(String(e && e.message || e || ""));
+    };
     async function list(docId) {
       const dir = docDir(docId);
       let entries;
       try {
         entries = await fs2.readdir(dir);
-      } catch {
-        return { notes: [] };
+      } catch (e) {
+        if (isNotFoundError(e)) return { notes: [] };
+        throw e;
       }
       const notes2 = [];
       for (const ent of entries) {
         if (ent.type === "directory" || !ent.name.toLowerCase().endsWith(".md")) continue;
-        let st;
+        let st = null;
         try {
           st = await fs2.stat(`${dir}/${ent.name}`);
         } catch {
-          continue;
         }
         notes2.push({
           file: ent.name,
-          mtime: new Date(st.mtime).toISOString(),
-          birth: new Date(st.ctime ?? st.mtime).toISOString(),
-          size: st.size
+          mtime: st ? new Date(st.mtime).toISOString() : null,
+          birth: st ? new Date(st.ctime ?? st.mtime).toISOString() : null,
+          size: st ? st.size : 0
         });
       }
-      notes2.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
+      notes2.sort((a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0));
       return { notes: notes2 };
     }
     let createChain = Promise.resolve();

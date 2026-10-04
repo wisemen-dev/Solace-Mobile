@@ -19,7 +19,7 @@ const textCache = new Map()          // `${docId}:${page}` -> { tc, items, pageT
 const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let tray = null                      // #linkTray（选词托盘，懒建）
-let pendingFlash = null              // { docId, file }：跳回定位时等目标页渲染完再闪烁
+let pendingFlash = null              // { docId, file, page }：跳回定位待闪标记（同页当场闪，异页等渲染）
 
 window.linkSelecting = false
 
@@ -37,11 +37,16 @@ function shouldBuild () {
 
 async function loadLinks (docId) {
   if (!docId || linksCache.has(docId)) return linksCache.get(docId)
-  let data = { records: {} }
-  try { data = await window.solace.readNoteLinks(docId) } catch { /* 读失败按无记录 */ }
-  if (data.notice) window.toast?.(data.notice)
-  linksCache.set(docId, data)
-  return data
+  try {
+    const data = await window.solace.readNoteLinks(docId)
+    if (data.notice) window.toast?.(data.notice)
+    linksCache.set(docId, data)
+    return data
+  } catch {
+    // 读失败按无记录，但**不缓存**：一次瞬时失败（如读目录失败触发的保护性
+    // 上抛）不该把「空」钉到整段预览会话，下次渲染重试
+    return { records: {} }
+  }
 }
 
 function ensureLayer () {
@@ -110,6 +115,14 @@ window.addEventListener('solace-ink-layout', async (e) => {
 })
 
 window.addEventListener('solace-ink-close', () => {
+  // 预览关闭 = 会话结束：选词状态必须全复位——残留的 linkSelecting 会挡住
+  // 边缘点按翻页、吞掉下一个返回键；残留的选集/托盘会在下一本书里以当前书
+  // 为 docId 误存旧书摘录
+  selections = []
+  window.linkSelecting = false
+  document.body.classList.remove('link-selecting')
+  if (tray) tray.hidden = true
+  pendingFlash = null
   buildSeq++
   lastLayout = null
   if (layer) { layer.textContent = ''; layer.hidden = true }
@@ -183,15 +196,9 @@ function renderMarkers (d) {
     const el = layer.querySelector(`[data-item="${i}"]`)
     if (el) paintItem(el, list)
   }
-  // 跳回定位：目标页渲染完才闪（一次性消费）
-  if (pendingFlash && pendingFlash.docId === d.docId) {
-    const t = layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
-    pendingFlash = null
-    if (t) {
-      t.scrollIntoView({ block: 'center' })
-      t.classList.add('lnk-flash')
-      setTimeout(() => t.classList.remove('lnk-flash'), 1100)
-    }
+  // 跳回定位：目标页渲染完才闪（一次性消费；同页跳回在 jumpToExcerpt 直接闪）
+  if (pendingFlash && pendingFlash.docId === d.docId && String(pendingFlash.page) === String(d.page)) {
+    tryFlashNow()
   }
 }
 
@@ -453,6 +460,22 @@ window.__linkNoteDeleted = (docId, file) => {
   }, 30)
 }
 
+// 待闪标记消费：滚动到目标 + 闪烁。目标页已是当前页时当场消费——同页跳回
+// 不触发翻页重渲染，不直接闪就会一直挂在 pendingFlash 上，下次本页任意
+// 重渲染才乱闪
+function tryFlashNow () {
+  if (!pendingFlash || !lastLayout || !layer) return false
+  if (pendingFlash.docId !== lastLayout.docId) return false
+  if (String(pendingFlash.page) !== String(lastLayout.page)) return false
+  const t = layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
+  pendingFlash = null
+  if (!t) return false
+  t.scrollIntoView({ block: 'center' })
+  t.classList.add('lnk-flash')
+  setTimeout(() => t.classList.remove('lnk-flash'), 1100)
+  return true
+}
+
 // 跳回：借页码输入框回车跳页，目标页渲染完成后由 pendingFlash 滚动 + 闪烁。
 // 顺手收起笔记面板——不然跳过去也被面板挡着，看不见闪烁的目标
 function jumpToExcerpt (docId, file) {
@@ -461,9 +484,11 @@ function jumpToExcerpt (docId, file) {
   const input = document.getElementById('pageJump')
   if (!input) return false
   closeNotes()
-  pendingFlash = { docId, file }
-  input.value = String(rec.excerpts[0].page)
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  pendingFlash = { docId, file, page: rec.excerpts[0].page }
+  if (!tryFlashNow()) {
+    input.value = String(rec.excerpts[0].page)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  }
   return true
 }
 
