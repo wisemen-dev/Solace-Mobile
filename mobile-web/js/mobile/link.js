@@ -4,7 +4,10 @@
 // 三个来源共同决定层内容：layout 事件（docId/页码/pageObj/viewport）、
 // linksCache（本书的锚点记录）、textCache（按 doc:page 缓存的文本与区间映射）。
 import pdfjsLib from '../pdfjs.js'
+import { askConfirm } from '../dialog.js'
+import { esc } from '../util.js'
 import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText } from './link-text.mjs'
+import { generateRecordMd, parseRecordMd } from './link-md.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
 let pdfCanvas = null
@@ -285,8 +288,126 @@ function onLayerTap (e) {
   buildLayer(lastLayout).catch(() => {}) // 重绘选中态（T8 标记渲染后合并进同一渲染）
 }
 
-// 占位：完整的记录编辑器在 T9 落地时替换本函数（保证中间提交不落破损态）
-function openEditor () { window.toast?.('记录编辑器将在下一任务接入') }
+// 记录编辑器：创建（整理本次选集）与编辑（回读 .md 正文）两条入口
+let edDlg = null
+let edCtx = null       // { mode, docId, file?, title, total, excerpts, degraded }
+let edDirty = false
+let edSaving = false
+
+function ensureEditor () {
+  if (edDlg) return
+  const wrap = document.createElement('div')
+  wrap.innerHTML = `
+    <dialog id="linkRecordDialog" class="dialog note-editor-dialog">
+      <div class="stats-head"><h3 id="linkRecordTitle">摘录记录</h3>
+        <button id="btnLinkEdClose" class="btn-ghost" title="关闭">✕</button></div>
+      <div id="linkChips" class="link-chips"></div>
+      <textarea id="linkRecordText" class="note-editor-text" spellcheck="false" placeholder="写点什么…"></textarea>
+      <div class="dialog-foot">
+        <button id="btnLinkEdCancel" class="btn-ghost">取消</button>
+        <button id="btnLinkEdSave" class="btn-primary">保存</button>
+      </div>
+    </dialog>`
+  document.body.appendChild(wrap.firstElementChild)
+  edDlg = document.getElementById('linkRecordDialog')
+  edDlg.querySelector('#linkRecordText').addEventListener('input', () => { edDirty = true })
+  edDlg.querySelector('#btnLinkEdSave').addEventListener('click', saveEditor)
+  edDlg.querySelector('#btnLinkEdCancel').addEventListener('click', requestEditorClose)
+  edDlg.querySelector('#btnLinkEdClose').addEventListener('click', requestEditorClose)
+  // 返回键：boot.mjs 先给最上层对话框一次拦截机会（未保存时弹确认）
+  edDlg.addEventListener('solace-close-request', (e) => { if (edDirty) { e.preventDefault(); requestEditorClose() } })
+}
+
+function renderChips () {
+  const box = edDlg.querySelector('#linkChips')
+  box.innerHTML = edCtx.degraded
+    ? '<span class="link-chip-degraded">文件格式已被外部修改，将按普通笔记保存（锚点保留）</span>'
+    : edCtx.excerpts.map((x, i) =>
+      `<span class="link-chip"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
+  box.querySelectorAll('.chip-x').forEach(b => b.addEventListener('click', () => {
+    edCtx.excerpts.splice(Number(b.dataset.i), 1)
+    edDirty = true
+    renderChips()
+  }))
+}
+
+async function openEditor (opts = {}) {
+  ensureEditor()
+  if (opts.mode === 'edit') {
+    const docLinks = linksCache.get(opts.docId)
+    const rec = docLinks && docLinks.records[opts.file]
+    if (!rec) { window.toast?.('记录已不存在'); return }
+    let raw = ''
+    try {
+      raw = await window.solace.readNote(opts.docId, opts.file)
+    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+    const parsed = parseRecordMd(raw)
+    // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
+    edCtx = { mode: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
+    edDlg.querySelector('#linkRecordText').value = parsed.body
+    edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
+  } else {
+    edCtx = {
+      mode: 'create',
+      docId: lastLayout.docId,
+      title: (document.getElementById('previewTitle') || {}).textContent || '摘录',
+      total: Number((document.getElementById('pageTotal') || {}).textContent) || 0,
+      excerpts: selections.map(s => ({ ...s })),
+      degraded: false
+    }
+    edDlg.querySelector('#linkRecordText').value = ''
+    edDlg.querySelector('#linkRecordTitle').textContent = '新建摘录记录'
+  }
+  edDirty = false
+  renderChips()
+  edDlg.showModal()
+  setTimeout(() => edDlg.querySelector('#linkRecordText').focus(), 60)
+}
+
+async function requestEditorClose () {
+  if (edDirty) {
+    const r = await askConfirm({ title: '放弃未保存的修改？', text: '关闭后这些内容将丢失。', okText: '放弃修改' })
+    if (!r) return
+  }
+  edDirty = false
+  edDlg.close()
+  // 创建流取消：选集保留、仍在选词模式（spec §6.3），无需额外动作
+}
+
+async function saveEditor () {
+  if (edSaving || !edCtx) return
+  edSaving = true
+  const btn = edDlg.querySelector('#btnLinkEdSave')
+  btn.disabled = true
+  try {
+    if (edCtx.mode === 'create') {
+      const { file } = await window.solace.createNote(edCtx.docId, { title: edCtx.title, page: edCtx.excerpts[0]?.page || 1, total: edCtx.total })
+      edCtx.file = file
+      edCtx.mode = 'edit' // 失败重试时不再重复建文件（幂等）
+    }
+    const body = edDlg.querySelector('#linkRecordText').value
+    const content = edCtx.degraded ? body : generateRecordMd(edCtx.excerpts, body)
+    await window.solace.writeNote(edCtx.docId, edCtx.file, content)
+    if (!edCtx.degraded) {
+      // 摘录全移除 → entry 传 null 即删条目（.md 同步退化成普通笔记）
+      await window.solace.setNoteLinkEntry(edCtx.docId, edCtx.file, edCtx.excerpts.length ? { excerpts: edCtx.excerpts } : null)
+    }
+    const { docId } = edCtx
+    edDirty = false
+    edDlg.close()
+    window.toast?.('记录已保存')
+    linksCache.delete(docId)
+    await loadLinks(docId)
+    if (lastLayout && lastLayout.docId === docId) await buildLayer(lastLayout)
+    window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
+    if (window.linkSelecting) closeSelection(true) // 创建完成即退出选词
+  } catch (err) {
+    window.toast?.(`保存失败：${err.message || err}`) // 留在编辑器，重试幂等（同一 file）
+  } finally {
+    edSaving = false
+    btn.disabled = false
+  }
+}
 
 // 点按监听绑在 #previewBody（静态 HTML，模块求值时已在）。文本层默认
 // pointer-events:none，选词模式下由 CSS 放开，事件冒泡到 body 层最稳

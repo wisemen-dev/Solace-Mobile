@@ -219,6 +219,17 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
 }
 .link-tray[hidden] { display: none; }
 
+/* 记录编辑器的摘录 chips */
+.link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
+.link-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px;
+  background: rgba(245, 159, 0, 0.14); border: 1px solid rgba(245, 159, 0, 0.4);
+  font-size: 12px; max-width: 100%;
+}
+.link-chip b { color: #b26a00; font-weight: 600; }
+.chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
+.link-chip-degraded { font-size: 12px; color: #8a94a0; }
+
 /* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
    深浅色主题下都可读 */
 .ink-toolbar {
