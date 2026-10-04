@@ -73,7 +73,11 @@ previewBody.addEventListener('pointerdown', (e) => {
 previewBody.addEventListener('pointerup', (e) => {
   activePtrs.delete(e.pointerId)
   if (window.inkActive) return
-  if (window.linkDragging) return // 自由拖选中（§6.6）：手势让位，抬手不翻页不点按
+  if (window.linkDragging) return
+  // link.js 拖选/滚动消费掉的抬手：清手势状态并让位（不翻页不点按）。
+  // 不能靠它 stopPropagation——那样这里的 activePtrs 永远收不到 delete，
+  // 残留一枚指针后单指手势判定永久失效（真机实测横滑翻页失灵）
+  if (e.__consumedByLink) { ptr = null; return }
   if (!ptr || e.pointerId !== ptr.id) return
   const p = ptr
   ptr = null

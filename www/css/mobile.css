@@ -204,8 +204,10 @@ body,
 .lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
 @keyframes lnk-flash { 50% { background: rgba(245, 159, 0, 0.75); } }
 
-/* 选词模式：放开文本层与 span 的指针/选择（点选整句，禁原生选择） */
-body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
+/* 选词模式：放开文本层指针并取手势主权（§6.6 修订）。touch-action:none 是
+   关键：浏览器 pan-y 会在拖选带纵向分量时启动滚动并发 pointercancel 杀死
+   拖选（真机实测）；交出 pan 后，快滑滚动/双指滚动由 link.js 自实现 */
+body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; touch-action: none; }
 .ink-text-layer .lnk-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
 
 /* 选词托盘：浮在预览底栏上方居中（同墨迹工具栏位）。注意 [hidden] 必须显式
@@ -223,21 +225,24 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
    链接态（琥珀）之间的第三种视觉 */
 .ink-text-layer .lnk-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
 
-/* 拖选确认小条：托盘正上方居中（单选区模态：预览文字 + 端点步进 + 入选/取消） */
+/* 拖选确认小条（§6.6 修订）：小圆形图标按钮组胶囊——无文字预览（页面高亮
+   即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分 */
 .link-drag-bar {
   position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 8px; z-index: 6;
-  max-width: min(88vw, 680px);
-  padding: 7px 12px; border-radius: 12px;
-  background: rgba(18, 22, 27, 0.95); border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #e8edf2; font-size: 13px;
+  display: flex; align-items: center; gap: 6px; z-index: 6;
+  padding: 5px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 .link-drag-bar[hidden] { display: none; }
-.link-drag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44vw; }
-.drag-step {
-  border: 1px solid rgba(255, 255, 255, 0.22); background: transparent; color: inherit;
-  border-radius: 8px; padding: 2px 10px; cursor: pointer; font-size: 15px; line-height: 1.2;
+.link-drag-bar button {
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.16); background: transparent;
+  color: #1f2733; font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
 }
+.link-drag-bar button.primary { background: #3b7ddd; border-color: #3b7ddd; color: #fff; }
 
 /* 记录编辑器的摘录 chips */
 .link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
