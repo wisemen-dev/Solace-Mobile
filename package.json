@@ -1,7 +1,7 @@
 {
   "name": "solace-mobile",
   "productName": "Solace",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Solace 平板端 —— 本地 PDF 私人图书馆（Capacitor 移植版），与桌面端共用同一套 library.json 数据格式。",
   "author": "Molly",

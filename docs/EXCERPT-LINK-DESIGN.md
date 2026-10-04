@@ -296,5 +296,5 @@ Task 10 偏差）；同步更新 PORTING.md 补丁清单与 sync-www 末尾计�
 - 验证全绿：单测 63/63；harness（摘录链接 16 场景 / P3 专测 11 / 竞态 6 /
   墨迹目视 6）；真机（平板 80b6f44d）全流程通过（跨页点选 → 保存 → 重载
   标记常在 → 点标记编辑 → 列表跳回 → 删除 → 互斥 → 返回键链）。
-- 版本状态：CHANGELOG 已记 `[0.5.0] - 未发布（草稿）`；package.json /
-  APK versionName 未升，待定版时统一处理。
+- 版本状态：**已定版 0.5.0（2026-10-04）**——package.json / package-lock /
+  android versionCode 500 + versionName「0.5.0」，APK 已重建（未装机）。
