@@ -306,27 +306,34 @@ public class SolaceNativePlugin extends Plugin {
         String destPath = call.getString("destPath", "");
         io.execute(() -> {
             JSObject res = new JSObject();
-            File dest = libraryFile(destPath);
-            try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
-                if (in == null) throw new IllegalStateException("无法打开文件");
-                MessageDigest md = MessageDigest.getInstance("SHA-256");
-                //noinspection ResultOfMethodCallIgnored
-                dest.getParentFile().mkdirs();
-                long total = 0;
-                try (FileOutputStream out = new FileOutputStream(dest)) {
-                    byte[] buf = new byte[262144];
-                    int n;
-                    while ((n = in.read(buf)) > 0) {
-                        out.write(buf, 0, n);
-                        md.update(buf, 0, n);
-                        total += n;
+            // libraryFile 的越界拒绝必须落在 try 内：lambda 里未捕获的
+            // RuntimeException 会杀死 io 线程与整个进程（真机实测崩溃点）
+            File dest = null;
+            try {
+                dest = libraryFile(destPath);
+                try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(uri))) {
+                    if (in == null) throw new IllegalStateException("无法打开文件");
+                    MessageDigest md = MessageDigest.getInstance("SHA-256");
+                    //noinspection ResultOfMethodCallIgnored
+                    dest.getParentFile().mkdirs();
+                    long total = 0;
+                    try (FileOutputStream out = new FileOutputStream(dest)) {
+                        byte[] buf = new byte[262144];
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            md.update(buf, 0, n);
+                            total += n;
+                        }
                     }
+                    res.put("size", total);
+                    res.put("hash", toHex(md.digest()));
                 }
-                res.put("size", total);
-                res.put("hash", toHex(md.digest()));
             } catch (Exception e) {
-                //noinspection ResultOfMethodCallIgnored
-                dest.delete();
+                if (dest != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dest.delete();
+                }
                 res.put("error", "复制失败：" + e.getMessage());
             }
             call.resolve(res);
@@ -340,13 +347,15 @@ public class SolaceNativePlugin extends Plugin {
         String path = call.getString("path", "");
         io.execute(() -> {
             JSObject res = new JSObject();
-            File src = libraryFile(path);
-            try (InputStream in = new java.io.FileInputStream(src)) {
-                MessageDigest md = MessageDigest.getInstance("SHA-256");
-                byte[] buf = new byte[262144];
-                int n;
-                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-                res.put("hash", toHex(md.digest()));
+            try {
+                File src = libraryFile(path);
+                try (InputStream in = new java.io.FileInputStream(src)) {
+                    MessageDigest md = MessageDigest.getInstance("SHA-256");
+                    byte[] buf = new byte[262144];
+                    int n;
+                    while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+                    res.put("hash", toHex(md.digest()));
+                }
             } catch (Exception e) {
                 res.put("error", String.valueOf(e.getMessage()));
             }

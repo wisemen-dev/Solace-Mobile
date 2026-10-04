@@ -52,3 +52,14 @@
 - `npm run apk`：桥重建（含 mobile-web 副本刷新）、cap sync、gradle debug 构建成功。
 - 未修（需真机/设备验证，留待后续）：下载停滞 >1.5s 的半截文件稳定判据（与桌面端同语义）、鼠标拖出预览的指针残留（触屏为主场景）、textDivs 与 items 一一对应假设（pdf.js 实测行为）。
 - 真机与模拟器验证尚未执行。
+
+## 第三轮真机验证（2026-10-04，小米平板）
+
+- 安装启动零崩溃；首页 DOM 健康（书卡渲染、无错误浮层）。
+- 索引正常路径：getTextIndexStatus / searchTextIndex（'latex' 命中第 1 页），迁移函数改动无回归。
+- readNoteLinks（provider 快照版）：结构正常返回。
+- **原生越界首版引入进程崩溃（真机抓到）**：libraryFile 的 IllegalStateException 从 copyAndHash/hashLibraryPath 的 lambda try 块外抛出，io 线程未捕获异常杀死进程（Java 层无单测、RuntimeException 编译不报，仅真机暴露）。已把 libraryFile 调用纳入 try 并对 dest 判空；修复后越界路径返回 error 响应（含「路径越出资料库」），应用存活，正常路径 64 位哈希返回。
+- 预览打开（lshort 139 页）；标注模式工具栏 computed z-index=4，目录面板 6——遮挡关系修复生效。
+- 墨迹翻页对账（P1）：第 22 页落笔画到一半，真实点击「下一页」翻至 23 页后抬手——两页笔画数 0→0 / 5→5，作废笔未落盘（修复前将作为新笔混入第 23 页）。
+- 验证后退标注/预览复位；logcat 全程 FATAL 计数 0。
+- 人工体验项留待日常使用：双指手势冲突、SAF 换目录授权释放、下载自动入库补扫节律。
