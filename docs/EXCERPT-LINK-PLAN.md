@@ -732,11 +732,31 @@ export function findRangeByText (text, target, hintRaw = null) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过** → 11 用例全 PASS；加入 npm test → 65/65 PASS
+- [ ] **Step 4: 跑测试确认通过** → 10 用例全 PASS；加入 npm test → 63/63 PASS
+
+**实施偏差（2026-10-04，已核实）**
+
+1. **用例 1/2 的期望整体错位一位**：夹具 `'Hello world. '` 实为 **13** 字符
+   （原文按 14 记），连带 spans 应为 `{0,13} / {13,24} / {25,35}`、换行落在
+   24。已按真实长度重算并保留原语义：换行位置归前项末尾 =
+   `offsetToItem(spans, 24) = { item: 1, char: 11 }`，`{ item: 2, char: 0 }`
+   对应偏移 25（原文写的 26、25 都是错位后的值）。
+2. **用例 10 的 end 应为 7 而非 8**：`findRangeByText` 返回半开区间
+   `[start, end)`，`end = back[pick + len]` 落在匹配后的第一个原文字符上，
+   **不含尾随空白**——与用例 9 `'alpha' → {0,5}`（5 是空格下标、不含空格）
+   同一口径。原文的 8 会把尾随空格算进去，与用例 9 自相矛盾。
+3. **`splitSentences` 实现补「终止符后吸收空白串」**：原实现只吸收
+   CLOSERS 集合，导致用例 3/4 期望的句尾空格（`'End of line. '`、
+   `'stable. '`）落不进上一句——即原实现的输出与原文用例 3/4 自相矛盾。
+   吸收空白串后 3/4 按原文期望通过，且与 `'\n'`（终止符本身，本就在句内）
+   自洽；顺带修掉 `'a.\n\nb'` 会切出只含 `'\n'` 的垃圾句——归一化后为空、
+   点上去毫无反应的问题。
+4. 用例数记账：本任务实为 **10** 个用例（原写 11），`npm test` 为
+   **63/63**（原写 65）。
 - [ ] **Step 5: 提交**
 
 ```bash
-git add mobile-web/js/mobile/link-text.mjs test/link-text.test.js package.json
+git add mobile-web/js/mobile/link-text.mjs test/link-text.test.js package.json docs/EXCERPT-LINK-PLAN.md
 git commit -m "feat: 摘录链接 P2——页面文本/句子切分/重锚定纯函数（中英文断句与映射）"
 ```
 
