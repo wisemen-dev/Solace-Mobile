@@ -379,7 +379,9 @@ function onLayerTap (e) {
     return
   }
   if (!window.linkSelecting) return
-  if (dragPending) return // 确认小条模态中：点层已在 down 阶段取消小条，这里不再选句
+  // 短点在待确认选区上 = 取消它（滚动不取消——那是查看操作；只有明确的
+  // 点按意图才视为「不要这段了」）
+  if (dragPending) { cancelDragPending(); return }
   const off = caretToOffset(e.clientX, e.clientY)
   if (off == null) return
   const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
@@ -488,9 +490,8 @@ const twoMid = () => {
 
 bodyEl?.addEventListener('pointerdown', (e) => {
   if (!window.linkSelecting) return
-  // 小条模态：按下即取消待确认选区，但手势继续走状态机——长按可直接开
-  // 新一段拖选，不必先抬手再按一次
-  if (dragPending) cancelDragPending()
+  // 按下不取消待确认选区：滚动（快滑/双指）是查看操作，不该破坏它——
+  // 取消只发生在「真正开新选择」时（短点 onLayerTap / 长按 timer 回调）
   selPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY })
   // 第二指落下：单指状态作废（拖选/长按/快滑），进入双指滚动（同墨迹层惯例）
   if (selPtrs.size >= 2) {
@@ -512,6 +513,7 @@ bodyEl?.addEventListener('pointerdown', (e) => {
     if (!entry) return
     const off = caretOffsetForDrag(x, y)
     if (off == null) return
+    cancelDragPending() // 长按开新段：此刻才替换待确认选区
     dragSel = { ptr: pid, a: off, b: off }
     window.linkDragging = true
     try { navigator.vibrate?.(8) } catch { /* 无振动模块忽略 */ }
