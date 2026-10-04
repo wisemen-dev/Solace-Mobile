@@ -44,5 +44,13 @@ test('parse：正文保留内部空行与尾部换行', () => {
   const md = '> 【摘录】第 1 页\n> 句子\n\n\n正文第一行\n\n正文第三行\n'
   const r = parseRecordMd(md)
   assert.equal(r.ok, true)
-  assert.equal(r.body, '正文第一行\n\n正文第三行\n')
+  assert.equal(r.body, '\n正文第一行\n\n正文第三行\n')
+})
+
+test('摘录与正文分隔后不吞引用，保留正文开头空行', () => {
+  for (const body of ['> 我的引用\n\n继续正文', '> 全文是引用\n> 第二行', '\n\n> 引用\n', '']) {
+    const parsed = parseRecordMd(generateRecordMd([{ page: 1, text: '原文。' }], body))
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.body, body)
+  }
 })

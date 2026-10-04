@@ -55,6 +55,7 @@ const emptyBook = () => ({ version: 1, pages: {} }) // 空墨迹模型工厂
 let book = emptyBook()   // 整本书内存模型；防抖写盘
 let loadedDoc = null     // book 当前归属的 docId（null = 空置，等 layout 对账）
 let loadSeq = 0          // 内存模型代数：每次归位/关闭 +1，作废旧的在途读取
+let loadState = 'empty'  // loading / ready / error：读成功前不允许绘制或覆盖写
 let dirty = false
 let saveTimer = 0
 let pendingWrite = null  // 在途写盘；loadBook 前须等它完成，防旧盘态覆盖新内存
@@ -266,6 +267,7 @@ window.addEventListener('solace-ink-close', async () => {
   if (lastLayout !== layoutAtClose) return
   loadSeq++
   loadedDoc = null
+  loadState = 'empty'
   book = emptyBook()
   clearHistory() // 关预览即会话结束：重开从零开始
 })
@@ -296,7 +298,10 @@ function updateLayerVisibility () {
 // 未知（可能失败），必须等它结算后再补写一次旧书（引用最新、幂等），失败
 // 入快照队列；loadBook 读前等链结算。快照已脱离引用，不污染新书的 dirty
 function syncBookToDoc (docId) {
-  if (loadedDoc === docId) { redrawStatic(); updateLayerVisibility(); return }
+  if (loadedDoc === docId) {
+    if (loadState === 'error') startLoad(docId)
+    redrawStatic(); updateLayerVisibility(); return
+  }
   clearHistory() // 会话边界：操作栈不跨书（条目只对当前书的页数组有效）
   if (loadedDoc && (dirty || pendingWrite)) {
     const oldDoc = loadedDoc
@@ -313,7 +318,17 @@ function syncBookToDoc (docId) {
   clearTimeout(saveTimer)
   saveTimer = 0
   book = emptyBook()
-  loadBook(docId, ++loadSeq)
+  startLoad(docId)
+}
+
+function startLoad (docId) {
+  loadState = 'loading'
+  const seq = ++loadSeq
+  loadBook(docId, seq).catch(err => {
+    if (seq !== loadSeq || loadedDoc !== docId) return
+    loadState = 'error'
+    window.toast?.(`标注加载失败：${err.message || err}`, 6000)
+  })
 }
 
 async function loadBook (docId, seq) {
@@ -331,6 +346,7 @@ async function loadBook (docId, seq) {
   if (wi >= 0) {
     book = retryWrites.splice(wi, 1)[0].data
     dirty = true
+    loadState = 'ready'
     scheduleSave()
     redrawStatic()
     updateLayerVisibility()
@@ -340,28 +356,22 @@ async function loadBook (docId, seq) {
   try {
     res = await window.solace.readAnnotations(docId)
   } catch (err) {
-    window.toast?.(`标注读取失败：${err.message || err}`)
+    if (seq === loadSeq && loadedDoc === docId) {
+      loadState = 'error'
+      window.toast?.(`标注读取失败：${err.message || err}；重新进入标注可重试`, 6000)
+    }
+    return // 读故障绝不能放行空模型覆盖旧墨迹
   }
   // 代数作废：期间发生过归位/关闭（换书、关后重开——同书快速关开会有
   // 两个在途读取，仅比对 docId 区分不开，旧结果合并会把同一批笔迹翻倍）
   if (seq !== loadSeq) return
   if (loadedDoc !== docId) return
+  loadState = 'ready'
   if (res) {
     if (res.notice) window.toast?.(res.notice)
-    // 笔级合并：盘上页为底，在途窗口画的内存页把「盘上同页旧笔 + 内存新笔」
-    // 拼接（内存页只可能来自本窗口的 commitStroke，全是新增笔）——页级覆盖
-    // 会把盘上旧笔弄丢
-    const diskPages = res.pages || {}
-    const merged = { ...diskPages }
-    for (const key of Object.keys(book.pages)) {
-      const mem = book.pages[key]
-      const disk = diskPages[key]
-      merged[key] = disk
-        ? { w: disk.w, h: disk.h, strokes: disk.strokes.concat(mem.strokes) }
-        : mem
-    }
-    book = { version: 1, pages: merged }
-  } else if (!dirty) {
+    // loading 期间不允许修改模型，完整盘态直接成为本会话基准。
+    book = { version: 1, pages: res.pages || {} }
+  } else {
     book = emptyBook()
   }
   redrawStatic()
@@ -400,7 +410,7 @@ async function flushSave () {
       if (i >= 0) retryWrites.splice(i, 1)
     } else break
   }
-  if (!dirty || !lastLayout || loadedDoc !== lastLayout.docId) return
+  if (!dirty || !lastLayout || loadedDoc !== lastLayout.docId || loadState !== 'ready') return
   dirty = false
   // book 传引用：写盘在途的落笔会原样进入本次写（数据层串行化+同步
   // stringify 保证不撕裂）；失败置回 dirty 由防抖重试
@@ -408,7 +418,8 @@ async function flushSave () {
     const ok = await doWrite(loadedDoc, book)
     if (!ok) dirty = true
   })()
-  pendingWrite = p.finally(() => { if (pendingWrite === p) pendingWrite = null })
+  pendingWrite = p
+  p.finally(() => { if (pendingWrite === p) pendingWrite = null })
   await p
   if (dirty) scheduleSave()
 }
@@ -526,6 +537,11 @@ function suspendDrawing () {
 
 function onDown (e) {
   if (!active || !lastLayout) return
+  if (loadState !== 'ready') {
+    if (loadState === 'error') startLoad(lastLayout.docId)
+    window.toast?.('正在读取标注，请稍候再落笔', 1600)
+    return
+  }
   if (e.button !== undefined && e.button !== 0) return
   if (suspendDrawing()) return
   if (e.pointerType === 'pen') penDown = true

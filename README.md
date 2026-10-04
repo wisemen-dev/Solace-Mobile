@@ -57,7 +57,7 @@ npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
-`scripts/sync-www.mjs` 搬运并施加 **39 处移动端补丁**（锚点校验：上游改动
+`scripts/sync-www.mjs` 搬运并施加 **38 处移动端补丁**（锚点校验：上游改动
 导致锚点消失会显式报错，防止静默漂移）。桌面端更新后：
 
 ```bash
@@ -74,7 +74,7 @@ npm run push:library            # 推 %APPDATA%/solace/SolaceLibrary 到平板
 npm run push:library -- --wipe  # 先清空平板端资料库再推
 ```
 
-推完后结束应用后台再重新打开即生效（数据格式两端一致，无需转换）。
+脚本会在推送前停止平板端应用；推完后重新打开即生效（数据格式两端一致，无需转换）。停止应用失败时不会清库或推送。
 
 ### vivo 平板的安装确认
 

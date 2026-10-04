@@ -14,6 +14,30 @@ function harness () {
   return { fs, links: createLinks({ fs }) }
 }
 
+test('readPruned 保留损坏告示，剪除和读取不重复加载坏文件', async () => {
+  const { fs, links } = harness()
+  await fs.writeText(`links/${ID}.json`, '{bad')
+  const data = await links.readPruned(ID, new Set([FILE]))
+  assert.ok(data.notice?.includes('损坏'))
+  assert.deepEqual(data.records, {})
+  assert.ok(await fs.exists(`links/${ID}.corrupt-1.json`))
+  assert.equal(await fs.exists(`links/${ID}.json`), false)
+})
+
+test('readPruned 返回剪除后的数据，只在有孤儿时写回', async () => {
+  const { fs, links } = harness()
+  await links.setEntry(ID, FILE, ENTRY)
+  await links.setEntry(ID, 'orphan.md', ENTRY)
+  const data = await links.readPruned(ID, new Set([FILE]))
+  assert.deepEqual(Object.keys(data.records), [FILE])
+  assert.deepEqual((await links.read(ID)).records, data.records)
+  const write = fs.writeFileAtomicText
+  let writes = 0
+  fs.writeFileAtomicText = (...args) => { writes++; return write(...args) }
+  await links.readPruned(ID, new Set([FILE]))
+  assert.equal(writes, 0)
+})
+
 test('read：无文件返回空结构，不预建文件', async () => {
   const { fs, links } = harness()
   assert.deepEqual(await links.read(ID), { version: 1, records: {} })

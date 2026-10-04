@@ -388,7 +388,7 @@ btnNew.addEventListener('click', async () => {`],
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×7（共39）')
+console.log('补丁：index.html×10, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×7（共38）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

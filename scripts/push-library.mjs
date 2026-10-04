@@ -32,6 +32,11 @@ if (!existsSync(join(SRC, 'library.json'))) {
   process.exit(1)
 }
 
+// 先停止应用，防止旧内存的进度/封面/监视写入覆盖正在推送的资料库。
+// run 会在停止失败时结束脚本，目标目录尚未发生任何修改。
+console.log('停止平板端 Solace…')
+run('adb', ['shell', 'am', 'force-stop', ANDROID_PKG])
+
 if (process.argv.includes('--wipe')) {
   console.log('清空平板端资料库…')
   console.log('注意：--wipe 会同时清掉平板端手写标注（annotations/）与摘录链接锚点（links/），桌面端均无此数据，不可恢复')
@@ -40,4 +45,4 @@ if (process.argv.includes('--wipe')) {
 
 console.log(`推送：${SRC}\n  → ${DST}`)
 run('adb', ['push', SRC, DST_PARENT + '/.'])
-console.log('\n完成。平板上结束 Solace 后台后重新打开即生效。')
+console.log('\n完成。重新打开平板端 Solace 即生效。')

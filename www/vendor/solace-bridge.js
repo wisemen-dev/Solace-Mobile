@@ -1195,96 +1195,107 @@
   // bridge/constants.mjs
   var LIB_ROOT = "SolaceLibrary";
 
+  // bridge/file-errors.mjs
+  function isNotFoundError(err) {
+    if (err?.code) return err.code === "OS-PLUG-FILE-0008" || err.code === "ENOENT";
+    return /does not exist|ENOENT|no such/i.test(String(err?.message || err || ""));
+  }
+
   // bridge/fs-adapter.mjs
   var ROOT = LIB_ROOT;
   var DIR = Directory.External;
   var abs = (p) => `${ROOT}/${String(p).replace(/^\/+/, "")}`;
-  async function statOf(p) {
-    return Filesystem.stat({ path: abs(p), directory: DIR });
-  }
-  var writeChains = /* @__PURE__ */ new Map();
-  async function writeFileAtomicText(p, text) {
-    const prev = writeChains.get(p) || Promise.resolve();
-    const run = prev.then(async () => {
-      const tmp = `${p}.tmp`;
-      await Filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 });
-      await Filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR });
-    });
-    const tail = run.then(() => {
-    }, () => {
-    });
-    writeChains.set(p, tail);
-    tail.then(() => {
-      if (writeChains.get(p) === tail) writeChains.delete(p);
-    });
-    return run;
-  }
-  var fs = {
-    // 文本读写（library.json、索引分片、笔记）
-    async readFileText(p) {
-      const r = await Filesystem.readFile({ path: abs(p), directory: DIR, encoding: Encoding.UTF8 });
-      return r.data;
-    },
-    // base64 读写（PDF 副本、封面 jpg）
-    async readFileB64(p) {
-      const r = await Filesystem.readFile({ path: abs(p), directory: DIR });
-      return r.data;
-    },
-    writeFileAtomicText,
-    async writeText(p, text) {
-      await Filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 });
-    },
-    async writeB64(p, b64) {
-      await Filesystem.writeFile({ path: abs(p), data: b64, directory: DIR });
-    },
-    async rename(from, to) {
-      await Filesystem.rename({ from: abs(from), to: abs(to), directory: DIR, toDirectory: DIR });
-    },
-    async exists(p) {
-      try {
-        await statOf(p);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    // { type: 'file'|'directory', size, mtime(ms), ctime(ms) }
-    async stat(p) {
-      return statOf(p);
-    },
-    // [{ name, type }]
-    async readdir(p) {
-      const r = await Filesystem.readdir({ path: abs(p), directory: DIR });
-      return r.files;
-    },
-    async mkdirp(p) {
-      try {
-        await Filesystem.mkdir({ path: abs(p), directory: DIR, recursive: true });
-      } catch {
-      }
-    },
-    // 删除文件或目录（目录需 recursive）；返回是否删除成功，不抛错。
-    // 与桌面端 rmSync({force:true}) 对齐：目标不存在也视为成功（没东西可清
-    // 就不报 leftover）
-    async rm(p, { recursive = false } = {}) {
-      let st;
-      try {
-        st = await statOf(p);
-      } catch {
-        return true;
-      }
-      try {
-        if (st.type === "directory") {
-          await Filesystem.rmdir({ path: abs(p), directory: DIR, recursive });
-        } else {
-          await Filesystem.deleteFile({ path: abs(p), directory: DIR });
-        }
-        return true;
-      } catch {
-        return false;
-      }
+  function createFsAdapter({ filesystem = Filesystem } = {}) {
+    async function statOf(p) {
+      return filesystem.stat({ path: abs(p), directory: DIR });
     }
-  };
+    const writeChains = /* @__PURE__ */ new Map();
+    async function writeFileAtomicText(p, text) {
+      const prev = writeChains.get(p) || Promise.resolve();
+      const run = prev.then(async () => {
+        const tmp = `${p}.tmp`;
+        await filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 });
+        await filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR });
+      });
+      const tail = run.then(() => {
+      }, () => {
+      });
+      writeChains.set(p, tail);
+      tail.then(() => {
+        if (writeChains.get(p) === tail) writeChains.delete(p);
+      });
+      return run;
+    }
+    return {
+      // 文本读写（library.json、索引分片、笔记）
+      async readFileText(p) {
+        const r = await filesystem.readFile({ path: abs(p), directory: DIR, encoding: Encoding.UTF8 });
+        return r.data;
+      },
+      // base64 读写（PDF 副本、封面 jpg）
+      async readFileB64(p) {
+        const r = await filesystem.readFile({ path: abs(p), directory: DIR });
+        return r.data;
+      },
+      writeFileAtomicText,
+      async writeText(p, text) {
+        await filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 });
+      },
+      async writeB64(p, b64) {
+        await filesystem.writeFile({ path: abs(p), data: b64, directory: DIR });
+      },
+      async rename(from, to) {
+        await filesystem.rename({ from: abs(from), to: abs(to), directory: DIR, toDirectory: DIR });
+      },
+      async exists(p) {
+        try {
+          await statOf(p);
+          return true;
+        } catch (err) {
+          if (isNotFoundError(err)) return false;
+          throw err;
+        }
+      },
+      // { type: 'file'|'directory', size, mtime(ms), ctime(ms) }
+      async stat(p) {
+        return statOf(p);
+      },
+      // [{ name, type }]
+      async readdir(p) {
+        const r = await filesystem.readdir({ path: abs(p), directory: DIR });
+        return r.files;
+      },
+      async mkdirp(p) {
+        try {
+          await filesystem.mkdir({ path: abs(p), directory: DIR, recursive: true });
+        } catch (err) {
+          if (err?.code !== "OS-PLUG-FILE-0010" && !/already exists|EEXIST/i.test(String(err?.message || err))) throw err;
+        }
+      },
+      // 删除文件或目录（目录需 recursive）；返回是否删除成功，不抛错。
+      // 与桌面端 rmSync({force:true}) 对齐：目标不存在也视为成功（没东西可清
+      // 就不报 leftover）
+      async rm(p, { recursive = false } = {}) {
+        let st;
+        try {
+          st = await statOf(p);
+        } catch (err) {
+          return isNotFoundError(err);
+        }
+        try {
+          if (st.type === "directory") {
+            await filesystem.rmdir({ path: abs(p), directory: DIR, recursive });
+          } else {
+            await filesystem.deleteFile({ path: abs(p), directory: DIR });
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    };
+  }
+  var fs = createFsAdapter();
   async function rootUri() {
     try {
       await fs.mkdirp("");
@@ -1357,9 +1368,29 @@
   // bridge/library-core.mjs
   function createLibrary({ fs: fs2, sha256, randomUUID: randomUUID2, hashStorageFile, now = () => /* @__PURE__ */ new Date() }) {
     let data = null;
+    let committedData = null;
     let startupNotice = null;
     let textIndexMeta = { version: 1, entries: {} };
     let legacyMigration = null;
+    const mutationQ = createSerialQueue();
+    function mutate(fn) {
+      return mutationQ.run(async () => {
+        const before = structuredClone(data);
+        const beforeMeta = structuredClone(textIndexMeta);
+        try {
+          const result = await fn();
+          committedData = structuredClone(data);
+          return structuredClone(result);
+        } catch (err) {
+          data = structuredClone(committedData || before);
+          textIndexMeta = beforeMeta;
+          shardCache.clear();
+          shardCacheChars = 0;
+          throw err;
+        }
+      });
+    }
+    const mutator = (fn) => (...args) => mutate(() => fn(...args));
     async function nextCorruptName(p) {
       let backup = `${p}.corrupt`;
       let suffix = 1;
@@ -1381,6 +1412,7 @@
 \u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 ${backup}\uFF0C\u5E93\u5185 PDF \u526F\u672C\u4E0E\u5168\u6587\u7D22\u5F15\u672A\u5220\u9664\uFF0C\u53EF\u624B\u52A8\u53D6\u56DE\u6216\u91CD\u65B0\u5BFC\u5165\u3002`;
         await loadRoot({ sweep: false });
       }
+      committedData = structuredClone(data);
     }
     async function loadRoot(opts = {}) {
       await fs2.mkdirp("files");
@@ -1426,7 +1458,7 @@
       if (opts.sweep !== false) await sweepOrphans();
     }
     function getData() {
-      return structuredClone(data);
+      return structuredClone(committedData || data);
     }
     function getStartupNotice() {
       return startupNotice;
@@ -1451,6 +1483,7 @@
     }
     async function save() {
       await fs2.writeFileAtomicText("library.json", JSON.stringify(data, null, 2));
+      committedData = structuredClone(data);
     }
     const stemOf = (name) => String(name || "").replace(/\.[^.\\/]+$/, "");
     function normalizeDocuments() {
@@ -1493,9 +1526,8 @@
       if (backfilled) await save();
       return dup;
     }
-    const importQ = createSerialQueue();
     function importWith(meta, performCopy) {
-      return importQ.run(() => importWithLocked(meta, performCopy));
+      return mutate(() => importWithLocked(meta, performCopy));
     }
     async function importWithLocked(meta, performCopy) {
       const name = String(meta.fileName || "");
@@ -1546,9 +1578,7 @@
       const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
       const name = String(file.fileName || "");
       if (!name.toLowerCase().endsWith(".pdf")) {
-        return importQ.run(async () => {
-          throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
-        });
+        return Promise.reject(new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6"));
       }
       return (async () => {
         const size = Number.isFinite(file.size) ? file.size : bytes.length;
@@ -1559,7 +1589,7 @@
       })();
     }
     function importVia(meta, performCopyAndHash) {
-      return importQ.run(() => importViaLocked(meta, performCopyAndHash));
+      return mutate(() => importViaLocked(meta, performCopyAndHash));
     }
     async function importViaLocked(meta, performCopyAndHash) {
       const name = String(meta.fileName || "");
@@ -1633,13 +1663,17 @@
     async function removeDoc(id, opts = {}) {
       const doc = findDoc(id);
       data.documents = data.documents.filter((d) => d.id !== id);
-      if (textIndexMeta.entries[id]) {
-        delete textIndexMeta.entries[id];
-        await saveTextIndexMeta();
-        dropShardCache(id);
-      }
       await save();
       const leftovers = [];
+      if (textIndexMeta.entries[id]) {
+        delete textIndexMeta.entries[id];
+        try {
+          await saveTextIndexMeta();
+        } catch {
+          leftovers.push("textindex/index.json");
+        }
+        dropShardCache(id);
+      }
       const base = (p) => p.split("/").pop();
       for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`]) {
         if (!await fs2.rm(p)) leftovers.push(base(p));
@@ -1647,20 +1681,27 @@
       let notesKeptTo = null;
       let notesPurged = false;
       const notesDir = `notes/${doc.id}`;
-      if (opts.keepNotes && await fs2.exists(notesDir)) {
+      let hasNotes = false;
+      try {
+        hasNotes = await fs2.exists(notesDir);
+      } catch {
+        leftovers.push(base(notesDir));
+      }
+      if (opts.keepNotes && hasNotes) {
         const safe = String(doc.title || "").replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 40).replace(/[\s.]+$/, "").trim() || "\u672A\u547D\u540D";
         const p = (n2) => String(n2).padStart(2, "0");
         const t = now();
         const stamp = `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`;
         let dest = `notes/\u5DF2\u5220\u4E66-${safe}-${stamp}`;
         let n = 2;
-        while (await fs2.exists(dest)) dest = `notes/\u5DF2\u5220\u4E66-${safe}-${stamp} (${n++})`;
         try {
+          while (await fs2.exists(dest)) dest = `notes/\u5DF2\u5220\u4E66-${safe}-${stamp} (${n++})`;
           await fs2.rename(notesDir, dest);
           notesKeptTo = base(dest);
         } catch {
+          leftovers.push(base(notesDir));
         }
-      } else if (await fs2.exists(notesDir)) {
+      } else if (hasNotes) {
         if (await fs2.rm(notesDir, { recursive: true })) notesPurged = true;
         else leftovers.push(base(notesDir));
       }
@@ -1699,7 +1740,7 @@
       }
     }
     function getOpenStats() {
-      const days = data.openDays || {};
+      const days = (committedData || data).openDays || {};
       const d = now();
       let opens7d = 0;
       let opens30d = 0;
@@ -2089,27 +2130,27 @@
       importFile,
       importWith,
       importVia,
-      updateDoc,
-      removeDoc,
+      updateDoc: mutator(updateDoc),
+      removeDoc: mutator(removeDoc),
       readFileBuffer,
-      markOpened,
+      markOpened: mutator(markOpened),
       getOpenStats,
-      setProgress,
-      setCover,
+      setProgress: mutator(setProgress),
+      setCover: mutator(setCover),
       getCoverDataUrl,
-      getTextIndexStatus,
-      setTextIndex,
-      searchTextIndex,
-      addCategory,
-      renameCategory,
-      moveCategory,
-      removeCategory,
-      addTag,
-      removeTag,
-      addSmartShelf,
-      renameSmartShelf,
-      removeSmartShelf,
-      updateSettings
+      getTextIndexStatus: mutator(getTextIndexStatus),
+      setTextIndex: mutator(setTextIndex),
+      searchTextIndex: mutator(searchTextIndex),
+      addCategory: mutator(addCategory),
+      renameCategory: mutator(renameCategory),
+      moveCategory: mutator(moveCategory),
+      removeCategory: mutator(removeCategory),
+      addTag: mutator(addTag),
+      removeTag: mutator(removeTag),
+      addSmartShelf: mutator(addSmartShelf),
+      renameSmartShelf: mutator(renameSmartShelf),
+      removeSmartShelf: mutator(removeSmartShelf),
+      updateSettings: mutator(updateSettings)
     };
   }
 
@@ -2132,10 +2173,6 @@
       }
       return `${docDir(docId)}/${name}`;
     }
-    const isNotFoundError = (e) => {
-      if (e && e.code === "OS-PLUG-FILE-0008") return true;
-      return /does not exist|ENOENT|no such/i.test(String(e && e.message || e || ""));
-    };
     async function list(docId) {
       const dir = docDir(docId);
       let entries;
@@ -2351,18 +2388,22 @@
       return loadValidated(docId);
     }
     function pruneOrphans(docId, validFiles) {
-      return writeQ.run(async () => {
-        const data = await loadValidated(docId);
-        let pruned = false;
-        for (const key of Object.keys(data.records)) {
-          if (!validFiles.has(key)) {
-            delete data.records[key];
-            pruned = true;
-          }
+      return writeQ.run(async () => (await pruneLocked(docId, validFiles)).pruned);
+    }
+    function readPruned(docId, validFiles) {
+      return writeQ.run(async () => (await pruneLocked(docId, validFiles)).data);
+    }
+    async function pruneLocked(docId, validFiles) {
+      const data = await loadValidated(docId);
+      let pruned = false;
+      for (const key of Object.keys(data.records)) {
+        if (!validFiles.has(key)) {
+          delete data.records[key];
+          pruned = true;
         }
-        if (pruned) await writeLocked(docId, data);
-        return pruned;
-      });
+      }
+      if (pruned) await writeLocked(docId, data);
+      return { data, pruned };
     }
     async function writeLocked(docId, data) {
       const p = docFile(docId);
@@ -2398,7 +2439,7 @@
         delete d.records[file];
       });
     }
-    return { read, pruneOrphans, setEntry, removeEntry };
+    return { read, readPruned, pruneOrphans, setEntry, removeEntry };
   }
 
   // bridge/sha256.mjs
@@ -2471,7 +2512,7 @@
   }
 
   // bridge/olib-watch.mjs
-  function createWatch({ lib: lib2, fs: fs2, getSettings }) {
+  function createWatch({ lib: lib2, fs: fs2, getSettings, listFiles = listPdfs, copyFileAndHash = copyAndHash }) {
     let callbacks = null;
     let scanSeq = 0;
     let lastScanAt = 0;
@@ -2515,9 +2556,12 @@
     function reportError(message) {
       if (callbacks && callbacks.onError) callbacks.onError(message);
     }
-    async function importOne(file, st) {
+    async function importOne(file, st, isCurrent) {
       try {
-        const doc = await lib2.importVia({ fileName: file.name }, (staging) => copyAndHash(file.uri, staging));
+        const doc = await lib2.importVia({ fileName: file.name }, (staging) => {
+          if (!isCurrent()) throw Object.assign(new Error("\u626B\u63CF\u5DF2\u53D6\u6D88"), { canceled: true });
+          return copyFileAndHash(file.uri, staging);
+        });
         const catId = getSettings().watchCategory;
         if (catId) {
           const data = lib2.getData();
@@ -2532,6 +2576,7 @@
         stateDirty = true;
         notifyImported(doc);
       } catch (err) {
+        if (err?.canceled) return;
         if (err && err.duplicate) {
           st[file.uri] = { size: file.size, mtime: file.mtime };
           stateDirty = true;
@@ -2548,12 +2593,20 @@
     }
     async function scan(opts = {}) {
       const s2 = getSettings();
-      if (!s2.watchTreeUri || s2.watchEnabled === false) return;
+      if (!s2.watchTreeUri || s2.watchEnabled === false) {
+        scanSeq++;
+        return;
+      }
       if (!opts.force && !shouldRun()) return;
       const gen = ++scanSeq;
+      const isCurrent = () => {
+        const current = getSettings();
+        return gen === scanSeq && current.watchEnabled !== false && current.watchTreeUri === s2.watchTreeUri;
+      };
       const st = await loadState();
       try {
-        const files = await listPdfs(s2.watchTreeUri);
+        const files = await listFiles(s2.watchTreeUri);
+        if (!isCurrent()) return;
         const seen = new Set(files.map((f2) => f2.uri));
         for (const k of Object.keys(st)) {
           if (!seen.has(k)) {
@@ -2571,15 +2624,15 @@
         });
         if (candidates.length) {
           await new Promise((r) => setTimeout(r, 1500));
-          if (gen !== scanSeq) return;
-          const again = new Map((await listPdfs(s2.watchTreeUri)).map((f2) => [f2.uri, f2]));
+          if (!isCurrent()) return;
+          const again = new Map((await listFiles(s2.watchTreeUri)).map((f2) => [f2.uri, f2]));
           for (const f2 of candidates) {
-            if (gen !== scanSeq) return;
+            if (!isCurrent()) return;
             const cur = again.get(f2.uri);
             if (!cur || cur.size !== f2.size || cur.mtime !== f2.mtime) continue;
             const failedAt = failed.get(f2.uri);
             if (failedAt != null && failedAt === cur.mtime) continue;
-            await importOne(f2, st);
+            await importOne(f2, st, isCurrent);
           }
         }
         await saveState();
@@ -2795,12 +2848,11 @@
     readNote: gate((id, file) => notes.read(id, file)),
     writeNote: gate((id, file, text) => notes.write(id, file, text)),
     // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
-    // 显式两步：先按现存 .md 剪除孤儿（仅发现孤儿时写回），再纯读——读取
+    // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
     // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
     readNoteLinks: gate(async (id) => {
       const { notes: files } = await notes.list(id);
-      await links.pruneOrphans(id, new Set(files.map((f2) => f2.file)));
-      return links.read(id);
+      return links.readPruned(id, new Set(files.map((f2) => f2.file)));
     }),
     setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
     // entry=null → 删除

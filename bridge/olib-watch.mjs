@@ -15,7 +15,7 @@
 // 内容去重而已。
 import { listPdfs, copyAndHash } from './native.mjs'
 
-export function createWatch ({ lib, fs, getSettings }) {
+export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyFileAndHash = copyAndHash }) {
   let callbacks = null
   let scanSeq = 0 // 扫描代数：换目录/停用后，旧扫描在检查点自行退出
   let lastScanAt = 0
@@ -67,11 +67,15 @@ export function createWatch ({ lib, fs, getSettings }) {
     if (callbacks && callbacks.onError) callbacks.onError(message)
   }
 
-  async function importOne (file, st) {
+  async function importOne (file, st, isCurrent) {
     try {
       // 原生暂存管线：复制+哈希一次完成（内容同源，无写入竞态），
       // 查重通过后由数据层原子转正
-      const doc = await lib.importVia({ fileName: file.name }, (staging) => copyAndHash(file.uri, staging))
+      const doc = await lib.importVia({ fileName: file.name }, (staging) => {
+        // 导入可能在资料库变更队列里等待；轮到它时再次核对停用/换目录。
+        if (!isCurrent()) throw Object.assign(new Error('扫描已取消'), { canceled: true })
+        return copyFileAndHash(file.uri, staging)
+      })
       const catId = getSettings().watchCategory
       if (catId) {
         const data = lib.getData()
@@ -83,6 +87,7 @@ export function createWatch ({ lib, fs, getSettings }) {
       stateDirty = true
       notifyImported(doc)
     } catch (err) {
+      if (err?.canceled) return
       if (err && err.duplicate) {
         // 内容已在库中：记入状态，后续补扫直接跳过（桌面端靠重算哈希挡，
         // 平板补扫频繁，改为状态短路）
@@ -104,12 +109,17 @@ export function createWatch ({ lib, fs, getSettings }) {
 
   async function scan (opts = {}) {
     const s = getSettings()
-    if (!s.watchTreeUri || s.watchEnabled === false) return
+    if (!s.watchTreeUri || s.watchEnabled === false) { scanSeq++; return }
     if (!opts.force && !shouldRun()) return
     const gen = ++scanSeq
+    const isCurrent = () => {
+      const current = getSettings()
+      return gen === scanSeq && current.watchEnabled !== false && current.watchTreeUri === s.watchTreeUri
+    }
     const st = await loadState()
     try {
-      const files = await listPdfs(s.watchTreeUri)
+      const files = await listFiles(s.watchTreeUri)
+      if (!isCurrent()) return
       // 清理已离开目录的陈旧记录（文件被删/移走）：状态表不再无限增长
       const seen = new Set(files.map(f => f.uri))
       for (const k of Object.keys(st)) {
@@ -128,15 +138,15 @@ export function createWatch ({ lib, fs, getSettings }) {
         // 稳定判定：下载器渐进写入，两次枚举间 size/mtime 仍在变的跳过，
         // 留给下次补扫（桌面端是事件防抖 + 两次 stat，这里扫描式等价）
         await new Promise(r => setTimeout(r, 1500))
-        if (gen !== scanSeq) return // 期间配置已变（换目录/停用）
-        const again = new Map((await listPdfs(s.watchTreeUri)).map(f => [f.uri, f]))
+        if (!isCurrent()) return
+        const again = new Map((await listFiles(s.watchTreeUri)).map(f => [f.uri, f]))
         for (const f of candidates) {
-          if (gen !== scanSeq) return
+          if (!isCurrent()) return
           const cur = again.get(f.uri)
           if (!cur || cur.size !== f.size || cur.mtime !== f.mtime) continue
           const failedAt = failed.get(f.uri)
           if (failedAt != null && failedAt === cur.mtime) continue
-          await importOne(f, st)
+          await importOne(f, st, isCurrent)
         }
       }
       await saveState()

@@ -19,9 +19,33 @@ import { createSerialQueue } from './serial-queue.mjs'
 
 export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = () => new Date() }) {
   let data = null
+  let committedData = null // 渲染层只读已提交状态，不暴露在途导入/删除
   let startupNotice = null
   let textIndexMeta = { version: 1, entries: {} }
   let legacyMigration = null // 旧索引搬迁的 in-flight promise（并发调用等同一轮完成）
+
+  // 原子写只保护文件完整性；整个「改内存 → 写库 → 失败回滚」也必须串行。
+  // 所有资料库变更共用此队列，避免设置/进度把失败导入的中间态写回磁盘。
+  const mutationQ = createSerialQueue()
+  function mutate (fn) {
+    return mutationQ.run(async () => {
+      const before = structuredClone(data)
+      const beforeMeta = structuredClone(textIndexMeta)
+      try {
+        const result = await fn()
+        committedData = structuredClone(data)
+        return structuredClone(result)
+      } catch (err) {
+        // 去重回填等步骤可能已经成功提交；失败只回退到最近一次落库状态。
+        data = structuredClone(committedData || before)
+        textIndexMeta = beforeMeta
+        shardCache.clear()
+        shardCacheChars = 0
+        throw err
+      }
+    })
+  }
+  const mutator = fn => (...args) => mutate(() => fn(...args))
 
   /* ---- 启动与加载 ---- */
 
@@ -51,6 +75,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       startupNotice = `资料库数据文件损坏，已新建空资料库。\n原文件保留为资料库内 ${backup}，库内 PDF 副本与全文索引未删除，可手动取回或重新导入。`
       await loadRoot({ sweep: false })
     }
+    committedData = structuredClone(data)
   }
 
   async function loadRoot (opts = {}) {
@@ -97,7 +122,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 渲染层拿到的是深拷贝：桌面端经 IPC 结构化克隆，直接传引用会让渲染层
   // 的就地修改绕过 save() 落库（updateDoc 之外的脏写）
   function getData () {
-    return structuredClone(data)
+    return structuredClone(committedData || data)
   }
 
   function getStartupNotice () {
@@ -134,6 +159,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 临时文件 + 原子重命名：写入中断也不会留下半个坏文件
   async function save () {
     await fs.writeFileAtomicText('library.json', JSON.stringify(data, null, 2))
+    committedData = structuredClone(data)
   }
 
   const stemOf = (name) => String(name || '').replace(/\.[^.\\/]+$/, '')
@@ -188,14 +214,12 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   // 导入串行化：查重 → 复制 → 写数据中间有多个 await，本身不原子；用一条
   // promise 链排队，队列内不并发（与桌面端 importChain 同法）
-  const importQ = createSerialQueue()
-
   // 导入统一内核：meta（fileName/size/hash）+ performCopy(destRelPath)。
   // 哈希与复制的实现由调用方注入——平板真机传原生流式实现（文件内容
   // 不过 JS 桥，主线程零参与）；Node 单测与 WebView 文件选择兜底传 JS 实现
   // （读 bytes → subtle 哈希 → base64 写盘）。语义与桌面端逐条对齐
   function importWith (meta, performCopy) {
-    return importQ.run(() => importWithLocked(meta, performCopy))
+    return mutate(() => importWithLocked(meta, performCopy))
   }
 
   async function importWithLocked (meta, performCopy) {
@@ -252,7 +276,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes)
     const name = String(file.fileName || '')
     if (!name.toLowerCase().endsWith('.pdf')) {
-      return importQ.run(async () => { throw new Error('仅支持 PDF 文件') })
+      return Promise.reject(new Error('仅支持 PDF 文件'))
     }
     return (async () => {
       const size = Number.isFinite(file.size) ? file.size : bytes.length
@@ -268,7 +292,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 原子改名为正式副本。与「先哈希后复制」相比，登记的 hash 与副本内容
   // 严格一致，不存在两步之间文件仍在被写入的竞态。查重不通过时删除暂存
   function importVia (meta, performCopyAndHash) {
-    return importQ.run(() => importViaLocked(meta, performCopyAndHash))
+    return mutate(() => importViaLocked(meta, performCopyAndHash))
   }
 
   async function importViaLocked (meta, performCopyAndHash) {
@@ -346,19 +370,19 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     return structuredClone(doc)
   }
 
-  // 删除文档：先逻辑删除（改数据落库，必然成功），库内文件尽力而为；
+  // 删除文档：先提交逻辑删除（失败由变更队列回滚），库内文件尽力而为；
   // 删不掉的列入 leftovers 由下次启动的孤儿清理补删（同桌面端）。
   // keepNotes：把 notes/<id>/ 改名为「已删书-书名-时间」保留
   async function removeDoc (id, opts = {}) {
     const doc = findDoc(id)
     data.documents = data.documents.filter(d => d.id !== id)
+    await save() // 唯一提交点；成功之后缓存/文件清理失败不再谎报删除失败
+    const leftovers = []
     if (textIndexMeta.entries[id]) {
       delete textIndexMeta.entries[id]
-      await saveTextIndexMeta()
+      try { await saveTextIndexMeta() } catch { leftovers.push('textindex/index.json') }
       dropShardCache(id)
     }
-    await save()
-    const leftovers = []
     const base = (p) => p.split('/').pop()
     for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`]) {
       if (!await fs.rm(p)) leftovers.push(base(p))
@@ -366,7 +390,9 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     let notesKeptTo = null
     let notesPurged = false
     const notesDir = `notes/${doc.id}`
-    if (opts.keepNotes && await fs.exists(notesDir)) {
+    let hasNotes = false
+    try { hasNotes = await fs.exists(notesDir) } catch { leftovers.push(base(notesDir)) }
+    if (opts.keepNotes && hasNotes) {
       // Android 目录名约束与 Windows 类似（\ / : * ? " < > | 及结尾点空格）
       const safe = String(doc.title || '')
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -377,14 +403,15 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       const stamp = `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`
       let dest = `notes/已删书-${safe}-${stamp}`
       let n = 2
-      while (await fs.exists(dest)) dest = `notes/已删书-${safe}-${stamp} (${n++})`
       try {
+        while (await fs.exists(dest)) dest = `notes/已删书-${safe}-${stamp} (${n++})`
         await fs.rename(notesDir, dest)
         notesKeptTo = base(dest)
       } catch {
         // 改名失败（目录被占用）就原样保留，宁可留在 UUID 目录里也不丢笔记
+        leftovers.push(base(notesDir))
       }
-    } else if (await fs.exists(notesDir)) {
+    } else if (hasNotes) {
       // 平板端没有系统回收站：永久删除并如实标注
       if (await fs.rm(notesDir, { recursive: true })) notesPurged = true
       else leftovers.push(base(notesDir))
@@ -432,7 +459,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   }
 
   function getOpenStats () {
-    const days = data.openDays || {}
+    const days = (committedData || data).openDays || {}
     const d = now()
     let opens7d = 0
     let opens30d = 0
@@ -846,26 +873,26 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     importFile,
     importWith,
     importVia,
-    updateDoc,
-    removeDoc,
+    updateDoc: mutator(updateDoc),
+    removeDoc: mutator(removeDoc),
     readFileBuffer,
-    markOpened,
+    markOpened: mutator(markOpened),
     getOpenStats,
-    setProgress,
-    setCover,
+    setProgress: mutator(setProgress),
+    setCover: mutator(setCover),
     getCoverDataUrl,
-    getTextIndexStatus,
-    setTextIndex,
-    searchTextIndex,
-    addCategory,
-    renameCategory,
-    moveCategory,
-    removeCategory,
-    addTag,
-    removeTag,
-    addSmartShelf,
-    renameSmartShelf,
-    removeSmartShelf,
-    updateSettings
+    getTextIndexStatus: mutator(getTextIndexStatus),
+    setTextIndex: mutator(setTextIndex),
+    searchTextIndex: mutator(searchTextIndex),
+    addCategory: mutator(addCategory),
+    renameCategory: mutator(renameCategory),
+    moveCategory: mutator(moveCategory),
+    removeCategory: mutator(removeCategory),
+    addTag: mutator(addTag),
+    removeTag: mutator(removeTag),
+    addSmartShelf: mutator(addSmartShelf),
+    renameSmartShelf: mutator(renameSmartShelf),
+    removeSmartShelf: mutator(removeSmartShelf),
+    updateSettings: mutator(updateSettings)
   }
 }

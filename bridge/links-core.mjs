@@ -70,15 +70,22 @@ export function createLinks ({ fs }) {
   // 孤儿剪除：validFiles（现存 .md 文件名集合）之外的条目删除，仅在发现
   // 孤儿时写回（空表即删文件，见 writeLocked）；返回是否剪除过
   function pruneOrphans (docId, validFiles) {
-    return writeQ.run(async () => {
-      const data = await loadValidated(docId)
-      let pruned = false
-      for (const key of Object.keys(data.records)) {
-        if (!validFiles.has(key)) { delete data.records[key]; pruned = true }
-      }
-      if (pruned) await writeLocked(docId, data)
-      return pruned
-    })
+    return writeQ.run(async () => (await pruneLocked(docId, validFiles)).pruned)
+  }
+
+  // 桥接读取只加载一次，保留损坏回退的 notice，不再剪除后重新读空文件。
+  function readPruned (docId, validFiles) {
+    return writeQ.run(async () => (await pruneLocked(docId, validFiles)).data)
+  }
+
+  async function pruneLocked (docId, validFiles) {
+    const data = await loadValidated(docId)
+    let pruned = false
+    for (const key of Object.keys(data.records)) {
+      if (!validFiles.has(key)) { delete data.records[key]; pruned = true }
+    }
+    if (pruned) await writeLocked(docId, data)
+    return { data, pruned }
   }
 
   async function writeLocked (docId, data) {
@@ -120,5 +127,5 @@ export function createLinks ({ fs }) {
     return mutate(docId, (d) => { delete d.records[file] })
   }
 
-  return { read, pruneOrphans, setEntry, removeEntry }
+  return { read, readPruned, pruneOrphans, setEntry, removeEntry }
 }

@@ -29,6 +29,105 @@ function createHarness ({ time = new Date('2026-09-26T10:00:00'), fs } = {}) {
 
 const PDF_A = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]) // %PDF..
 
+test('删除落库失败后恢复内存，下一次保存和启动不得误删 PDF', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await lib.importFile({ fileName: 'B.pdf', bytes: new Uint8Array([9]) })
+  await lib.setTextIndex(a.id, { pages: ['a'], ver: 2 })
+  const write = fs.writeFileAtomicText
+  let fail = true
+  fs.writeFileAtomicText = async (p, text) => {
+    if (p === 'library.json' && fail) { fail = false; throw new Error('EIO') }
+    return write(p, text)
+  }
+  await assert.rejects(lib.removeDoc(a.id), /EIO/)
+  assert.ok(lib.getData().documents.some(d => d.id === a.id))
+  assert.equal((await lib.getTextIndexStatus())[a.id].ver, 2)
+  await lib.updateSettings({ theme: 'paper' })
+  const restarted = createHarness({ fs }).lib
+  await restarted.init()
+  assert.ok(restarted.getData().documents.some(d => d.id === a.id))
+  assert.ok(await fs.exists(`files/${a.id}.pdf`))
+})
+
+for (const mode of ['importFile', 'importVia']) {
+  test(`${mode} 失败与设置保存并发：不得登记缺少 PDF 的条目`, async () => {
+    const { fs, lib } = createHarness()
+    await lib.init()
+    let enter, release
+    const entered = new Promise(r => { enter = r })
+    const released = new Promise(r => { release = r })
+    const write = fs.writeFileAtomicText
+    let once = true
+    fs.writeFileAtomicText = async (p, text) => {
+      if (p === 'library.json' && once) {
+        once = false
+        enter()
+        await released
+        throw new Error('EIO')
+      }
+      return write(p, text)
+    }
+    const importing = mode === 'importFile'
+      ? lib.importFile({ fileName: '失败.pdf', bytes: PDF_A })
+      : lib.importVia({ fileName: '失败.pdf' }, async staging => {
+        await fs.writeB64(staging, bytesToBase64(PDF_A))
+        return { size: PDF_A.length, hash: await realSha(PDF_A) }
+      })
+    const rejected = assert.rejects(importing, /EIO/)
+    await entered
+    const settings = lib.updateSettings({ theme: 'paper' })
+    release()
+    await rejected
+    await settings
+    assert.equal(lib.getData().documents.length, 0)
+    assert.equal(JSON.parse(await fs.readFileText('library.json')).documents.length, 0)
+    assert.equal((await fs.readdir('files')).length, 0)
+  })
+}
+
+test('导入提交前 getData 不暴露未提交条目；普通变更失败同样回滚', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  let enter, release
+  const entered = new Promise(r => { enter = r })
+  const released = new Promise(r => { release = r })
+  const write = fs.writeFileAtomicText
+  fs.writeFileAtomicText = async (p, text) => {
+    if (p === 'library.json') { enter(); await released }
+    return write(p, text)
+  }
+  const importing = lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await entered
+  assert.equal(lib.getData().documents.length, 0)
+  release()
+  const doc = await importing
+  fs.writeFileAtomicText = async () => { throw new Error('EIO') }
+  await assert.rejects(lib.updateDoc(doc.id, { title: '失败标题' }), /EIO/)
+  assert.equal(lib.getData().documents[0].title, 'A')
+})
+
+test('删书提交后索引清理失败不误报删除失败，重启可清掉孤儿元数据', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const doc = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await lib.setTextIndex(doc.id, { pages: ['a'], ver: 2 })
+  const write = fs.writeFileAtomicText
+  fs.writeFileAtomicText = (p, text) => {
+    if (p === 'textindex/index.json') throw new Error('EIO')
+    return write(p, text)
+  }
+  const result = await lib.removeDoc(doc.id)
+  assert.ok(result.leftovers.includes('textindex/index.json'))
+  assert.equal(lib.getData().documents.length, 0)
+  assert.equal(await fs.exists(`files/${doc.id}.pdf`), false)
+  fs.writeFileAtomicText = write
+  const restarted = createHarness({ fs }).lib
+  await restarted.init()
+  assert.deepEqual(await restarted.getTextIndexStatus(), {})
+})
+
 /* ---- 生命周期与导入 ---- */
 
 test('init 首次运行建立空库并落盘 library.json', async () => {

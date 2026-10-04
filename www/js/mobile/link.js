@@ -338,7 +338,8 @@ function ensureEditor () {
   edDlg.querySelector('#btnLinkEdCancel').addEventListener('click', requestEditorClose)
   edDlg.querySelector('#btnLinkEdClose').addEventListener('click', requestEditorClose)
   // 返回键：boot.mjs 先给最上层对话框一次拦截机会（未保存时弹确认）
-  edDlg.addEventListener('solace-close-request', (e) => { if (edDirty) { e.preventDefault(); requestEditorClose() } })
+  edDlg.addEventListener('solace-close-request', (e) => { if (edSaving || edDirty) { e.preventDefault(); requestEditorClose() } })
+  edDlg.addEventListener('cancel', (e) => { e.preventDefault(); requestEditorClose() })
 }
 
 function renderChips () {
@@ -351,6 +352,7 @@ function renderChips () {
     ? '<span class="link-chip-degraded">正文格式已被外部修改，将按原样保存；摘录仍可在此移除</span>'
     : '') + chips
   box.querySelectorAll('.chip-x').forEach(b => b.addEventListener('click', () => {
+    if (edSaving) return
     edCtx.excerpts.splice(Number(b.dataset.i), 1)
     edDirty = true
     edExcerptsTouched = true
@@ -359,6 +361,7 @@ function renderChips () {
 }
 
 async function openEditor (opts = {}) {
+  if (edSaving) return
   ensureEditor()
   if (opts.mode === 'edit') {
     const docLinks = linksCache.get(opts.docId)
@@ -368,6 +371,7 @@ async function openEditor (opts = {}) {
     try {
       raw = await window.solace.readNote(opts.docId, opts.file)
     } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+    if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
     const parsed = parseRecordMd(raw)
     // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
     edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
@@ -394,6 +398,7 @@ async function openEditor (opts = {}) {
 }
 
 async function requestEditorClose () {
+  if (edSaving) return
   if (edDirty) {
     const r = await askConfirm({ title: '放弃未保存的修改？', text: '关闭后这些内容将丢失。', okText: '放弃修改' })
     if (!r) return
@@ -406,8 +411,8 @@ async function requestEditorClose () {
 async function saveEditor () {
   if (edSaving || !edCtx) return
   edSaving = true
-  const btn = edDlg.querySelector('#btnLinkEdSave')
-  btn.disabled = true
+  // 存储等待期间冻结编辑与关闭，保存的正文和侧车保持同一个快照。
+  edDlg.querySelectorAll('textarea, button').forEach(el => { el.disabled = true })
   try {
     if (edCtx.mode === 'create') {
       const { file } = await window.solace.createNote(edCtx.docId, { title: edCtx.title, page: edCtx.excerpts[0]?.page || 1, total: edCtx.total })
@@ -436,7 +441,7 @@ async function saveEditor () {
     window.toast?.(`保存失败：${err.message || err}`) // 留在编辑器，重试幂等（同一 file）
   } finally {
     edSaving = false
-    btn.disabled = false
+    edDlg.querySelectorAll('textarea, button').forEach(el => { el.disabled = false })
   }
 }
 

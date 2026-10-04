@@ -125,11 +125,13 @@ const editorTitle = editorHost.querySelector('#noteEditorTitle')
 const editorText = editorHost.querySelector('#noteEditorText')
 let editorCtx = null // { docId, file }：保存时绑定，防止编辑期间切书串写
 let editorDirty = false // 有未保存修改时不允许静默关闭（含返回键）
+let editorSaving = false
 
 editorText.addEventListener('input', () => { editorDirty = true })
 
 // notespanel.openOne 的移动端分支调用；content 是 .md 全文
 window.openNoteEditor = function (docId, file, title, content) {
+  if (editorSaving) return
   // 摘录记录：不打开笔记编辑器，跳回原文定位（link.js 的钩子）
   if (window.__linkRecordTap?.(docId, file)) return
   editorCtx = { docId, file }
@@ -142,6 +144,7 @@ window.openNoteEditor = function (docId, file, title, content) {
 
 // 有未保存修改时先确认再关；确认放弃才真正关闭
 async function requestEditorClose () {
+  if (editorSaving) return
   if (editorDirty) {
     const res = await askConfirm({
       title: '放弃未保存的修改？',
@@ -156,13 +159,16 @@ async function requestEditorClose () {
 
 // 返回键（桥的 backButton 对话框分支）：拦截关闭请求，走未保存确认
 editorDlg.addEventListener('solace-close-request', (e) => {
-  if (!editorDirty) return
+  if (!editorSaving && !editorDirty) return
   e.preventDefault()
   requestEditorClose()
 })
+editorDlg.addEventListener('cancel', (e) => { e.preventDefault(); requestEditorClose() })
 
 async function saveEditor () {
-  if (!editorCtx) return
+  if (editorSaving || !editorCtx) return
+  editorSaving = true
+  editorDlg.querySelectorAll('textarea, button').forEach(el => { el.disabled = true })
   const { docId, file } = editorCtx
   try {
     await window.solace.writeNote(docId, file, editorText.value)
@@ -174,6 +180,9 @@ async function saveEditor () {
     window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
   } catch (err) {
     window.toast?.(`保存失败：${err.message || err}`)
+  } finally {
+    editorSaving = false
+    editorDlg.querySelectorAll('textarea, button').forEach(el => { el.disabled = false })
   }
 }
 

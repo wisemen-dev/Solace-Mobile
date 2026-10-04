@@ -5,6 +5,7 @@
 // 文件本身仍是普通 .md，与桌面端完全互通。
 import { checkDocId } from './doc-id.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
+import { isNotFoundError } from './file-errors.mjs'
 
 export function createNotes ({ fs, now = () => new Date() }) {
   // docId 是入库时生成的 UUID；白名单校验防路径穿越（共用检查见 doc-id.mjs）
@@ -25,11 +26,6 @@ export function createNotes ({ fs, now = () => new Date() }) {
   // DoesNotExist）报 "... does not exist."（code OS-PLUG-FILE-0008）；
   // 内存/web 实现为 ENOENT / "no such"。分不清的一律上抛——宁可让调用方
   // 看到错误，也不能把真故障谎报成空列表
-  const isNotFoundError = (e) => {
-    if (e && e.code === 'OS-PLUG-FILE-0008') return true
-    return /does not exist|ENOENT|no such/i.test(String((e && e.message) || e || ''))
-  }
-
   async function list (docId) {
     const dir = docDir(docId)
     let entries

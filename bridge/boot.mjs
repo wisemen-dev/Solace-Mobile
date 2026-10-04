@@ -248,12 +248,11 @@ const solace = {
   writeNote: gate((id, file, text) => notes.write(id, file, text)),
 
   // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
-  // 显式两步：先按现存 .md 剪除孤儿（仅发现孤儿时写回），再纯读——读取
+  // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
   // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
   readNoteLinks: gate(async (id) => {
     const { notes: files } = await notes.list(id)
-    await links.pruneOrphans(id, new Set(files.map(f => f.file)))
-    return links.read(id)
+    return links.readPruned(id, new Set(files.map(f => f.file)))
   }),
   setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
 

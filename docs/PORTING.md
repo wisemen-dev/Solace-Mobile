@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 39 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 38 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -24,6 +24,8 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 数据兼容（最重要的不变量）
 
 - `library.json` 结构逐字段一致；写入仍是「临时文件 + 原子重命名」
+- 全部资料库变更共用异步事务队列，读取只暴露已提交状态；写库失败回滚内存，删书在提交成功后才清文件与可重建索引
+- 存储适配器仅将明确的「文件不存在」当缺失；I/O/权限故障上抛，不能用空库/空墨迹覆盖现存数据。删除遇真故障返回失败，建目录只忽略「已存在」
 - 副本/封面按严格 UUID 命名；孤儿清扫只认 UUID 形状、库为空不清扫
 - SHA-256（crypto.subtle ↔ Node crypto）与 UUID 两端同值 → 去重与文档
   关联跨端成立
@@ -40,9 +42,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 39 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 38 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
-### index.html（11 处）
+### index.html（10 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
@@ -56,7 +58,8 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
 10. 预览顶栏 `#btnNotes` 后加 `#btnInk`「✏️ 标注」按钮（手写标注入口，
     v0.4.0）
-11. 预览顶栏 `#btnInk` 后加 `#btnLink`「🔗 链接」按钮（摘录链接入口）
+11. 预览顶栏 `#btnInk` 后加 `#btnLink`「🔗 链接」按钮（摘录链接入口；
+    与第 10 条同一锚点一次替换，合计 1 对）
 
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
@@ -217,6 +220,7 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 - **会话守卫**：`loadedDoc`（内存归属）+ `loadSeq`（模型代数）双重对账。
   同书快速关开会有两个在途 read，只比 docId 区分不开——旧结果合并会把
   同一批笔迹翻倍。
+- **首次加载保护**：墨迹读成功前暂不允许落笔或覆盖保存；读失败显示提示，可重新进入标注或点按页面重试。加载期间的关闭/换书由代数作废，不写空模型
 - **保存管线**：1.5s 防抖；退出标注 / 关预览 / 回后台 / 换书四处立即
   冲刷。写在 annotations-core 内 promise 链串行化，读排队于写链尾（否则
   「退出→立刻重进」会读回旧盘态覆盖内存）。冲刷失败 → `dirty` 复位由
@@ -272,6 +276,8 @@ index.html +1（`#btnLink`「🔗 链接」）、notespanel.js +4（行徽标钩
 - **保存管线**：显式动作无防抖；`.md` 先、侧车后（渲染侧组合 `writeNote`
   + `setNoteLinkEntry`，bridge 无 writeNoteRecord）；任一步失败留在编辑器
   可重试、幂等。
+- **编辑器等待保护**：普通笔记和摘录记录在保存完成前冻结输入、摘录移除和关闭（含返回键/Esc）；失败保留内容并恢复编辑
+- **侧车读取**：`links.read` 保持纯读；桥接 `readNoteLinks` 调用 `readPruned`，一次加载后剪除并返回同份数据，保留损坏告示
 
 ## 存储位置
 
