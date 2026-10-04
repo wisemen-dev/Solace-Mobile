@@ -187,7 +187,9 @@ body,
   transform-origin: 0 0;
   pointer-events: none;
 }
-.ink-text-layer span, .ink-text-layer br {
+/* 只作用于层的**直接子项**（文本项）。标记 span 是插在文本项**内部**的，
+   若这里用后代选择器，标记也会被绝对定位+透明——跑出行首、整体错位 */
+.ink-text-layer > span, .ink-text-layer > br {
   color: transparent;
   position: absolute;
   white-space: pre;

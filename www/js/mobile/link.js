@@ -4,7 +4,7 @@
 // 三个来源共同决定层内容：layout 事件（docId/页码/pageObj/viewport）、
 // linksCache（本书的锚点记录）、textCache（按 doc:page 缓存的文本与区间映射）。
 import pdfjsLib from '../pdfjs.js'
-import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem } from './link-text.mjs'
+import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText } from './link-text.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
 let pdfCanvas = null
@@ -15,6 +15,7 @@ const textCache = new Map()          // `${docId}:${page}` -> { tc, items, pageT
 const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let tray = null                      // #linkTray（选词托盘，懒建）
+let pendingFlash = null              // { docId, file }：跳回定位时等目标页渲染完再闪烁
 
 window.linkSelecting = false
 
@@ -85,6 +86,7 @@ async function buildLayer (d) {
   if (seq !== buildSeq) return
   // textDivs[i] 与 items[i] 一一对应（含 hasEOL 项；br 不在 textDivs 里）
   tl.textDivs.forEach((el, i) => { el.dataset.item = String(i) })
+  renderMarkers(d)
   layer.hidden = false
   // L10 降级：选词模式下遇到没有文字的页 → 提示并退出（无文字书不建层的
   // 懒建规则与选词强建冲突时：强建一次、发现无字即退）
@@ -108,6 +110,86 @@ window.addEventListener('solace-ink-close', () => {
   lastLayout = null
   if (layer) { layer.textContent = ''; layer.hidden = true }
 })
+
+/* ================= 标记渲染（记录锚点 / 选词选中态） ================= */
+
+// 把页面文本区间 [start,end) 拆到它覆盖的各个文本项上（存项内相对偏移）
+function rangesToItems (entry, start, end, file, cls, byItem) {
+  for (let i = 0; i < entry.spans.length; i++) {
+    const s = entry.spans[i]
+    const a = Math.max(start, s.start)
+    const b = Math.min(end, s.end)
+    if (a >= b) continue
+    const list = byItem.get(i) || []
+    list.push({ from: a - s.start, to: b - s.start, file, cls })
+    byItem.set(i, list)
+  }
+}
+
+// 按区间把某项文本切成 文本节点 + 标记 span（一遍重建，重叠段取先登记者）
+function paintItem (el, list) {
+  const text = el.textContent
+  const cuts = [...new Set([0, text.length, ...list.flatMap(r => [r.from, r.to])])]
+    .filter(n => n >= 0 && n <= text.length).sort((a, b) => a - b)
+  el.textContent = ''
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const a = cuts[k]
+    const b = cuts[k + 1]
+    if (a >= b) continue
+    const seg = text.slice(a, b)
+    const hit = list.find(r => r.from <= a && b <= r.to)
+    if (hit) {
+      const mk = document.createElement('span')
+      mk.className = hit.cls
+      mk.dataset.file = hit.file
+      mk.textContent = seg
+      el.appendChild(mk)
+    } else {
+      el.appendChild(document.createTextNode(seg))
+    }
+  }
+}
+
+// 记录锚点（.lnk，text 经 findRangeByText 重锚定）+ 选词选中态（.lnk-sel）
+// 合并成**一遍**重建：分两遍时后一遍会拿原文本重切，把前一遍的标记覆盖掉
+function renderMarkers (d) {
+  const entry = textCache.get(`${d.docId}:${d.page}`)
+  if (!entry) return
+  const byItem = new Map()
+  const docLinks = linksCache.get(d.docId)
+  for (const [file, rec] of Object.entries((docLinks && docLinks.records) || {})) {
+    for (const ex of (rec && rec.excerpts) || []) {
+      if (ex.page !== d.page) continue
+      const hint = ex.hint != null && entry.spans[ex.hint.item]
+        ? entry.spans[ex.hint.item].start + ex.hint.char
+        : null
+      const r = findRangeByText(entry.pageText, ex.text, hint)
+      if (r) rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
+    }
+  }
+  if (window.linkSelecting) {
+    for (const sel of selections) {
+      if (sel.page !== d.page) continue
+      const hint = entry.spans[sel.hint.item] ? entry.spans[sel.hint.item].start + sel.hint.char : null
+      const r = findRangeByText(entry.pageText, sel.text, hint)
+      if (r) rangesToItems(entry, r.start, r.end, '__sel__', 'lnk-sel', byItem)
+    }
+  }
+  for (const [i, list] of byItem) {
+    const el = layer.querySelector(`[data-item="${i}"]`)
+    if (el) paintItem(el, list)
+  }
+  // 跳回定位：目标页渲染完才闪（一次性消费）
+  if (pendingFlash && pendingFlash.docId === d.docId) {
+    const t = layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
+    pendingFlash = null
+    if (t) {
+      t.scrollIntoView({ block: 'center' })
+      t.classList.add('lnk-flash')
+      setTimeout(() => t.classList.remove('lnk-flash'), 1100)
+    }
+  }
+}
 
 /* ================= 选词模式（整句点选 / 托盘 / 跨页 / 与墨水互斥） ========= */
 
@@ -157,10 +239,16 @@ function closeSelection (clear) {
 window.addEventListener('solace-link-cancel-request', () => { if (window.linkSelecting) closeSelection(true) })
 document.getElementById('btnLink')?.addEventListener('click', () => openSelection())
 
-// 选词模式点按：caret 命中 → 页面文本偏移 → 整句扩选/取消。
-// 命中判据用 [data-item] 反查文本项，再把 span 内字符偏移换算成页面文本偏移
+// 点按分流：记录标记优先（阅读模式也可点开，选中态标记不响应），其余走选词。
+// 选词时命中判据用 [data-item] 反查文本项，再把项内字符偏移换算成页面文本偏移
 function onLayerTap (e) {
-  if (!window.linkSelecting || !lastLayout) return
+  if (!lastLayout) return
+  const mk = e.target && e.target.closest && e.target.closest('.lnk')
+  if (mk && mk.dataset.file !== '__sel__') {
+    openEditor({ mode: 'edit', file: mk.dataset.file, docId: lastLayout.docId })
+    return
+  }
+  if (!window.linkSelecting) return
   const caret = document.caretPositionFromPoint
     ? document.caretPositionFromPoint(e.clientX, e.clientY)
     : (document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null)
@@ -170,11 +258,19 @@ function onLayerTap (e) {
   const itemEl = el && el.closest('[data-item]')
   if (!itemEl || !layer.contains(itemEl)) return
   const item = Number(itemEl.dataset.item)
-  const charInNode = caret.offset !== undefined ? caret.offset : caret.startOffset
   const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry || !entry.spans[item]) return
+  // caret 偏移要相对**整个文本项**量：标记 span 把项文本切成了多个节点，
+  // 直接取 caret.offset（相对所在文本节点）会算错
+  let charInItem
+  try {
+    const range = document.createRange()
+    range.selectNodeContents(itemEl)
+    range.setEnd(node, caret.offset !== undefined ? caret.offset : caret.startOffset)
+    charInItem = range.toString().length
+  } catch { return }
   const span = entry.spans[item]
-  const off = span.start + Math.min(charInNode, span.end - span.start)
+  const off = span.start + Math.min(charInItem, span.end - span.start)
   const sentences = splitSentences(entry.pageText)
   const si = sentenceAt(sentences, off)
   const r = sentences[si]
