@@ -226,9 +226,10 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .ink-text-layer .lnk-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
 
 /* 拖选确认小条（§6.6 修订）：小圆形图标按钮组胶囊——无文字预览（页面高亮
-   即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分 */
+   即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分。
+   bottom 150px = 托盘(86px + 实测高 53px) + 间隙——压低会遮住托盘计数 */
 .link-drag-bar {
-  position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%);
+  position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%);
   display: flex; align-items: center; gap: 6px; z-index: 6;
   padding: 5px; border-radius: 999px;
   background: rgba(255, 255, 255, 0.94);
