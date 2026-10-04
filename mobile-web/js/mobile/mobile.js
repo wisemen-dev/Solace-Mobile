@@ -130,6 +130,8 @@ editorText.addEventListener('input', () => { editorDirty = true })
 
 // notespanel.openOne 的移动端分支调用；content 是 .md 全文
 window.openNoteEditor = function (docId, file, title, content) {
+  // 摘录记录：不打开笔记编辑器，跳回原文定位（link.js 的钩子）
+  if (window.__linkRecordTap?.(docId, file)) return
   editorCtx = { docId, file }
   editorTitle.textContent = `《${title || '笔记'}》 · ${String(file || '').replace(/\.md$/i, '')}`
   editorText.value = content ?? ''

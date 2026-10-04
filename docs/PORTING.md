@@ -38,7 +38,7 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 35 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 38 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
 ### index.html（11 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
@@ -93,10 +93,16 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 4. 监视文件夹输入框 change 短路（只读，用户不会触发）
 5. Olib 包名保存与「检测…」自动发现（多结果走选择框）
 
-### notespanel.js（3 处）
+### notespanel.js（6 处）
 1. `openOne`：桥返回 `{ inApp: true, content }` 时交给内置编辑器
 2. 删除确认文案（回收站 → 直接删除）
 3. `solace-note-saved` 监听：内置编辑器保存后刷新列表（v0.3.1）
+4. 记录行追加 `.note-link-row`（`window.__linkNoteRowExtra` 钩子：摘录链接
+   的 🔗 徽标与首条摘录片段）
+5. 「＋新建」前插 `window.__linkNewOverride` 钩子：有摘录记录时改走选词模式
+   （入口替换；旧笔记仍可读可改）
+6. 删除成功后调 `window.__linkNoteDeleted` 钩子：渲染侧清缓存并重绘标记
+   （否则正文标记要等下次保存/重开预览才消失）
 
 ## 平台差异与取舍
 

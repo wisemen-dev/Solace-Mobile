@@ -230,6 +230,11 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
 .chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
 .link-chip-degraded { font-size: 12px; color: #8a94a0; }
 
+/* 笔记列表的摘录记录行：🔗 徽标 + 首条摘录片段 */
+.note-link-row { display: flex; align-items: center; gap: 6px; padding: 2px 0 0; font-size: 12px; color: #8a94a0; }
+.link-badge { color: #b26a00; }
+.link-snip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
    深浅色主题下都可读 */
 .ink-toolbar {

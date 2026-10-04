@@ -348,11 +348,40 @@ patch('js/notespanel.js', [
   load()
 })
 
-btnNew.addEventListener('click', async () => {`]
+btnNew.addEventListener('click', async () => {`],
+  // 摘录链接：记录行徽标 + 片段（link.js 挂在 window 上的钩子；无钩子/无锚点时为空）
+  [`        <div class="note-main">
+          <span class="note-name">\${esc(displayName(n.file))}</span>
+          <span class="note-when">\${esc(fmtRel(n.mtime))}修改</span>
+        </div>`,
+   `        <div class="note-main">
+          <span class="note-name">\${esc(displayName(n.file))}</span>
+          <span class="note-when">\${esc(fmtRel(n.mtime))}修改</span>
+        </div>
+        <div class="note-link-row">\${window.__linkNoteRowExtra?.(n.file) || ''}</div>`],
+  // 摘录链接：「＋新建」改走选词模式（入口替换；旧笔记仍可读可改）
+  [`btnNew.addEventListener('click', async () => {
+  const session = captureSession()
+  if (!session) return`,
+   `btnNew.addEventListener('click', async () => {
+  const session = captureSession()
+  if (!session) return
+  if (window.__linkNewOverride?.(session)) return`],
+  // 摘录链接：删除记录后通知渲染侧清缓存并重绘标记（否则正文标记要等下次
+  // 保存/重开预览才消失）
+  [`      try {
+        await window.solace.trashNote(session.id, file, session.sessionId)
+        if (!isCurrentSession(session)) return
+        load(session)`,
+   `      try {
+        await window.solace.trashNote(session.id, file, session.sessionId)
+        if (!isCurrentSession(session)) return
+        window.__linkNoteDeleted?.(session.id, file)
+        load(session)`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共35）')
+console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×6（共38）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

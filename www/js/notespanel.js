@@ -98,6 +98,7 @@ function render (notes) {
           <span class="note-name">${esc(displayName(n.file))}</span>
           <span class="note-when">${esc(fmtRel(n.mtime))}修改</span>
         </div>
+        <div class="note-link-row">${window.__linkNoteRowExtra?.(n.file) || ''}</div>
         <button class="note-del" title="删除（移入回收站）">✕</button>
       </li>`).join('')
     : '<li class="notes-empty">还没有笔记<br>点上方「＋ 新建」开始记录</li>'
@@ -119,6 +120,7 @@ list.addEventListener('click', async (e) => {
       try {
         await window.solace.trashNote(session.id, file, session.sessionId)
         if (!isCurrentSession(session)) return
+        window.__linkNoteDeleted?.(session.id, file)
         load(session)
       } catch (err) {
         if (isCurrentSession(session)) window.toast?.(`删除失败：${err.message || err}`)
@@ -214,6 +216,7 @@ window.addEventListener('solace-note-saved', (e) => {
 btnNew.addEventListener('click', async () => {
   const session = captureSession()
   if (!session) return
+  if (window.__linkNewOverride?.(session)) return
   const ctx = getPageCtx ? getPageCtx() : {}
   try {
     const { file } = await window.solace.createNote(session.id, { title: session.title, page: ctx.page, total: ctx.total }, session.sessionId)

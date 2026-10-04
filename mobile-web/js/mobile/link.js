@@ -6,6 +6,7 @@
 import pdfjsLib from '../pdfjs.js'
 import { askConfirm } from '../dialog.js'
 import { esc } from '../util.js'
+import { closeNotes } from '../notespanel.js'
 import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText } from './link-text.mjs'
 import { generateRecordMd, parseRecordMd } from './link-md.mjs'
 
@@ -407,6 +408,58 @@ async function saveEditor () {
     edSaving = false
     btn.disabled = false
   }
+}
+
+/* ================= 笔记列表整合（记录行 / 新建入口 / 跳回定位） ============ */
+
+function hasRecord (docId, file) {
+  const rec = docId && linksCache.get(docId) && linksCache.get(docId).records[file]
+  return !!(rec && rec.excerpts && rec.excerpts.length)
+}
+
+// 记录行徽标 + 首条摘录片段（notespanel 补丁在行尾留了 .note-link-row 钩子位）
+window.__linkNoteRowExtra = (file) => {
+  const docId = lastLayout && lastLayout.docId
+  if (!hasRecord(docId, file)) return ''
+  const x = linksCache.get(docId).records[file].excerpts[0]
+  return `<span class="link-badge">🔗</span><span class="link-snip">第 ${x.page} 页 · ${esc(x.text.slice(0, 24))}</span>`
+}
+
+// 「＋新建」入口替换：在预览里新建笔记 = 从选句开始（返回 true = 已接管）
+window.__linkNewOverride = (session) => {
+  if (!session || !lastLayout || session.id !== lastLayout.docId) return false
+  closeNotes()
+  openSelection().catch(() => {})
+  return true
+}
+
+// 记录行点击：跳回原文定位（返回 true = 已接管，不再打开笔记编辑器）
+window.__linkRecordTap = (docId, file) => {
+  if (!hasRecord(docId, file)) return false
+  jumpToExcerpt(docId, file)
+  return true
+}
+
+// 记录被删（notespanel 补丁回调）：清缓存 + 重绘标记，否则标记要等下次
+// 保存/重开预览才消失
+window.__linkNoteDeleted = (docId, file) => {
+  const cache = linksCache.get(docId)
+  if (cache && cache.records) delete cache.records[file]
+  if (lastLayout && lastLayout.docId === docId) buildLayer(lastLayout).catch(() => {})
+}
+
+// 跳回：借页码输入框回车跳页，目标页渲染完成后由 pendingFlash 滚动 + 闪烁。
+// 顺手收起笔记面板——不然跳过去也被面板挡着，看不见闪烁的目标
+function jumpToExcerpt (docId, file) {
+  const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
+  if (!rec || !rec.excerpts.length) return false
+  const input = document.getElementById('pageJump')
+  if (!input) return false
+  closeNotes()
+  pendingFlash = { docId, file }
+  input.value = String(rec.excerpts[0].page)
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  return true
 }
 
 // 点按监听绑在 #previewBody（静态 HTML，模块求值时已在）。文本层默认
