@@ -1210,11 +1210,11 @@
       return filesystem.stat({ path: abs(p), directory: DIR });
     }
     const writeChains = /* @__PURE__ */ new Map();
-    async function writeFileAtomicText(p, text) {
+    function atomicWrite(p, writeTmp) {
       const prev = writeChains.get(p) || Promise.resolve();
       const run = prev.then(async () => {
         const tmp = `${p}.tmp`;
-        await filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 });
+        await writeTmp(tmp);
         await filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR });
       });
       const tail = run.then(() => {
@@ -1237,7 +1237,14 @@
         const r = await filesystem.readFile({ path: abs(p), directory: DIR });
         return r.data;
       },
-      writeFileAtomicText,
+      writeFileAtomicText: (p, text) => atomicWrite(
+        p,
+        (tmp) => filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 })
+      ),
+      writeFileAtomicB64: (p, b64) => atomicWrite(
+        p,
+        (tmp) => filesystem.writeFile({ path: abs(tmp), data: b64, directory: DIR })
+      ),
       async writeText(p, text) {
         await filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 });
       },
@@ -1675,7 +1682,7 @@
         dropShardCache(id);
       }
       const base = (p) => p.split("/").pop();
-      for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`]) {
+      for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`, `annotations/${doc.id}.json`, `links/${doc.id}.json`]) {
         if (!await fs2.rm(p)) leftovers.push(base(p));
       }
       let notesKeptTo = null;
@@ -1776,7 +1783,7 @@
       findDoc(id);
       const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(String(dataUrl || ""));
       if (!m) throw new Error("\u65E0\u6548\u7684\u5C01\u9762\u6570\u636E");
-      await fs2.writeB64(`covers/${id}.jpg`, m[2]);
+      await fs2.writeFileAtomicB64(`covers/${id}.jpg`, m[2]);
       findDoc(id).hasCover = true;
       await save();
       return true;
@@ -1826,8 +1833,9 @@
       let raw;
       try {
         raw = await fs2.readFileText("textindex/index.json");
-      } catch {
-        return { version: 1, entries: {} };
+      } catch (err) {
+        if (isNotFoundError(err)) return { version: 1, entries: {} };
+        throw err;
       }
       try {
         const obj = JSON.parse(raw);
@@ -1858,7 +1866,12 @@
       if (changed) await saveTextIndexMeta();
     }
     function migrateLegacyTextIndex() {
-      if (!legacyMigration) legacyMigration = migrateLegacyTextIndexNow();
+      if (!legacyMigration) {
+        legacyMigration = migrateLegacyTextIndexNow().catch((err) => {
+          legacyMigration = null;
+          throw err;
+        });
+      }
       return legacyMigration;
     }
     async function migrateLegacyTextIndexNow() {
@@ -1895,9 +1908,16 @@
     async function readShardPages(id) {
       const cached = shardCache.get(id);
       if (cached) return cached.pages;
+      let raw;
+      try {
+        raw = await fs2.readFileText(`textindex/${id}.json`);
+      } catch (err) {
+        if (isNotFoundError(err)) return null;
+        throw err;
+      }
       let obj;
       try {
-        obj = JSON.parse(await fs2.readFileText(`textindex/${id}.json`));
+        obj = JSON.parse(raw);
       } catch {
         return null;
       }
@@ -1914,7 +1934,12 @@
       const ids = Object.keys(textIndexMeta.entries).filter((id) => live.has(id) && !textIndexMeta.entries[id].failed);
       for (let i = 0; i < ids.length; i++) {
         const id = ids[i];
-        const pages = await readShardPages(id);
+        let pages;
+        try {
+          pages = await readShardPages(id);
+        } catch {
+          continue;
+        }
         if (pages) {
           for (let n = 0; n < pages.length; n++) {
             if (pages[n].includes(needle)) {
@@ -2224,7 +2249,7 @@
       const total = Math.floor(Number(payload.total));
       if (page >= 1 && total >= 1) lines.push(`- \u4F4D\u7F6E\uFF1A\u7B2C ${Math.min(page, total)} / ${total} \u9875`);
       lines.push("", "");
-      await fs2.writeText(notePath(docId, file), lines.join("\n"));
+      await fs2.writeFileAtomicText(notePath(docId, file), lines.join("\n"));
       return { file };
     }
     async function read(docId, file) {
@@ -2320,7 +2345,8 @@
     }
     async function write(docId, data) {
       validate(data);
-      return writeQ.run(() => writeLocked(docId, data));
+      const snapshot = JSON.parse(JSON.stringify(data));
+      return writeQ.run(() => writeLocked(docId, snapshot));
     }
     async function writeLocked(docId, data) {
       const p = docFile(docId);
@@ -2387,11 +2413,12 @@
       await writeQ.settled();
       return loadValidated(docId);
     }
+    const resolveValidFiles = async (v) => typeof v === "function" ? new Set(await v()) : v;
     function pruneOrphans(docId, validFiles) {
-      return writeQ.run(async () => (await pruneLocked(docId, validFiles)).pruned);
+      return writeQ.run(async () => (await pruneLocked(docId, await resolveValidFiles(validFiles))).pruned);
     }
     function readPruned(docId, validFiles) {
-      return writeQ.run(async () => (await pruneLocked(docId, validFiles)).data);
+      return writeQ.run(async () => (await pruneLocked(docId, await resolveValidFiles(validFiles))).data);
     }
     async function pruneLocked(docId, validFiles) {
       const data = await loadValidated(docId);
@@ -2516,6 +2543,8 @@
     let callbacks = null;
     let scanSeq = 0;
     let lastScanAt = 0;
+    let scanning = false;
+    let rescanTimer = null;
     const RESCAN_THROTTLE_MS = 3e4;
     const failed = /* @__PURE__ */ new Map();
     let notifyQueue = [];
@@ -2587,9 +2616,15 @@
       }
     }
     function shouldRun() {
-      if (Date.now() - lastScanAt < RESCAN_THROTTLE_MS) return false;
-      lastScanAt = Date.now();
-      return true;
+      if (scanning) return false;
+      return Date.now() - lastScanAt >= RESCAN_THROTTLE_MS;
+    }
+    function scheduleDelayedRescan() {
+      if (rescanTimer) return;
+      rescanTimer = setTimeout(() => {
+        rescanTimer = null;
+        scan({});
+      }, RESCAN_THROTTLE_MS);
     }
     async function scan(opts = {}) {
       const s2 = getSettings();
@@ -2597,7 +2632,11 @@
         scanSeq++;
         return;
       }
-      if (!opts.force && !shouldRun()) return;
+      if (!opts.force && !shouldRun()) {
+        scheduleDelayedRescan();
+        return;
+      }
+      scanning = true;
       const gen = ++scanSeq;
       const isCurrent = () => {
         const current = getSettings();
@@ -2638,6 +2677,9 @@
         await saveState();
       } catch (err) {
         reportError(`\u81EA\u52A8\u5165\u5E93\uFF1A${err && err.message || err}\uFF08\u53EF\u5230\u8BBE\u7F6E \u2192 \u8D44\u6599\u5E93 \u91CD\u65B0\u9009\u62E9\u6587\u4EF6\u5939\uFF09`);
+      } finally {
+        scanning = false;
+        lastScanAt = Date.now();
       }
     }
     return { init, scan };
@@ -2751,8 +2793,13 @@
     }),
     // 目录选择走 SAF（系统授权）：返回 { canceled, uri, name }，供监视文件夹配置
     pickDirectory: gate(async () => {
-      const r = await pickFolder();
-      return r && r.canceled ? null : r;
+      try {
+        const r = await pickFolder();
+        return r && r.canceled ? null : r;
+      } catch (err) {
+        window.toast?.(`\u9009\u62E9\u6587\u4EF6\u5939\u5931\u8D25\uFF1A${err && err.message || err}`);
+        return null;
+      }
     }),
     pickFile: gate(async () => null),
     // 文档
@@ -2851,8 +2898,7 @@
     // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
     // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
     readNoteLinks: gate(async (id) => {
-      const { notes: files } = await notes.list(id);
-      return links.readPruned(id, new Set(files.map((f2) => f2.file)));
+      return links.readPruned(id, async () => (await notes.list(id)).notes.map((f2) => f2.file));
     }),
     setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
     // entry=null → 删除

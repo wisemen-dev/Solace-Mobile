@@ -5,18 +5,30 @@
 // 用法：node scripts/sync-www.mjs [--src <桌面仓库路径>]
 //   或设环境变量 SOLACE_DESKTOP
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
 const srcIdx = args.indexOf('--src')
-const SRC = srcIdx >= 0 ? args[srcIdx + 1]
-  : process.env.SOLACE_DESKTOP || 'E:/Learning/pycharm/ExperProject/Solace_Rust'
+const srcArg = srcIdx >= 0 ? args[srcIdx + 1] : undefined
+if (srcIdx >= 0 && (!srcArg || srcArg.startsWith('--'))) {
+  console.error('--src 需要跟一个桌面仓库路径参数')
+  process.exit(1)
+}
+const SRC = srcArg || process.env.SOLACE_DESKTOP || 'E:/Learning/pycharm/ExperProject/Solace_Rust'
 
 const R = join(SRC, 'src/renderer')
 const NM = join(SRC, 'node_modules')
+
+// 先验源再拆 www/：否则路径打错时 www 已被清空，后续 cap sync 会打进半空资产
+for (const [label, p] of [['渲染层', R], ['node_modules', NM]]) {
+  if (!existsSync(p)) {
+    console.error(`桌面仓库缺 ${label}：${p}\n请用 --src <路径> 或环境变量 SOLACE_DESKTOP 指定有效仓库`)
+    process.exit(1)
+  }
+}
 
 const WWW = join(root, 'www')
 

@@ -51,6 +51,54 @@ test('删除落库失败后恢复内存，下一次保存和启动不得误删 P
   assert.ok(await fs.exists(`files/${a.id}.pdf`))
 })
 
+test('index.json 读故障不得被当空表：init 照抛而非静默清空元数据', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await lib.setTextIndex(a.id, { pages: ['a'], ver: 2 })
+  const read = fs.readFileText
+  fs.readFileText = async (p) => {
+    if (p === 'textindex/index.json') { const e = new Error('EIO'); e.code = 'EIO'; throw e }
+    return read(p)
+  }
+  const reopened = createHarness({ fs }).lib
+  await assert.rejects(reopened.init(), /EIO/)
+  // 故障排除后重启：条目仍在，绝不能是空表覆盖后的状态
+  fs.readFileText = read
+  const ok = createHarness({ fs }).lib
+  await ok.init()
+  assert.equal((await ok.getTextIndexStatus())[a.id].ver, 2)
+})
+
+test('旧索引搬迁的 stat 故障不得永久缓存：下次调用可重试', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const exists = fs.exists
+  let fail = true
+  fs.exists = async (p) => {
+    if (p === 'textindex.json' && fail) { fail = false; throw new Error('EIO') }
+    return exists(p)
+  }
+  await assert.rejects(lib.getTextIndexStatus(), /EIO/)
+  await lib.getTextIndexStatus() // 恢复后不得被缓存的 reject 卡死
+})
+
+test('分片读故障：搜索跳过本书而非删除其索引条目', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await lib.setTextIndex(a.id, { pages: ['hello world'], ver: 2 })
+  const read = fs.readFileText
+  fs.readFileText = async (p) => {
+    if (p === `textindex/${a.id}.json`) { const e = new Error('EIO'); e.code = 'EIO'; throw e }
+    return read(p)
+  }
+  assert.deepEqual(await lib.searchTextIndex('hello'), {})
+  assert.equal((await lib.getTextIndexStatus())[a.id].ver, 2) // 条目未被故障删除
+  fs.readFileText = read
+  assert.equal((await lib.searchTextIndex('hello'))[a.id], 1) // 恢复后命中
+})
+
 for (const mode of ['importFile', 'importVia']) {
   test(`${mode} 失败与设置保存并发：不得登记缺少 PDF 的条目`, async () => {
     const { fs, lib } = createHarness()

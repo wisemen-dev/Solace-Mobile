@@ -16,6 +16,7 @@
 
 import { bytesToBase64, base64ToBytes } from './base64.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
+import { isNotFoundError } from './file-errors.mjs'
 
 export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = () => new Date() }) {
   let data = null
@@ -384,7 +385,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       dropShardCache(id)
     }
     const base = (p) => p.split('/').pop()
-    for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`]) {
+    for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`, `annotations/${doc.id}.json`, `links/${doc.id}.json`]) {
       if (!await fs.rm(p)) leftovers.push(base(p))
     }
     let notesKeptTo = null
@@ -500,7 +501,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     findDoc(id)
     const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(String(dataUrl || ''))
     if (!m) throw new Error('无效的封面数据')
-    await fs.writeB64(`covers/${id}.jpg`, m[2])
+    await fs.writeFileAtomicB64(`covers/${id}.jpg`, m[2])
     findDoc(id).hasCover = true
     await save()
     return true
@@ -561,8 +562,11 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     let raw
     try {
       raw = await fs.readFileText('textindex/index.json')
-    } catch {
-      return { version: 1, entries: {} }
+    } catch (err) {
+      // 缺失 = 尚无索引，返回空表；其他 I/O 故障照抛（init 走启动错误页）——
+      // 吞成空表会让下一次 saveTextIndexMeta 用空表覆盖掉全部索引元数据
+      if (isNotFoundError(err)) return { version: 1, entries: {} }
+      throw err
     }
     try {
       const obj = JSON.parse(raw)
@@ -594,9 +598,16 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   }
 
   // 0.15.x 桌面端的单文件索引 → 分片，一次性搬迁（推库过来的旧桌面库兼容）。
-  // 共享 in-flight promise：并发调用者等同一轮完成，不会读到半成品
+  // 共享 in-flight promise：并发调用者等同一轮完成，不会读到半成品；
+  // 失败不缓存——一次瞬时 stat 故障若把 rejected promise 永久留在缓存里，
+  // 索引功能会整会话瘫痪
   function migrateLegacyTextIndex () {
-    if (!legacyMigration) legacyMigration = migrateLegacyTextIndexNow()
+    if (!legacyMigration) {
+      legacyMigration = migrateLegacyTextIndexNow().catch(err => {
+        legacyMigration = null // 允许下次调用重试
+        throw err
+      })
+    }
     return legacyMigration
   }
 
@@ -629,12 +640,17 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   async function readShardPages (id) {
     const cached = shardCache.get(id)
     if (cached) return cached.pages
-    let obj
+    let raw
     try {
-      obj = JSON.parse(await fs.readFileText(`textindex/${id}.json`))
-    } catch {
-      return null
+      raw = await fs.readFileText(`textindex/${id}.json`)
+    } catch (err) {
+      // 缺失 = 分片真丢了，返回 null 由调用方删 meta 自愈重建；
+      // I/O 故障必须上抛——返回 null 会被当成「分片损坏」删掉条目
+      if (isNotFoundError(err)) return null
+      throw err
     }
+    let obj
+    try { obj = JSON.parse(raw) } catch { return null }
     if (!obj || !Array.isArray(obj.pages)) return null
     cacheShard(id, obj.pages)
     return obj.pages
@@ -651,7 +667,12 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     const ids = Object.keys(textIndexMeta.entries).filter(id => live.has(id) && !textIndexMeta.entries[id].failed)
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]
-      const pages = await readShardPages(id)
+      let pages
+      try {
+        pages = await readShardPages(id)
+      } catch {
+        continue // 读故障：跳过本书，不动 meta（故障不该当损坏删条目）
+      }
       if (pages) {
         for (let n = 0; n < pages.length; n++) {
           if (pages[n].includes(needle)) { hits[id] = n + 1; break }

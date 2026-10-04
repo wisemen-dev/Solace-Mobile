@@ -566,6 +566,7 @@ function onDown (e) {
   drawing = {
     ptr: e.pointerId,
     docId: lastLayout.docId, // 提交时对账：画到一半换书则这笔作废（坐标系已变）
+    page: String(lastLayout.page), // 同理翻页作废（与橡皮的中途放弃同款对账）
     pts: [toPageXY(e)],
     tool,
     color: curTool().color,
@@ -590,6 +591,12 @@ function onMove (e) {
     return
   }
   if (!drawing || e.pointerId !== drawing.ptr) return
+  if (loadedDoc !== drawing.docId || String(lastLayout.page) !== drawing.page) {
+    // 翻页/换书后 rect 与坐标系已换新页，继续采点会把新页坐标混进旧页笔画
+    drawing = null
+    clearLive()
+    return
+  }
   const pt = toPageXY(e, drawing.tool)
   const last = drawing.pts[drawing.pts.length - 1]
   // 抽稀：<1 页面单位的移动不采（2 秒笔画约省一半点）
@@ -695,6 +702,7 @@ function commitStroke () {
   clearLive()
   if (!d || !d.pts.length || !lastLayout) return
   if (loadedDoc !== d.docId || loadedDoc !== lastLayout.docId) return
+  if (String(lastLayout.page) !== d.page) return // 翻页后抬手：旧页坐标不得进新页
   const key = String(lastLayout.page)
   let pageObj = book.pages[key]
   if (!pageObj) pageObj = book.pages[key] = { w: lastLayout.baseW, h: lastLayout.baseH, strokes: [] }

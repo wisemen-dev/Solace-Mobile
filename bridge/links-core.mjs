@@ -67,15 +67,21 @@ export function createLinks ({ fs }) {
     return loadValidated(docId)
   }
 
+  // 孤儿判据的现存笔记集合：可直接传 Set，也可传 async provider——provider 在
+  // 写队列任务内求值。快照若在队列外提前取得，「md 已落盘、锚点已写入、快照
+  // 过期」的交错会把刚保存的锚点误剪成孤儿（md 在、锚点无，不可自愈）；保存
+  // 流程恒先落 md 再写锚点，故队列内取实时集合即不存在此窗口
+  const resolveValidFiles = async (v) => (typeof v === 'function' ? new Set(await v()) : v)
+
   // 孤儿剪除：validFiles（现存 .md 文件名集合）之外的条目删除，仅在发现
   // 孤儿时写回（空表即删文件，见 writeLocked）；返回是否剪除过
   function pruneOrphans (docId, validFiles) {
-    return writeQ.run(async () => (await pruneLocked(docId, validFiles)).pruned)
+    return writeQ.run(async () => (await pruneLocked(docId, await resolveValidFiles(validFiles))).pruned)
   }
 
   // 桥接读取只加载一次，保留损坏回退的 notice，不再剪除后重新读空文件。
   function readPruned (docId, validFiles) {
-    return writeQ.run(async () => (await pruneLocked(docId, validFiles)).data)
+    return writeQ.run(async () => (await pruneLocked(docId, await resolveValidFiles(validFiles))).data)
   }
 
   async function pruneLocked (docId, validFiles) {

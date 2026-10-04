@@ -242,7 +242,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
   left: 50%;
   transform: translateX(-50%);
   bottom: 74px; /* preview-foot(58px) + 间隙 */
-  z-index: 7;
+  z-index: 4; /* 高于页面按钮(3)、低于错误浮层(5)与目录/笔记面板(6)：标注模式
+     下暂开面板时工具栏不得浮在面板上遮挡 */
   display: flex;
   align-items: center;
   gap: 6px;

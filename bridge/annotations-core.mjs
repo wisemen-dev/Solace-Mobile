@@ -66,7 +66,10 @@ export function createAnnotations ({ fs }) {
   // 调用方统一 try/catch 即可）
   async function write (docId, data) {
     validate(data) // 非法数据在排队前就拒绝，不占队列
-    return writeQ.run(() => writeLocked(docId, data))
+    // 固化快照再入队：调用方（渲染层）持有活引用，排队等待期间对模型的
+    // 改动不应混进本次落盘（对齐 links-core setEntry 的深拷贝）
+    const snapshot = JSON.parse(JSON.stringify(data))
+    return writeQ.run(() => writeLocked(docId, snapshot))
   }
 
   async function writeLocked (docId, data) {

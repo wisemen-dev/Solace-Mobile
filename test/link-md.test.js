@@ -54,3 +54,10 @@ test('摘录与正文分隔后不吞引用，保留正文开头空行', () => {
     assert.equal(parsed.body, body)
   }
 })
+
+test('parse：CRLF 行尾（桌面 Typora 保存）不误判降级', () => {
+  const md = '> 【摘录】第 3 页\r\n> 原文句子。\r\n\r\n正文第一行\r\n'
+  const r = parseRecordMd(md)
+  assert.equal(r.ok, true)
+  assert.equal(r.body, '正文第一行\r\n')
+})

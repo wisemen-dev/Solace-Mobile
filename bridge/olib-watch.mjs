@@ -19,6 +19,8 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
   let callbacks = null
   let scanSeq = 0 // 扫描代数：换目录/停用后，旧扫描在检查点自行退出
   let lastScanAt = 0
+  let scanning = false
+  let rescanTimer = null
   // 回前台补扫的最小间隔：SAF 全量枚举本身有成本（几百文件秒级，虽在
   // io 线程不卡 UI），频繁切换应用时不该每次都扫；但主路径是「去 Olib
   // 下载完切回」，30s 窗口既合并了频繁切换，又不会漏掉刚下完的书
@@ -100,17 +102,25 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
     }
   }
 
-  // 是否该立即补扫：节流 + 并发防重入
+  // 是否该立即补扫：节流 + 并发防重入。lastScanAt 不在此处置位——挪到
+  // 扫描结束时更新，枚举前的瞬时故障不烧节流窗
   function shouldRun () {
-    if (Date.now() - lastScanAt < RESCAN_THROTTLE_MS) return false
-    lastScanAt = Date.now()
-    return true
+    if (scanning) return false
+    return Date.now() - lastScanAt >= RESCAN_THROTTLE_MS
+  }
+
+  // 节流命中 ≠ 无事可做：窗口内落盘的新书若用户此后不再离开应用，将
+  // 无限期缺席——安排一次延迟补扫兜住盲窗（一次性，不堆叠）
+  function scheduleDelayedRescan () {
+    if (rescanTimer) return
+    rescanTimer = setTimeout(() => { rescanTimer = null; scan({}) }, RESCAN_THROTTLE_MS)
   }
 
   async function scan (opts = {}) {
     const s = getSettings()
     if (!s.watchTreeUri || s.watchEnabled === false) { scanSeq++; return }
-    if (!opts.force && !shouldRun()) return
+    if (!opts.force && !shouldRun()) { scheduleDelayedRescan(); return }
+    scanning = true
     const gen = ++scanSeq
     const isCurrent = () => {
       const current = getSettings()
@@ -152,6 +162,9 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
       await saveState()
     } catch (err) {
       reportError(`自动入库：${(err && err.message) || err}（可到设置 → 资料库 重新选择文件夹）`)
+    } finally {
+      scanning = false
+      lastScanAt = Date.now()
     }
   }
 

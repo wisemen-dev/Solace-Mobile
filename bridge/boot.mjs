@@ -145,8 +145,15 @@ const solace = {
   relocateLibrary: gate(async () => { throw new Error('平板端资料库位置固定，不支持迁移') }),
   // 目录选择走 SAF（系统授权）：返回 { canceled, uri, name }，供监视文件夹配置
   pickDirectory: gate(async () => {
-    const r = await pickFolder()
-    return r && r.canceled ? null : r
+    try {
+      const r = await pickFolder()
+      return r && r.canceled ? null : r
+    } catch (err) {
+      // SAF 启动异常按「取消」返回并提示——渲染层调用点无 catch，
+      // 原样上抛会成为 unhandled rejection、按钮静默无反馈
+      window.toast?.(`选择文件夹失败：${(err && err.message) || err}`)
+      return null
+    }
   }),
   pickFile: gate(async () => null),
 
@@ -251,8 +258,9 @@ const solace = {
   // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
   // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
   readNoteLinks: gate(async (id) => {
-    const { notes: files } = await notes.list(id)
-    return links.readPruned(id, new Set(files.map(f => f.file)))
+    // 笔记集合快照必须在 links 写队列内取（见 links-core 的 provider 注释）：
+    // 队列外提前取的过期快照会把并发保存中刚写入的锚点误剪成孤儿
+    return links.readPruned(id, async () => (await notes.list(id)).notes.map(f => f.file))
   }),
   setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
 

@@ -85,7 +85,7 @@ export function createNotes ({ fs, now = () => new Date() }) {
     const total = Math.floor(Number(payload.total))
     if (page >= 1 && total >= 1) lines.push(`- 位置：第 ${Math.min(page, total)} / ${total} 页`)
     lines.push('', '')
-    await fs.writeText(notePath(docId, file), lines.join('\n'))
+    await fs.writeFileAtomicText(notePath(docId, file), lines.join('\n'))
     return { file }
   }
 

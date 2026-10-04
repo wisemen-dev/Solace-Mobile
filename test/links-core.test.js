@@ -38,6 +38,21 @@ test('readPruned 返回剪除后的数据，只在有孤儿时写回', async () 
   assert.equal(writes, 0)
 })
 
+test('readPruned 接受 provider：在写队列内取实时集合，不误剪同队列刚写的锚点', async () => {
+  const { fs, links } = harness()
+  await fs.mkdirp(`notes/${ID}`)
+  await fs.writeText(`notes/${ID}/${FILE}`, 'x')
+  await links.setEntry(ID, FILE, ENTRY)
+  // provider 形态下快照点在 links 写队列任务内：调用时 setEntry 已落盘、
+  // 对应 md 也已在盘上（保存流程恒先落 md 后写锚点）→ 实时集合必含该文件
+  const data = await links.readPruned(ID, async () => {
+    const names = (await fs.readdir(`notes/${ID}`)).map(e => e.name)
+    assert.ok(names.includes(FILE), 'provider 应在队列内看到实时文件集合')
+    return names
+  })
+  assert.ok(data.records[FILE], '刚保存的锚点不得被误剪')
+})
+
 test('read：无文件返回空结构，不预建文件', async () => {
   const { fs, links } = harness()
   assert.deepEqual(await links.read(ID), { version: 1, records: {} })

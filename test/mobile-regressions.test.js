@@ -110,6 +110,8 @@ function inkHarness (solace) {
       const e = {pointerId:1, pointerType:'pen', button:0, clientX:10, clientY:10, pressure:0.5, preventDefault(){}};
       onDown(e); onUp(e);
     },
+    down(e) { onDown(e) }, move(e) { onMove(e) }, up(e) { onUp(e) },
+    turn(d) { lastLayout = d },
     flushSave, retry() {syncBookToDoc(lastLayout.docId)},
     state() { return {book, dirty, pendingWrite, loadedDoc} }
   })`, solace)
@@ -168,6 +170,24 @@ test('墨迹读失败后禁止覆盖，恢复读取并重试后保留旧笔迹',
   api.draw()
   await api.flushSave()
   assert.equal((await annotations.read(ID)).pages[1].strokes.length, 2)
+})
+
+test('落笔后未抬手翻页：该笔作废，不得把旧页坐标提交进新页', async () => {
+  const { api } = inkHarness({
+    readAnnotations: async () => ({ version: 1, pages: {} }),
+    writeAnnotations: async () => {}
+  })
+  api.setup(layout)
+  await settle()
+  const pen = (x, y) => ({ pointerId: 1, pointerType: 'pen', button: 0, clientX: x, clientY: y, pressure: 0.5, preventDefault () {} })
+  api.down(pen(10, 10))
+  api.move(pen(15, 15))
+  api.turn({ ...layout, page: 2 }) // 另一指点底栏翻页：layout 已切新页
+  api.move(pen(20, 20))            // 旧代码会把新页坐标混进旧页笔画
+  api.up(pen(20, 20))              // 旧代码会把整笔提交进第 2 页
+  const st = api.state()
+  assert.ok(!st.book.pages[2] || st.book.pages[2].strokes.length === 0)
+  assert.ok(!st.dirty) // 作废的笔画不触发保存
 })
 
 for (const kind of ['mobile', 'link']) {

@@ -24,15 +24,9 @@
 
         </activity>
 
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths"></meta-data>
-        </provider>
+        <!-- Capacitor 模板遗留的 FileProvider（external-path path="." 把整个
+             外部存储根映射为可授权 Uri）已移除：全仓库无调用方，留着即越权
+             隐患。将来需要分享功能时再加回并收窄到具体子目录 -->
     </application>
 
     <!-- Permissions -->

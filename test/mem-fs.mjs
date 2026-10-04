@@ -24,6 +24,9 @@ export function createMemFs () {
       files.delete(`${p}.tmp`)
       files.set(p, { data: Buffer.from(text, 'utf8'), mtime: now() })
     },
+    async writeFileAtomicB64 (p, b64) {
+      files.set(p, { data: Buffer.from(base64ToBytes(b64)), mtime: now() })
+    },
     async writeText (p, text) {
       files.set(p, { data: Buffer.from(text, 'utf8'), mtime: now() })
     },

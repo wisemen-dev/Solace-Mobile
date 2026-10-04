@@ -25,7 +25,8 @@ export function parseRecordMd (text) {
   let lastExcerpt = -1
   while (i < lines.length) {
     const ln = lines[i]
-    if (/^> 【摘录】第 \d+ 页$/.test(ln)) { sawHeader = true; lastExcerpt = i; i++; continue }
+    // \r?：桌面 Typora 以 CRLF 保存时行尾带回车，不容忍会整份误判降级
+    if (/^> 【摘录】第 \d+ 页\r?$/.test(ln)) { sawHeader = true; lastExcerpt = i; i++; continue }
     if (ln.startsWith('>')) { lastExcerpt = i; i++; continue }
     break
   }

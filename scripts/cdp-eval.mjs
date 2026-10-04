@@ -6,6 +6,10 @@
 import { spawnSync } from 'node:child_process'
 
 const out = spawnSync('adb', ['shell', 'cat /proc/net/unix'], { encoding: 'utf8' })
+if (out.error || out.status !== 0) {
+  console.error(`adb 不可用或执行失败：${out.error ? out.error.message : `exit ${out.status}`}`)
+  process.exit(1)
+}
 const sock = String(out.stdout || '').match(/@(webview_devtools_remote_\d+)/)?.[1]
 if (!sock) {
   console.error('未找到 WebView devtools socket（adb 不可用，或应用未在前台运行）')

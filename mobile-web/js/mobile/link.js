@@ -17,6 +17,19 @@ let layer = null           // .ink-text-layer（懒建）
 let lastLayout = null      // 最近一次 layout detail（含 pageObj/viewport）
 let buildSeq = 0
 const textCache = new Map()          // `${docId}:${page}` -> { tc, items, pageText, spans }
+// 每页 TextContent 数十 KB 级且无失效时机，LRU 封顶防长会话逐页翻多本书后
+// 只增不减（移动 WebView 内存压力 → OOM）
+const TEXT_CACHE_MAX = 24
+function textCacheGet (key) {
+  if (!textCache.has(key)) return undefined
+  const v = textCache.get(key)
+  textCache.delete(key); textCache.set(key, v) // 重插 = 标记最近使用
+  return v
+}
+function textCacheSet (key, v) {
+  textCache.delete(key); textCache.set(key, v)
+  while (textCache.size > TEXT_CACHE_MAX) textCache.delete(textCache.keys().next().value)
+}
 const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let tray = null                      // #linkTray（选词托盘，懒建）
@@ -78,13 +91,13 @@ async function buildLayer (d) {
   if (seq !== buildSeq) return
   if (!shouldBuild()) { layer.textContent = ''; layer.hidden = true; return }
   const key = `${d.docId}:${d.page}`
-  let entry = textCache.get(key)
+  let entry = textCacheGet(key)
   if (!entry) {
     const tc = await d.pageObj.getTextContent()
     if (seq !== buildSeq) return
     const { text, spans } = buildPageText(tc.items)
     entry = { tc, items: tc.items, pageText: text, spans }
-    textCache.set(key, entry)
+    textCacheSet(key, entry)
   }
   // TextLayer 只会往容器里 append：不清空会逐页/逐次累积
   layer.textContent = ''
@@ -172,7 +185,7 @@ function paintItem (el, list) {
 // 记录锚点（.lnk，text 经 findRangeByText 重锚定）+ 选词选中态（.lnk-sel）
 // 合并成**一遍**重建：分两遍时后一遍会拿原文本重切，把前一遍的标记覆盖掉
 function renderMarkers (d) {
-  const entry = textCache.get(`${d.docId}:${d.page}`)
+  const entry = textCacheGet(`${d.docId}:${d.page}`)
   if (!entry) return
   const byItem = new Map()
   const docLinks = linksCache.get(d.docId)
@@ -283,7 +296,7 @@ function onLayerTap (e) {
   const itemEl = el && el.closest('[data-item]')
   if (!itemEl || !layer.contains(itemEl)) return
   const item = Number(itemEl.dataset.item)
-  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry || !entry.spans[item]) return
   // caret 偏移要相对**整个文本项**量：标记 span 把项文本切成了多个节点，
   // 直接取 caret.offset（相对所在文本节点）会算错
@@ -316,6 +329,8 @@ let edCtx = null       // { mode, docId, file?, title, total, excerpts, degraded
 let edDirty = false
 let edExcerptsTouched = false // 本次编辑是否动过摘录 chips（降级时据此决定是否写侧车）
 let edSaving = false
+let edOpening = false   // openEditor 的 await 窗口防重入（二次 showModal 会抛 InvalidStateError）
+let edClosing = false   // requestEditorClose 的 await 窗口防重入（连按返回会叠开确认框）
 
 function ensureEditor () {
   if (edDlg) return
@@ -361,51 +376,61 @@ function renderChips () {
 }
 
 async function openEditor (opts = {}) {
-  if (edSaving) return
-  ensureEditor()
-  if (opts.mode === 'edit') {
-    const docLinks = linksCache.get(opts.docId)
-    const rec = docLinks && docLinks.records[opts.file]
-    if (!rec) { window.toast?.('记录已不存在'); return }
-    let raw = ''
-    try {
-      raw = await window.solace.readNote(opts.docId, opts.file)
-    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
-    if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
-    const parsed = parseRecordMd(raw)
-    // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
-    edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
-    edDlg.querySelector('#linkRecordText').value = parsed.body
-    edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
-  } else {
-    edCtx = {
-      mode: 'create',
-      flow: 'create', // 流程来源（mode 会在建文件后转 edit 防重复建，flow 不变）
-      docId: lastLayout.docId,
-      title: (document.getElementById('previewTitle') || {}).textContent || '摘录',
-      total: Number((document.getElementById('pageTotal') || {}).textContent) || 0,
-      excerpts: selections.map(s => ({ ...s })),
-      degraded: false
+  if (edSaving || edOpening) return
+  edOpening = true
+  try {
+    ensureEditor()
+    if (opts.mode === 'edit') {
+      const docLinks = linksCache.get(opts.docId)
+      const rec = docLinks && docLinks.records[opts.file]
+      if (!rec) { window.toast?.('记录已不存在'); return }
+      let raw = ''
+      try {
+        raw = await window.solace.readNote(opts.docId, opts.file)
+      } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+      if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
+      const parsed = parseRecordMd(raw)
+      // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
+      edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
+      edDlg.querySelector('#linkRecordText').value = parsed.body
+      edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
+    } else {
+      edCtx = {
+        mode: 'create',
+        flow: 'create', // 流程来源（mode 会在建文件后转 edit 防重复建，flow 不变）
+        docId: lastLayout.docId,
+        title: (document.getElementById('previewTitle') || {}).textContent || '摘录',
+        total: Number((document.getElementById('pageTotal') || {}).textContent) || 0,
+        excerpts: selections.map(s => ({ ...s })),
+        degraded: false
+      }
+      edDlg.querySelector('#linkRecordText').value = ''
+      edDlg.querySelector('#linkRecordTitle').textContent = '新建摘录记录'
     }
-    edDlg.querySelector('#linkRecordText').value = ''
-    edDlg.querySelector('#linkRecordTitle').textContent = '新建摘录记录'
+    edDirty = false
+    edExcerptsTouched = false
+    renderChips()
+    edDlg.showModal()
+    setTimeout(() => edDlg.querySelector('#linkRecordText').focus(), 60)
+  } finally {
+    edOpening = false
   }
-  edDirty = false
-  edExcerptsTouched = false
-  renderChips()
-  edDlg.showModal()
-  setTimeout(() => edDlg.querySelector('#linkRecordText').focus(), 60)
 }
 
 async function requestEditorClose () {
-  if (edSaving) return
-  if (edDirty) {
-    const r = await askConfirm({ title: '放弃未保存的修改？', text: '关闭后这些内容将丢失。', okText: '放弃修改' })
-    if (!r) return
+  if (edSaving || edClosing) return
+  edClosing = true
+  try {
+    if (edDirty) {
+      const r = await askConfirm({ title: '放弃未保存的修改？', text: '关闭后这些内容将丢失。', okText: '放弃修改' })
+      if (!r) return
+    }
+    edDirty = false
+    edDlg.close()
+    // 创建流取消：选集保留、仍在选词模式（spec §6.3），无需额外动作
+  } finally {
+    edClosing = false
   }
-  edDirty = false
-  edDlg.close()
-  // 创建流取消：选集保留、仍在选词模式（spec §6.3），无需额外动作
 }
 
 async function saveEditor () {

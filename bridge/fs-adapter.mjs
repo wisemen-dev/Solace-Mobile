@@ -25,11 +25,11 @@ export function createFsAdapter ({ filesystem = Filesystem } = {}) {
   // 同一目标串行化：WebView 里多个异步写可交错（A 写 tmp、B 写 tmp、A 先 rename
   // 把 tmp 搬走 → B rename 失败）；固定 tmp 名保持不变，崩溃残留仍可被启动清扫识别
   const writeChains = new Map()
-  async function writeFileAtomicText (p, text) {
+  function atomicWrite (p, writeTmp) {
     const prev = writeChains.get(p) || Promise.resolve()
     const run = prev.then(async () => {
       const tmp = `${p}.tmp`
-      await filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 })
+      await writeTmp(tmp)
       await filesystem.rename({ from: abs(tmp), to: abs(p), directory: DIR, toDirectory: DIR })
     })
     const tail = run.then(() => {}, () => {})
@@ -49,7 +49,10 @@ export function createFsAdapter ({ filesystem = Filesystem } = {}) {
       const r = await filesystem.readFile({ path: abs(p), directory: DIR })
       return r.data
     },
-    writeFileAtomicText,
+    writeFileAtomicText: (p, text) => atomicWrite(p,
+      tmp => filesystem.writeFile({ path: abs(tmp), data: text, directory: DIR, encoding: Encoding.UTF8 })),
+    writeFileAtomicB64: (p, b64) => atomicWrite(p,
+      tmp => filesystem.writeFile({ path: abs(tmp), data: b64, directory: DIR })),
     async writeText (p, text) {
       await filesystem.writeFile({ path: abs(p), data: text, directory: DIR, encoding: Encoding.UTF8 })
     },

@@ -24,3 +24,31 @@
 - 调试安装包：`android/app/build/outputs/apk/debug/app-debug.apk`。
 
 界面测试使用 DOM 和原生接口替身，推库测试只记录命令，不连接设备。未执行真机、Android 模拟器或设备资料库操作；真实 SAF、触笔与系统返回键交互仍需后续设备验证。
+
+## 第三轮（全量复审，2026-10-04）
+
+五个并行分片全文精读 bridge / mobile-web / scripts / 原生插件 / 测试质量，关键发现经二次复核。修复按 P1 → P2 → 可验证 P3 分批执行，每批跑全量单测。
+
+| 级别 | 发现 | 修复 | 验证 |
+|---|---|---|---|
+| P1 | index.json 读故障被当「不存在」返回空表，下一次落库整表覆盖（索引元数据静默清空） | readTextIndexMeta 按 isNotFoundError 分流，故障照抛（走启动错误页兜底） | library-core：EIO 下 init 照抛、恢复后条目仍在（对照 RED） |
+| P1 | 旧索引搬迁的 exists 故障 reject 被永久缓存在 legacyMigration，索引功能整会话瘫痪 | 迁移失败即清缓存，下次调用重试 | library-core：首次 rejects、恢复后成功（对照 RED） |
+| P1 | 墨迹 drawing 不记页码：画到一半翻页，旧页坐标整笔提交进新页且中途采点混入新页坐标 | 落笔记页，onMove/commitStroke 页码对账（与橡皮对称），变了即作废 | mobile-regressions：翻页后 move+up 不落新页、不置脏（对照 RED） |
+| P2 | 分片读故障被当损坏，搜索删除该书 meta 条目并写盘 | readShardPages 分流：缺失→自愈，I/O 故障→上抛；搜索循环跳过不动 meta | library-core：EIO 下搜索返回空且条目保留、恢复后命中 |
+| P2 | readNoteLinks 的笔记快照在 links 写队列外取，交错下误剪刚保存的锚点 | readPruned 接受 provider，快照在写队列任务内取实时集合（保存恒先 md 后锚点，结构性消除窗口） | links-core：provider 在队列内取实时集合不误剪 |
+| P2 | 文本层缓存无淘汰，长会话逐页翻书内存只增不减 | 按页 LRU 封顶 24 页（get 重插、set 驱逐最旧） | 代码走查（纯缓存策略，无行为分支） |
+| P2 | openEditor 的 await readNote 窗口内连点第二个标记 → 二次 showModal 抛 InvalidStateError | edOpening 防重入标志（try/finally 复位） | 代码走查 + 语法检查 |
+| P2 | sync-www 无条件先删 www 再拷贝，--src 打错即清空产物 | 先校验桌面仓库渲染层/node_modules 存在再动手；--src 缺参显式报错 | 手工验证两种错误输入均拦截、www 未动 |
+| P3 | 摘录 md 头正则不容忍 CRLF（Typora 保存误降级） | 正则加 \r? | link-md：CRLF 头解析 ok 且正文保真 |
+| P3 | 删书不清 annotations/links 侧车，孤儿永久积留 | removeDoc 清理列表补两项（尽力清，失败报残留） | 代码走查（与既有清理同链） |
+| P3 | 新建笔记模板非原子写；标注侧车入队后不复验不拷贝；封面非原子直写 | create 改原子写；write 入队前深拷贝快照（对齐 links setEntry）；新增 writeFileAtomicB64 | 全量单测回归 |
+| P3 | 节流盲窗：t0 扫描被跳过 + 窗口内下载完成 + 用户不再离开应用 → 新书无限期缺席；lastScanAt 在枚举前置位烧窗 | 节流命中安排 30s 后一次性补扫；lastScanAt 移到扫描结束更新；scanning 防并发 | 全量单测回归（olib-watch 既有用例） |
+| P3 | 原生 relPath 无包含性校验（../ 越界）；pickFolder 只取不放逼近授权上限；FileProvider 映射整个外部存储根 | libraryFile 规范路径校验；换目录释放旧持久化授权；删除无调用方的 FileProvider 与 file_paths.xml | gradle 构建通过（首次编译暴露 lambda 检查异常问题，改抛 IllegalStateException 后通过） |
+| P3 | pickDirectory 异常上抛致渲染层 unhandled rejection；连按返回叠开确认框；工具栏 z-index 盖过面板；npm test 枚举漏新文件；--rebuild 链不含 mobile-web 副本；cdp-eval adb 失败报误导信息 | boot 层按取消返回+提示；requestEditorClose 防重入；z-index 7→4；test 改 glob；build-bridge 顺带刷新副本；adb status 显式检查 | 代码走查 + npm test（glob 模式 97/97） |
+
+### 第三轮验证记录
+
+- `npm test`：97/97 通过（本轮新增 6 项；其中索引读故障 ×3 与墨迹翻页 ×1 对修复前版本对照运行确认为 RED）。
+- `npm run apk`：桥重建（含 mobile-web 副本刷新）、cap sync、gradle debug 构建成功。
+- 未修（需真机/设备验证，留待后续）：下载停滞 >1.5s 的半截文件稳定判据（与桌面端同语义）、鼠标拖出预览的指针残留（触屏为主场景）、textDivs 与 items 一一对应假设（pdf.js 实测行为）。
+- 真机与模拟器验证尚未执行。

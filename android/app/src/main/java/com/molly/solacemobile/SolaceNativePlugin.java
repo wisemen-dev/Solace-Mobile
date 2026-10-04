@@ -2,6 +2,7 @@ package com.molly.solacemobile;
 
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.UriPermission;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.net.Uri;
@@ -126,6 +127,16 @@ public class SolaceNativePlugin extends Plugin {
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (SecurityException ignored) {
                 // 部分 ROM 不支持持久化：本次会话仍可读，下次需重选
+            }
+            // 系统持久化授权有上限（旧 Android 128 个）：反复换监视目录会积累
+            // 旧授权，逼近上限后新授权静默失败——只保留本次的，其余释放
+            for (UriPermission p : getContext().getContentResolver().getPersistedUriPermissions()) {
+                if (p.getUri().equals(uri)) continue;
+                try {
+                    getContext().getContentResolver().releasePersistableUriPermission(p.getUri(),
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {
+                }
             }
             res.put("canceled", false);
             res.put("uri", uri.toString());
@@ -266,10 +277,24 @@ public class SolaceNativePlugin extends Plugin {
         return o;
     }
 
-    // 资料库根（与 fs-adapter 的 Directory.External + SolaceLibrary 同一位置）
+    // 资料库根（与 fs-adapter 的 Directory.External + SolaceLibrary 同一位置）。
+    // relPath 来自 JS 桥，必须限制在库内：规范路径不含库根前缀即拒绝，
+    // 防 ../ 逃逸读写库外任意应用可及路径。非法即抛 IllegalStateException
+    // （RuntimeException），由调用点既有的 catch(Exception) 转成 error 响应
     private File libraryFile(String relPath) {
         File base = new File(getContext().getExternalFilesDir(null), "SolaceLibrary");
-        return new File(base, relPath == null ? "" : relPath);
+        File f = new File(base, relPath == null ? "" : relPath);
+        String baseCanonical, canonical;
+        try {
+            baseCanonical = base.getCanonicalPath();
+            canonical = f.getCanonicalPath();
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("路径规范化失败: " + relPath, e);
+        }
+        if (!canonical.equals(baseCanonical) && !canonical.startsWith(baseCanonical + File.separator)) {
+            throw new IllegalStateException("路径越出资料库: " + relPath);
+        }
+        return f;
     }
 
     // 复制的同时计算 SHA-256：一次读取完成两件事，且哈希与副本内容严格

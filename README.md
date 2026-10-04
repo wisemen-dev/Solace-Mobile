@@ -48,7 +48,7 @@ docs/PORTING.md 性能章节。
 ```bash
 npm install          # 安装依赖
 npm run www          # 从桌面仓库搬运渲染层 + 打移动端补丁 + 重建桥（见下）
-npm run bridge       # esbuild 打包桥接层 → www/vendor/solace-bridge.js
+npm run bridge       # esbuild 打包桥接层 → www/vendor/solace-bridge.js（顺带刷新 mobile-web → www 副本）
 npm test             # 数据层单测 + 界面回归测试（内存 fs / DOM 替身，纯 Node）
 npm run apk          # 同步资源并构建 debug APK
 npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验，见下）
