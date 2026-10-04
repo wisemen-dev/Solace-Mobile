@@ -1948,7 +1948,7 @@ git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/�
 ### Task 11: 文档 + 真机 + 全量回归
 
 **Files:**
-- Modify: `docs/PORTING.md`（补丁清单 34→37、新模块说明）
+- Modify: `docs/PORTING.md`（补丁计数 39 与清单、新模块说明）
 - Modify: `CHANGELOG.md`（新版本条目草稿）
 - Modify: `docs/EXCERPT-LINK-DESIGN.md`（状态行改「已实现」，§12 补进度）
 
@@ -1956,7 +1956,7 @@ git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/�
 - [ ] **Step 2: CHANGELOG.md**：条目（功能、入口替换说明、兼容性：旧 .md 不受影响）
 - [ ] **Step 3: 全量回归**
 
-Run: `npm test`（65/65）
+Run: `npm test`（63/63）
 Run 依次（server 在跑、串行、勿并发）：`node p3-test.mjs`、`node race-test.mjs`、`node ink-verify.mjs`、`node link-test.mjs` → 全绿
 - [ ] **Step 4: 真机**（平板 80b6f44d，lshort 或文本 PDF 书）
 

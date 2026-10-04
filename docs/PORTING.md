@@ -33,7 +33,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 - 手写标注是平板端专有：`annotations/<docId>.json` 随整库搬运，桌面端
   不识别即静默忽略；`notes/<docId>/` 只放 .md、`listNotes` 只认 .md，
   两条路径永不相交（Typora 互通不变量零影响）。孤儿清扫只扫 `files/`、
-  `covers/`，不碰 `annotations/`
+  `covers/`，不碰 `annotations/`、`links/`
+- 摘录链接（0.5.0）同模式：记录仍是 `notes/` 下的普通 .md，锚点在
+  `links/<docId>.json` 侧车——平板专有、随整库搬运、桌面端静默忽略
 
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
@@ -99,8 +101,8 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 3. `solace-note-saved` 监听：内置编辑器保存后刷新列表（v0.3.1）
 4. 记录行追加 `.note-link-row`（`window.__linkNoteRowExtra` 钩子：摘录链接
    的 🔗 徽标与首条摘录片段）
-5. 「＋新建」前插 `window.__linkNewOverride` 钩子：有摘录记录时改走选词模式
-   （入口替换；旧笔记仍可读可改）
+5. 「＋新建」前插 `window.__linkNewOverride` 钩子：预览中新建改走选词模式
+   （入口替换，钩子对本书预览无条件接管、返回 false 才走原路；旧笔记仍可读可改）
 6. 单条删除成功后调 `window.__linkNoteDeleted` 钩子：渲染侧清缓存并重绘标记
    （否则正文标记要等下次保存/重开预览才消失）
 7. 批量删除同样逐条调 `window.__linkNoteDeleted`（spec §5.4 明确「含批量
@@ -238,6 +240,39 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
   1600×2200 CSS → 每层约 56MB），仅预览打开期间存在。低端机吃紧时的
   退路：活动层降 dpr=1，或合并单层 + 脏矩形重绘。
 
+## 摘录链接（词句链接批注，0.5.0）
+
+设计与数据格式的权威文档是 `docs/EXCERPT-LINK-DESIGN.md`（§12 已拍板）；
+实施明细（含偏差回填）见 `docs/EXCERPT-LINK-PLAN.md`。代码：
+`mobile-web/js/mobile/link.js`（自有资产，非补丁）+ `link-md.mjs` /
+`link-text.mjs`（纯函数，随单测）+ `bridge/links-core.mjs`；补丁：
+index.html +1（`#btnLink`「🔗 链接」）、notespanel.js +4（行徽标钩子 /
+＋新建钩子 / 单条与批量删除回调钩子）、preview.js 既有 layout 补丁加宽
+（detail 增补 `pageObj`/`viewport`，条数不变）。
+
+- **记录与锚点**：记录仍是 `notes/<docId>/*.md`（头部【摘录】引用块 +
+  正文，Typora 可读）；锚点侧车 `links/<docId>.json`（平板专有，随整库
+  搬运，桌面端静默忽略）。记录被桌面手改致头部不符合格式 → 整份当正文
+  解析（锚点仍有效）；侧车损坏留档 `.corrupt-<n>.json`（顺延编号）后
+  空回退加 notice。
+- **删除联动**：删除记录（含批量路径）经 `trashNote` 与 notespanel 回调
+  钩子清侧车并重绘标记；渲染侧对连续回调做 30ms 重绘合并。
+- **文本层（dpr 陷阱）**：pdf.js 4.10.38 官方 `TextLayer`，构造签名
+  `{ textContentSource, container, viewport }`；容器必须设
+  `--scale-factor` 且必须是 **CSS 尺度**（cssW/baseW，不是设备像素）——
+  dpr=2 平板用设备尺度文字大一倍（headless dpr=1 会蒙对，须双跑断言）。
+  重建前必须清空容器（TextLayer 只 append）；`getTextContent` 按
+  `${docId}:${page}` 缓存；异步构建按代数作废。
+- **标记**：标记 span 插在文本项**内部**——文本层基础样式必须用
+  `.ink-text-layer > span` 直接子选择器（后代选择器会把 `.lnk` 标记也
+  绝对定位到行首）；caret 偏移用 Range 相对整个文本项量。重锚定 =
+  归一化搜索 + hint（文本项序号 + 项内偏移）就近消歧，未命中跳过该处。
+- **入口替换**：预览中「＋新建」一律改走选词流程（`__linkNewOverride`
+  钩子对本书预览无条件接管）；旧自由 .md 照常可读可改、不再新建。
+- **保存管线**：显式动作无防抖；`.md` 先、侧车后（渲染侧组合 `writeNote`
+  + `setNoteLinkEntry`，bridge 无 writeNoteRecord）；任一步失败留在编辑器
+  可重试、幂等。
+
 ## 存储位置
 
 `Directory.External`（应用专属外部目录
@@ -247,8 +282,9 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 - 免任何运行时权限
 - debug 包可被 adb 读写（`npm run push:library` 依赖此）
 - 卸载应用随之删除——重要资料库请保持桌面端为母本
-- 手写标注（`annotations/`）没有桌面端母本：**卸载应用即永久丢失**，
-  覆盖安装（`adb install -r`）/ 杀进程 / 重启设备都不丢
+- 手写标注（`annotations/`）与摘录链接锚点（`links/`）没有桌面端母本：
+  **卸载应用即永久丢失**，覆盖安装（`adb install -r`）/ 杀进程 / 重启
+  设备都不丢
 
 注意：不要用 `Directory.Documents`——那是公共目录，Android 11+ 作用域
 存储下应用只能访问自己创建的文件，行为不可靠。
@@ -259,6 +295,12 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
   两次 `Uncaught TypeError: Cannot read properties of undefined (reading
   'triggerEvent')`，来自 Capacitor 原生注入脚本。实测 IPC、插件调用、
   返回键全部正常，纯噪声，升级 Capacitor 版本时可以再验证是否消失。
+- **debug 构建的原生桥控制台日志（噪声）**：Capacitor debug 构建会把每个
+  原生插件调用结果打回页面控制台（native-bridge `logFromNative`，仅
+  `isLoggingEnabled` 时），预期失败——mkdir 目录已存在 / stat 文件不存在
+  等存在性检查——以 `console.error(对象)` 出现；logcat 侧显示为
+  `I/Capacitor/Console ... Msg: undefined`。真机控制台取证按「栈帧是否含
+  页面文件 URL」区分页面错误与此类噪声（后者栈帧 URL 为空），别按条数判失败。
 - Git Bash 下 adb 的 `/storage/...` 参数会被 MSYS 转成 Windows 路径；
   涉及设备路径的命令需 `MSYS_NO_PATHCONV=1` 且本地路径用 Windows 形式。
 

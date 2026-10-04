@@ -124,6 +124,7 @@ SolaceMobile/
 ├── covers/        # 封面缩略图缓存
 ├── textindex/     # 全文索引分片（可删，自动重建）
 ├── annotations/   # 手写标注（移动端专有，桌面端静默忽略）
+├── links/         # 摘录链接锚点（移动端专有，桌面端静默忽略）
 └── notes/         # 每本书的 Markdown 笔记
 ```
 

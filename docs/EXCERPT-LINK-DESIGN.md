@@ -1,6 +1,7 @@
 # 方案书：摘录链接（预览词句链接批注）
 
-> 状态：设计评审通过（2026-10-03，拍板项见 §12）；P1–P3 已实施（2026-10-04），P4 收尾待做。
+> 状态：**已实现**（2026-10-04：P1–P4 全部完成并验证；拍板项见 §12，
+> 实施偏差与进度见 §12 末注）。
 > 前置核实：vendored pdf.js 导出表已含 `TextLayer` 类，可叠文本层做选词与标记。
 > **版本实测更正（2026-10-04）**：vendored 构建实为 **4.10.38**（非本文档原先所写
 > 的 v5）。`TextLayer` 构造签名 `{ textContentSource, container, viewport }` 与
@@ -77,11 +78,11 @@ mobile-web/js/mobile/ink.js（直接改，~10 行）
 bridge/links-core.mjs（新增，~100 行）
   └─ read / write / removeEntry（原子写 + 串行链 + 损坏留档）
 
-bridge/record-md.mjs（新增，纯函数）
+mobile-web/js/mobile/link-md.mjs（新增，纯函数；原计划在 bridge/，实施微调见 §9）
   └─ 记录 .md 的生成与解析（含降级），node 可单测
 
 bridge/boot.mjs（直接改）
-  ├─ readNoteLinks / writeNoteLinks / writeNoteRecord 桥方法
+  ├─ readNoteLinks / setNoteLinkEntry 桥方法（保存 = 渲染侧组合 writeNote + setNoteLinkEntry）
   └─ trashNote 扩展：同链清侧车条目
 ```
 
@@ -285,3 +286,15 @@ Task 10 偏差）；同步更新 PORTING.md 补丁清单与 sync-www 末尾计�
 5. **存储**：记录 = `.md`（Typora 可读）+ 锚点 = `links/` 侧车（桌面忽略）
 6. **归属独占**：一句只属一条记录（点已链接句 = 打开记录；移除摘录即释放）
 7. **记录编辑器 = 纯文本**（无富文本）；全移除摘录 = 退化为普通笔记
+
+**实施进度（2026-10-04）**
+
+- P1–P4 全部完成：P1 数据层 93d8d5d/fcc2fdd/0af8df0；P2 文本层与选词
+  49f11ef/86f0a71/4170c63；P3 标记/编辑器/列表 4aee8c4/3d32f3e/d4622b2；
+  P4 文档 + 真机 + 全量回归（本条目所在提交）。实施偏差两处接口微调（§9）
+  与补丁实际 39 处（§10）均已回填实施计划对应任务。
+- 验证全绿：单测 63/63；harness（摘录链接 16 场景 / P3 专测 11 / 竞态 6 /
+  墨迹目视 6）；真机（平板 80b6f44d）全流程通过（跨页点选 → 保存 → 重载
+  标记常在 → 点标记编辑 → 列表跳回 → 删除 → 互斥 → 返回键链）。
+- 版本状态：CHANGELOG 已记 `[0.5.0] - 未发布（草稿）`；package.json /
+  APK versionName 未升，待定版时统一处理。
