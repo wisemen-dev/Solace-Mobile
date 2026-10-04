@@ -7,8 +7,9 @@
 // <pkg>/files），免任何权限；应用卸载时随之删除。整个 SolaceLibrary/
 // 放在这里，可用 adb push / USB MTP 与桌面端整库互传。
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
+import { LIB_ROOT } from './constants.mjs'
 
-const ROOT = 'SolaceLibrary'
+const ROOT = LIB_ROOT
 const DIR = Directory.External
 
 const abs = (p) => `${ROOT}/${String(p).replace(/^\/+/, '')}`

@@ -1,5 +1,5 @@
 // 摘录链接（link.js）：把页面的隐藏文本层铺在 PDF 之上，供选句与标记。
-// P2-T6：文本层核心（懒建 + 代数作废 + 按页缓存）；选词与记录编辑器见后续任务。
+// 文本层核心（懒建 + 代数作废 + 按页缓存）、选词模式、标记渲染与记录编辑器。
 //
 // 三个来源共同决定层内容：layout 事件（docId/页码/pageObj/viewport）、
 // linksCache（本书的锚点记录）、textCache（按 doc:page 缓存的文本与区间映射）。
@@ -9,6 +9,7 @@ import { esc } from '../util.js'
 import { closeNotes } from '../notespanel.js'
 import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText } from './link-text.mjs'
 import { generateRecordMd, parseRecordMd } from './link-md.mjs'
+import { jumpPage } from './page-jump.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
 let pdfCanvas = null
@@ -20,6 +21,7 @@ const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let tray = null                      // #linkTray（选词托盘，懒建）
 let pendingFlash = null              // { docId, file, page }：跳回定位待闪标记（同页当场闪，异页等渲染）
+let layerDown = null                 // 点按判定起点 { id, x, y, t }（与 mobile.js 同风格）
 
 window.linkSelecting = false
 
@@ -56,7 +58,7 @@ function ensureLayer () {
   layer.className = 'ink-text-layer'
   layer.hidden = true
   host.insertBefore(layer, document.getElementById('previewError'))
-  // 选词模式的点按/选择监听在 T7 接入（本任务只有渲染，无交互）
+  // 点按/选择监听在模块底部统一绑定（见 onLayerTap；本函数只管图层 DOM）
 }
 
 function applyLayout (d) {
@@ -228,6 +230,11 @@ function trayUpdate () {
 
 async function openSelection () {
   ensureDom(); ensureLayer(); ensureTray()
+  // §6.5：进选词自动收起目录/笔记面板（preview.js 的「点正文收面板」只覆盖
+  // 正文点击，从顶栏按钮进选词不经过它；留着面板会压住选词区与点按）
+  const toc = document.getElementById('tocPanel')
+  if (toc) toc.hidden = true
+  closeNotes()
   // 与墨水互斥：选词中不叠标注模式（ink 的退出即冲刷保存）
   if (window.inkActive) window.dispatchEvent(new CustomEvent('solace-ink-exit-request'))
   window.linkSelecting = true
@@ -254,6 +261,13 @@ document.getElementById('btnLink')?.addEventListener('click', () => openSelectio
 // 选词时命中判据用 [data-item] 反查文本项，再把项内字符偏移换算成页面文本偏移
 function onLayerTap (e) {
   if (!lastLayout) return
+  // 点按判定（§6.2，同 mobile.js 风格）：<300ms 且位移 <12px 才算点按。
+  // 横向滑动翻页在选词模式是保留手势（跨页累积靠它），其释放也会路过本层
+  // ——不设门槛会把翻页当成选句，甚至误开标记编辑器
+  const d = layerDown
+  layerDown = null
+  if (!d || e.pointerId !== d.id) return
+  if (Date.now() - d.t >= 300 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 12) return
   const mk = e.target && e.target.closest && e.target.closest('.lnk')
   if (mk && mk.dataset.file !== '__sel__') {
     openEditor({ mode: 'edit', file: mk.dataset.file, docId: lastLayout.docId })
@@ -293,13 +307,14 @@ function onLayerTap (e) {
   if (idx >= 0) selections.splice(idx, 1) // 再点同一句 = 取消
   else selections.push({ page: lastLayout.page, text, hint })
   trayUpdate()
-  buildLayer(lastLayout).catch(() => {}) // 重绘选中态（T8 标记渲染后合并进同一渲染）
+  buildLayer(lastLayout).catch(() => {}) // 重绘选中态（标记与选中态在一次重建里合并渲染）
 }
 
 // 记录编辑器：创建（整理本次选集）与编辑（回读 .md 正文）两条入口
 let edDlg = null
 let edCtx = null       // { mode, docId, file?, title, total, excerpts, degraded }
 let edDirty = false
+let edExcerptsTouched = false // 本次编辑是否动过摘录 chips（降级时据此决定是否写侧车）
 let edSaving = false
 
 function ensureEditor () {
@@ -328,13 +343,17 @@ function ensureEditor () {
 
 function renderChips () {
   const box = edDlg.querySelector('#linkChips')
-  box.innerHTML = edCtx.degraded
-    ? '<span class="link-chip-degraded">文件格式已被外部修改，将按普通笔记保存（锚点保留）</span>'
-    : edCtx.excerpts.map((x, i) =>
-      `<span class="link-chip"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
+  const chips = edCtx.excerpts.map((x, i) =>
+    `<span class="link-chip"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
+  // 降级（正文被外部改过）时正文按原样保存、不重建摘录区，但摘录条目仍要
+  // 可移除——归属释放（§6.2）与「全移除退化为普通笔记」（§6.3）都靠它
+  box.innerHTML = (edCtx.degraded
+    ? '<span class="link-chip-degraded">正文格式已被外部修改，将按原样保存；摘录仍可在此移除</span>'
+    : '') + chips
   box.querySelectorAll('.chip-x').forEach(b => b.addEventListener('click', () => {
     edCtx.excerpts.splice(Number(b.dataset.i), 1)
     edDirty = true
+    edExcerptsTouched = true
     renderChips()
   }))
 }
@@ -351,12 +370,13 @@ async function openEditor (opts = {}) {
     } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
     const parsed = parseRecordMd(raw)
     // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
-    edCtx = { mode: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
+    edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
     edDlg.querySelector('#linkRecordText').value = parsed.body
     edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
   } else {
     edCtx = {
       mode: 'create',
+      flow: 'create', // 流程来源（mode 会在建文件后转 edit 防重复建，flow 不变）
       docId: lastLayout.docId,
       title: (document.getElementById('previewTitle') || {}).textContent || '摘录',
       total: Number((document.getElementById('pageTotal') || {}).textContent) || 0,
@@ -367,6 +387,7 @@ async function openEditor (opts = {}) {
     edDlg.querySelector('#linkRecordTitle').textContent = '新建摘录记录'
   }
   edDirty = false
+  edExcerptsTouched = false
   renderChips()
   edDlg.showModal()
   setTimeout(() => edDlg.querySelector('#linkRecordText').focus(), 60)
@@ -396,8 +417,9 @@ async function saveEditor () {
     const body = edDlg.querySelector('#linkRecordText').value
     const content = edCtx.degraded ? body : generateRecordMd(edCtx.excerpts, body)
     await window.solace.writeNote(edCtx.docId, edCtx.file, content)
-    if (!edCtx.degraded) {
-      // 摘录全移除 → entry 传 null 即删条目（.md 同步退化成普通笔记）
+    // 摘录全移除 → entry 传 null 即删条目（.md 退化成普通笔记/外改格式原样）；
+    // 降级时仅在摘录被改动过才写侧车（未动则承诺「锚点保留不动」）
+    if (!edCtx.degraded || edExcerptsTouched) {
       await window.solace.setNoteLinkEntry(edCtx.docId, edCtx.file, edCtx.excerpts.length ? { excerpts: edCtx.excerpts } : null)
     }
     const { docId } = edCtx
@@ -408,7 +430,8 @@ async function saveEditor () {
     await loadLinks(docId)
     if (lastLayout && lastLayout.docId === docId) await buildLayer(lastLayout)
     window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
-    if (window.linkSelecting) closeSelection(true) // 创建完成即退出选词
+    // 仅创建流程完成才退出选词：编辑已链接句保存时保留累积选集（§6.3 防误丢）
+    if (edCtx.flow === 'create' && window.linkSelecting) closeSelection(true)
   } catch (err) {
     window.toast?.(`保存失败：${err.message || err}`) // 留在编辑器，重试幂等（同一 file）
   } finally {
@@ -481,17 +504,18 @@ function tryFlashNow () {
 function jumpToExcerpt (docId, file) {
   const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
   if (!rec || !rec.excerpts.length) return false
-  const input = document.getElementById('pageJump')
-  if (!input) return false
   closeNotes()
   pendingFlash = { docId, file, page: rec.excerpts[0].page }
-  if (!tryFlashNow()) {
-    input.value = String(rec.excerpts[0].page)
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-  }
+  if (!tryFlashNow()) jumpPage(rec.excerpts[0].page) // 异页：借页码回车跳页
   return true
 }
 
 // 点按监听绑在 #previewBody（静态 HTML，模块求值时已在）。文本层默认
 // pointer-events:none，选词模式下由 CSS 放开，事件冒泡到 body 层最稳
+document.getElementById('previewBody')?.addEventListener('pointerdown', (e) => {
+  layerDown = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() }
+}, { passive: true })
+document.getElementById('previewBody')?.addEventListener('pointercancel', (e) => {
+  if (layerDown && e.pointerId === layerDown.id) layerDown = null
+}, { passive: true })
 document.getElementById('previewBody')?.addEventListener('pointerup', onLayerTap)

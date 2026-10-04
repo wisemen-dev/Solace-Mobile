@@ -1192,8 +1192,11 @@
   });
   f();
 
+  // bridge/constants.mjs
+  var LIB_ROOT = "SolaceLibrary";
+
   // bridge/fs-adapter.mjs
-  var ROOT = "SolaceLibrary";
+  var ROOT = LIB_ROOT;
   var DIR = Directory.External;
   var abs = (p) => `${ROOT}/${String(p).replace(/^\/+/, "")}`;
   async function statOf(p) {
@@ -1332,6 +1335,25 @@
     return out.subarray(0, o);
   }
 
+  // bridge/serial-queue.mjs
+  function createSerialQueue() {
+    let tail = Promise.resolve();
+    return {
+      run(fn) {
+        const p = tail.then(fn);
+        tail = p.then(() => {
+        }, () => {
+        });
+        return p;
+      },
+      // 队列当前尾部（错误已吞）：await settled() = 等全部在途任务结算。
+      // 读排队于写链尾（不读旧态）的场景用它
+      settled() {
+        return tail;
+      }
+    };
+  }
+
   // bridge/library-core.mjs
   function createLibrary({ fs: fs2, sha256, randomUUID: randomUUID2, hashStorageFile, now = () => /* @__PURE__ */ new Date() }) {
     let data = null;
@@ -1444,7 +1466,7 @@
       if (!doc) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
       return doc;
     }
-    async function findDuplicate(hash, size) {
+    async function findDuplicateAndBackfill(hash, size) {
       let backfilled = false;
       let dup = null;
       for (const d of data.documents) {
@@ -1471,16 +1493,9 @@
       if (backfilled) await save();
       return dup;
     }
-    let importChain = Promise.resolve();
-    function enqueue(run) {
-      const p = importChain.then(run);
-      importChain = p.then(() => {
-      }, () => {
-      });
-      return p;
-    }
+    const importQ = createSerialQueue();
     function importWith(meta, performCopy) {
-      return enqueue(() => importWithLocked(meta, performCopy));
+      return importQ.run(() => importWithLocked(meta, performCopy));
     }
     async function importWithLocked(meta, performCopy) {
       const name = String(meta.fileName || "");
@@ -1489,7 +1504,7 @@
       const hash = String(meta.hash || "");
       if (!Number.isFinite(size) || size < 0) throw new Error("\u65E0\u6548\u7684\u6587\u4EF6\u5927\u5C0F");
       if (!hash) throw new Error("\u7F3A\u5C11\u5185\u5BB9\u54C8\u5E0C");
-      const dup = await findDuplicate(hash, size);
+      const dup = await findDuplicateAndBackfill(hash, size);
       if (dup) {
         const err = new Error(`\u4E0E\u5DF2\u5165\u5E93\u7684\u300A${dup.title}\u300B\u5185\u5BB9\u76F8\u540C`);
         err.duplicate = { title: dup.title, docId: dup.id };
@@ -1531,7 +1546,7 @@
       const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
       const name = String(file.fileName || "");
       if (!name.toLowerCase().endsWith(".pdf")) {
-        return enqueue(async () => {
+        return importQ.run(async () => {
           throw new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6");
         });
       }
@@ -1544,7 +1559,7 @@
       })();
     }
     function importVia(meta, performCopyAndHash) {
-      return enqueue(() => importViaLocked(meta, performCopyAndHash));
+      return importQ.run(() => importViaLocked(meta, performCopyAndHash));
     }
     async function importViaLocked(meta, performCopyAndHash) {
       const name = String(meta.fileName || "");
@@ -1564,7 +1579,7 @@
         const size = Math.floor(Number(info.size));
         const hash = String(info.hash || "");
         if (!Number.isFinite(size) || size < 0 || !hash) throw new Error("\u5BFC\u5165\u7ED3\u679C\u4E0D\u5B8C\u6574");
-        const dup = await findDuplicate(hash, size);
+        const dup = await findDuplicateAndBackfill(hash, size);
         if (dup) {
           const err = new Error(`\u4E0E\u5DF2\u5165\u5E93\u7684\u300A${dup.title}\u300B\u5185\u5BB9\u76F8\u540C`);
           err.duplicate = { title: dup.title, docId: dup.id };
@@ -1895,7 +1910,6 @@
     async function sweepOrphans() {
       await fs2.rm("library.json.tmp");
       await fs2.rm("textindex/index.json.tmp");
-      await fs2.rm("watch-state.json.tmp");
       let staged = [];
       try {
         staged = await fs2.readdir("files");
@@ -2099,11 +2113,17 @@
     };
   }
 
+  // bridge/doc-id.mjs
+  function checkDocId(docId) {
+    const s2 = String(docId || "");
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(s2)) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
+    return s2;
+  }
+
   // bridge/notes-core.mjs
   function createNotes({ fs: fs2, now = () => /* @__PURE__ */ new Date() }) {
     function docDir(docId) {
-      if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ""))) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
-      return `notes/${docId}`;
+      return `notes/${checkDocId(docId)}`;
     }
     function notePath(docId, file) {
       const name = String(file || "");
@@ -2143,13 +2163,9 @@
       notes2.sort((a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0));
       return { notes: notes2 };
     }
-    let createChain = Promise.resolve();
+    const createQ = createSerialQueue();
     function create(docId, payload = {}) {
-      const run = createChain.then(() => createLocked(docId, payload));
-      createChain = run.then(() => {
-      }, () => {
-      });
-      return run;
+      return createQ.run(() => createLocked(docId, payload));
     }
     async function createLocked(docId, payload = {}) {
       const dir = docDir(docId);
@@ -2195,11 +2211,41 @@
     return { list, create, read, write, trash };
   }
 
+  // bridge/sidecar-json.mjs
+  async function readSidecarJson({ fs: fs2, path, dir, docId, label, empty, validate }) {
+    if (!await fs2.exists(path)) return empty();
+    const raw = await fs2.readFileText(path);
+    try {
+      const data = JSON.parse(raw);
+      validate(data);
+      return data;
+    } catch {
+      let n = 1;
+      while (await fs2.exists(`${dir}/${docId}.corrupt-${n}.json`)) n++;
+      const archive = `${dir}/${docId}.corrupt-${n}.json`;
+      let archived = false;
+      try {
+        await fs2.rename(path, archive);
+        archived = true;
+      } catch {
+        try {
+          await fs2.writeText(archive, raw);
+          archived = true;
+          await fs2.rm(path);
+        } catch {
+        }
+      }
+      return {
+        ...empty(),
+        notice: archived ? `\u8FD9\u672C\u4E66\u7684${label}\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 ${dir} \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002` : `\u8FD9\u672C\u4E66\u7684${label}\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u7559\u6863\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09\uFF0C\u518D\u6B21\u5199\u5165\u5C06\u8986\u76D6\u635F\u574F\u6587\u4EF6\u3002`
+      };
+    }
+  }
+
   // bridge/annotations-core.mjs
   function createAnnotations({ fs: fs2 }) {
     function docFile(docId) {
-      if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ""))) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
-      return `annotations/${docId}.json`;
+      return `annotations/${checkDocId(docId)}.json`;
     }
     function validate(data) {
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("\u975E\u6CD5\u6807\u6CE8\u6570\u636E");
@@ -2221,47 +2267,23 @@
         }
       }
     }
-    let writeChain = Promise.resolve();
+    const writeQ = createSerialQueue();
     const emptyData = () => ({ version: 1, pages: {} });
     async function read(docId) {
-      await writeChain.catch(() => {
+      await writeQ.settled();
+      return readSidecarJson({
+        fs: fs2,
+        path: docFile(docId),
+        dir: "annotations",
+        docId,
+        label: "\u624B\u5199\u6807\u6CE8",
+        empty: emptyData,
+        validate
       });
-      const p = docFile(docId);
-      if (!await fs2.exists(p)) return emptyData();
-      const raw = await fs2.readFileText(p);
-      try {
-        const data = JSON.parse(raw);
-        validate(data);
-        return data;
-      } catch {
-        let n = 1;
-        while (await fs2.exists(`annotations/${docId}.corrupt-${n}.json`)) n++;
-        const archive = `annotations/${docId}.corrupt-${n}.json`;
-        let archived = false;
-        try {
-          await fs2.rename(p, archive);
-          archived = true;
-        } catch {
-          try {
-            await fs2.writeText(archive, raw);
-            archived = true;
-            await fs2.rm(p);
-          } catch {
-          }
-        }
-        return {
-          ...emptyData(),
-          notice: archived ? "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 annotations \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" : "\u8FD9\u672C\u4E66\u7684\u624B\u5199\u6807\u6CE8\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u7559\u6863\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09\uFF0C\u518D\u6B21\u5199\u5165\u5C06\u8986\u76D6\u635F\u574F\u6587\u4EF6\u3002"
-        };
-      }
     }
     async function write(docId, data) {
       validate(data);
-      const run = writeChain.then(() => writeLocked(docId, data));
-      writeChain = run.then(() => {
-      }, () => {
-      });
-      return run;
+      return writeQ.run(() => writeLocked(docId, data));
     }
     async function writeLocked(docId, data) {
       const p = docFile(docId);
@@ -2283,8 +2305,7 @@
   // bridge/links-core.mjs
   function createLinks({ fs: fs2 }) {
     function docFile(docId) {
-      if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ""))) throw new Error("\u975E\u6CD5\u6587\u6863\u6807\u8BC6");
-      return `links/${docId}.json`;
+      return `links/${checkDocId(docId)}.json`;
     }
     function checkFile(file) {
       const name = String(file || "");
@@ -2313,42 +2334,25 @@
       for (const [file, entry] of Object.entries(data.records)) validateEntry(file, entry);
     }
     const emptyData = () => ({ version: 1, records: {} });
-    async function loadValidated(docId) {
-      const p = docFile(docId);
-      if (!await fs2.exists(p)) return emptyData();
-      const raw = await fs2.readFileText(p);
-      try {
-        const d = JSON.parse(raw);
-        validate(d);
-        return d;
-      } catch {
-        let n = 1;
-        while (await fs2.exists(`links/${docId}.corrupt-${n}.json`)) n++;
-        const archive = `links/${docId}.corrupt-${n}.json`;
-        let archived = false;
-        try {
-          await fs2.rename(p, archive);
-          archived = true;
-        } catch {
-          try {
-            await fs2.writeText(archive, raw);
-            archived = true;
-            await fs2.rm(p);
-          } catch {
-          }
-        }
-        return {
-          ...emptyData(),
-          notice: archived ? "\u8FD9\u672C\u4E66\u7684\u6458\u5F55\u94FE\u63A5\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u4FDD\u7559\u4E3A\u8D44\u6599\u5E93\u5185 links \u4E0B\u7684 .corrupt \u5907\u4EFD\u3002" : "\u8FD9\u672C\u4E66\u7684\u6458\u5F55\u94FE\u63A5\u6570\u636E\u635F\u574F\uFF0C\u5DF2\u91CD\u7F6E\uFF1B\u539F\u6587\u4EF6\u7559\u6863\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09\uFF0C\u518D\u6B21\u5199\u5165\u5C06\u8986\u76D6\u635F\u574F\u6587\u4EF6\u3002"
-        };
-      }
-    }
-    let writeChain = Promise.resolve();
-    async function read(docId, validFiles) {
-      await writeChain.catch(() => {
+    function loadValidated(docId) {
+      return readSidecarJson({
+        fs: fs2,
+        path: docFile(docId),
+        dir: "links",
+        docId,
+        label: "\u6458\u5F55\u94FE\u63A5",
+        empty: emptyData,
+        validate
       });
-      const data = await loadValidated(docId);
-      if (validFiles instanceof Set) {
+    }
+    const writeQ = createSerialQueue();
+    async function read(docId) {
+      await writeQ.settled();
+      return loadValidated(docId);
+    }
+    function pruneOrphans(docId, validFiles) {
+      return writeQ.run(async () => {
+        const data = await loadValidated(docId);
         let pruned = false;
         for (const key of Object.keys(data.records)) {
           if (!validFiles.has(key)) {
@@ -2356,17 +2360,9 @@
             pruned = true;
           }
         }
-        if (pruned) await write(docId, data);
-      }
-      return data;
-    }
-    async function write(docId, data) {
-      validate(data);
-      const run = writeChain.then(() => writeLocked(docId, data));
-      writeChain = run.then(() => {
-      }, () => {
+        if (pruned) await writeLocked(docId, data);
+        return pruned;
       });
-      return run;
     }
     async function writeLocked(docId, data) {
       const p = docFile(docId);
@@ -2383,15 +2379,11 @@
       return true;
     }
     function mutate(docId, fn) {
-      const run = writeChain.then(async () => {
+      return writeQ.run(async () => {
         const data = await loadValidated(docId);
         fn(data);
         return writeLocked(docId, data);
       });
-      writeChain = run.then(() => {
-      }, () => {
-      });
-      return run;
     }
     async function setEntry(docId, file, entry) {
       if (entry == null) return removeEntry(docId, file);
@@ -2406,7 +2398,7 @@
         delete d.records[file];
       });
     }
-    return { read, write, setEntry, removeEntry };
+    return { read, pruneOrphans, setEntry, removeEntry };
   }
 
   // bridge/sha256.mjs
@@ -2494,6 +2486,7 @@
     }
     async function loadState() {
       if (state) return state;
+      await fs2.rm("watch-state.json.tmp");
       try {
         state = JSON.parse(await fs2.readFileText("watch-state.json"));
         if (!state || typeof state !== "object" || Array.isArray(state)) state = {};
@@ -2786,21 +2779,28 @@
       const content = await notes.read(id, file);
       return { inApp: true, title: doc && doc.title || "\u7B14\u8BB0", content };
     }),
-    // 删除笔记：同链清掉摘录链接的侧车条目（该书没有 links 文件时，rm 对
-    // 不存在的文件返回 true = 无可清理视为成功，故对没有摘录的书是无害操作）
+    // 删除笔记：随后清掉摘录链接的侧车条目。侧车清理失败不把已成功的删除
+    // 报成失败——残留条目由下次 readNoteLinks 的孤儿剪除兜底，渲染侧已即时
+    // 清缓存重绘（该书没有 links 文件时 rm 返回 true = 无可清理视为成功）
     trashNote: gate(async (id, file) => {
       await notes.trash(id, file);
-      await links.removeEntry(id, file);
+      try {
+        await links.removeEntry(id, file);
+      } catch {
+      }
     }),
     revealNote: gate(async () => true),
     // 无「在文件夹中查看」，按钮已隐藏
     // 移动端内置编辑器专用：读写笔记正文
     readNote: gate((id, file) => notes.read(id, file)),
     writeNote: gate((id, file, text) => notes.write(id, file, text)),
-    // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）
+    // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
+    // 显式两步：先按现存 .md 剪除孤儿（仅发现孤儿时写回），再纯读——读取
+    // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
     readNoteLinks: gate(async (id) => {
       const { notes: files } = await notes.list(id);
-      return links.read(id, new Set(files.map((f2) => f2.file)));
+      await links.pruneOrphans(id, new Set(files.map((f2) => f2.file)));
+      return links.read(id);
     }),
     setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
     // entry=null → 删除

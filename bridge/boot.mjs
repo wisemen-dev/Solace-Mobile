@@ -233,21 +233,27 @@ const solace = {
     const content = await notes.read(id, file)
     return { inApp: true, title: (doc && doc.title) || '笔记', content }
   }),
-  // 删除笔记：同链清掉摘录链接的侧车条目（该书没有 links 文件时，rm 对
-  // 不存在的文件返回 true = 无可清理视为成功，故对没有摘录的书是无害操作）
+  // 删除笔记：随后清掉摘录链接的侧车条目。侧车清理失败不把已成功的删除
+  // 报成失败——残留条目由下次 readNoteLinks 的孤儿剪除兜底，渲染侧已即时
+  // 清缓存重绘（该书没有 links 文件时 rm 返回 true = 无可清理视为成功）
   trashNote: gate(async (id, file) => {
     await notes.trash(id, file)
-    await links.removeEntry(id, file)
+    try {
+      await links.removeEntry(id, file)
+    } catch { /* 见上：GC 兜底 */ }
   }),
   revealNote: gate(async () => true), // 无「在文件夹中查看」，按钮已隐藏
   // 移动端内置编辑器专用：读写笔记正文
   readNote: gate((id, file) => notes.read(id, file)),
   writeNote: gate((id, file, text) => notes.write(id, file, text)),
 
-  // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）
+  // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
+  // 显式两步：先按现存 .md 剪除孤儿（仅发现孤儿时写回），再纯读——读取
+  // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
   readNoteLinks: gate(async (id) => {
     const { notes: files } = await notes.list(id)
-    return links.read(id, new Set(files.map(f => f.file))) // 顺带孤儿剪除
+    await links.pruneOrphans(id, new Set(files.map(f => f.file)))
+    return links.read(id)
   }),
   setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
 

@@ -3,11 +3,13 @@
 // 差异：平板端没有 Typora/外部编辑器——openNote 的「打开」动作由渲染层
 // 的内置 Markdown 编辑器接管（boot.mjs 返回正文，编辑器经 writeNote 写回），
 // 文件本身仍是普通 .md，与桌面端完全互通。
+import { checkDocId } from './doc-id.mjs'
+import { createSerialQueue } from './serial-queue.mjs'
+
 export function createNotes ({ fs, now = () => new Date() }) {
-  // docId 是入库时生成的 UUID；白名单校验防路径穿越（同桌面端）
+  // docId 是入库时生成的 UUID；白名单校验防路径穿越（共用检查见 doc-id.mjs）
   function docDir (docId) {
-    if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ''))) throw new Error('非法文档标识')
-    return `notes/${docId}`
+    return `notes/${checkDocId(docId)}`
   }
 
   // file 必须是纯文件名（basename），禁止任何路径成分
@@ -60,11 +62,9 @@ export function createNotes ({ fs, now = () => new Date() }) {
 
   // 新建串行化：文件名「检查 → 写入」跨 await，同秒并发双击会算出同名
   // 文件互相覆盖（桌面端同步 IO 天然原子）；排队后与桌面行为等价
-  let createChain = Promise.resolve()
+  const createQ = createSerialQueue()
   function create (docId, payload = {}) {
-    const run = createChain.then(() => createLocked(docId, payload))
-    createChain = run.then(() => {}, () => {})
-    return run
+    return createQ.run(() => createLocked(docId, payload))
   }
 
   // 一键新建：文件名「日期 时间（含秒）」，模板含书名/时间/建笔记时的页码，

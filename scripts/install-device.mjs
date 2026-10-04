@@ -3,11 +3,12 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ANDROID_PKG } from '../bridge/constants.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const adb = 'adb'
 const apk = join(root, 'android/app/build/outputs/apk/debug/app-debug.apk')
-const PKG = 'com.molly.solacemobile'
+const PKG = ANDROID_PKG
 
 function run (cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', ...opts })

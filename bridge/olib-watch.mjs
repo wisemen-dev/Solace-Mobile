@@ -35,6 +35,7 @@ export function createWatch ({ lib, fs, getSettings }) {
 
   async function loadState () {
     if (state) return state
+    await fs.rm('watch-state.json.tmp') // 原子写的崩溃残留自清（原先在 library-core 的通用清扫里，跨模块耦合）
     try {
       state = JSON.parse(await fs.readFileText('watch-state.json'))
       if (!state || typeof state !== 'object' || Array.isArray(state)) state = {}

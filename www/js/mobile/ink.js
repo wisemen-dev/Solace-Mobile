@@ -12,6 +12,7 @@
 // 'solace-ink-close'。本模块惰性建 DOM：首次进入标注模式才挂墨迹层。
 import { getStroke } from '../../vendor/perfect-freehand.js'
 import { askConfirm } from '../dialog.js'
+import { jumpPage } from './page-jump.mjs'
 
 // 工具配置：色板与粗细按工具独立（拍板：笔 5 色、荧光笔独立 1 色；粗细三档）
 const TOOLS = {
@@ -443,13 +444,10 @@ function applyOp (op, inverse) {
   }
 }
 
-// 撤销目标页非当前页时跳过去（复用页码输入框回车跳转）：改了哪能看见
+// 撤销目标页非当前页时跳过去（借页码输入框回车跳转）：改了哪能看见
 function ensurePageVisible (page) {
   if (!lastLayout || String(lastLayout.page) === String(page)) return
-  const input = document.getElementById('pageJump')
-  if (!input) return
-  input.value = String(page)
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  jumpPage(page)
 }
 
 function afterHistoryChange (op) {
@@ -488,7 +486,7 @@ async function clearPage () {
   const pageObj = book.pages[pageKey]
   if (!pageObj || !pageObj.strokes.length) return
   const r = await askConfirm({ title: '清空本页', text: `清空第 ${pageKey} 页的全部手写标注？（可用「撤销」恢复）`, okText: '清空' })
-  if (!r || !r.ok) return
+  if (!r) return
   // 对话框期间可能翻页/换书：对账后才动手
   if (!active || !lastLayout || String(lastLayout.page) !== pageKey || loadedDoc !== lastLayout.docId) return
   const cur = book.pages[pageKey]

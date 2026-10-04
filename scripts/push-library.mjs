@@ -13,9 +13,11 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { LIB_ROOT, ANDROID_PKG } from '../bridge/constants.mjs'
 
 const SRC = join(homedir(), 'AppData/Roaming/solace/SolaceLibrary') // 桌面端默认资料库
-const DST = '/storage/emulated/0/Android/data/com.molly.solacemobile/files/SolaceLibrary'
+const DST = `/storage/emulated/0/Android/data/${ANDROID_PKG}/files/${LIB_ROOT}`
+const DST_PARENT = `/storage/emulated/0/Android/data/${ANDROID_PKG}/files`
 
 function run (cmd, args) {
   const r = spawnSync(cmd, args, { stdio: 'inherit' })
@@ -37,5 +39,5 @@ if (process.argv.includes('--wipe')) {
 }
 
 console.log(`推送：${SRC}\n  → ${DST}`)
-run('adb', ['push', SRC, DST.replace(/\/SolaceLibrary$/, '') + '/.'])
+run('adb', ['push', SRC, DST_PARENT + '/.'])
 console.log('\n完成。平板上结束 Solace 后台后重新打开即生效。')

@@ -15,6 +15,7 @@
 // 修改这里请同步对照桌面版，保持两端行为一致。
 
 import { bytesToBase64, base64ToBytes } from './base64.mjs'
+import { createSerialQueue } from './serial-queue.mjs'
 
 export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = () => new Date() }) {
   let data = null
@@ -157,10 +158,11 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   // 内容级去重：字节相同的 PDF 不重复入库。新条目带 hash 直接比对；
   // 旧库条目（桌面端 0.9.x 之前导入的）没有 hash，只对同大小的文件现算
-  // 一次并回填，之后走 hash 快路径——与桌面端 findDuplicate 同逻辑。
+  // 一次并回填（并落盘），之后走 hash 快路径——与桌面端 findDuplicate
+  // 同逻辑，名字带上 Backfill 以明示「会写盘」。
   // 回填哈希优先用注入的原生流式实现（hashStorageFile）；未注入时回落
   // base64 过桥 + JS 计算（Node 单测路径，真机不走这条）
-  async function findDuplicate (hash, size) {
+  async function findDuplicateAndBackfill (hash, size) {
     let backfilled = false
     let dup = null
     for (const d of data.documents) {
@@ -186,20 +188,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   // 导入串行化：查重 → 复制 → 写数据中间有多个 await，本身不原子；用一条
   // promise 链排队，队列内不并发（与桌面端 importChain 同法）
-  let importChain = Promise.resolve()
-
-  function enqueue (run) {
-    const p = importChain.then(run)
-    importChain = p.then(() => {}, () => {})
-    return p
-  }
+  const importQ = createSerialQueue()
 
   // 导入统一内核：meta（fileName/size/hash）+ performCopy(destRelPath)。
   // 哈希与复制的实现由调用方注入——平板真机传原生流式实现（文件内容
   // 不过 JS 桥，主线程零参与）；Node 单测与 WebView 文件选择兜底传 JS 实现
   // （读 bytes → subtle 哈希 → base64 写盘）。语义与桌面端逐条对齐
   function importWith (meta, performCopy) {
-    return enqueue(() => importWithLocked(meta, performCopy))
+    return importQ.run(() => importWithLocked(meta, performCopy))
   }
 
   async function importWithLocked (meta, performCopy) {
@@ -209,7 +205,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     const hash = String(meta.hash || '')
     if (!Number.isFinite(size) || size < 0) throw new Error('无效的文件大小')
     if (!hash) throw new Error('缺少内容哈希')
-    const dup = await findDuplicate(hash, size)
+    const dup = await findDuplicateAndBackfill(hash, size)
     if (dup) {
       const err = new Error(`与已入库的《${dup.title}》内容相同`)
       err.duplicate = { title: dup.title, docId: dup.id }
@@ -256,7 +252,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes)
     const name = String(file.fileName || '')
     if (!name.toLowerCase().endsWith('.pdf')) {
-      return enqueue(async () => { throw new Error('仅支持 PDF 文件') })
+      return importQ.run(async () => { throw new Error('仅支持 PDF 文件') })
     }
     return (async () => {
       const size = Number.isFinite(file.size) ? file.size : bytes.length
@@ -272,7 +268,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 原子改名为正式副本。与「先哈希后复制」相比，登记的 hash 与副本内容
   // 严格一致，不存在两步之间文件仍在被写入的竞态。查重不通过时删除暂存
   function importVia (meta, performCopyAndHash) {
-    return enqueue(() => importViaLocked(meta, performCopyAndHash))
+    return importQ.run(() => importViaLocked(meta, performCopyAndHash))
   }
 
   async function importViaLocked (meta, performCopyAndHash) {
@@ -293,7 +289,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       const size = Math.floor(Number(info.size))
       const hash = String(info.hash || '')
       if (!Number.isFinite(size) || size < 0 || !hash) throw new Error('导入结果不完整')
-      const dup = await findDuplicate(hash, size)
+      const dup = await findDuplicateAndBackfill(hash, size)
       if (dup) {
         const err = new Error(`与已入库的《${dup.title}》内容相同`)
         err.duplicate = { title: dup.title, docId: dup.id }
@@ -673,7 +669,6 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   async function sweepOrphans () {
     await fs.rm('library.json.tmp')
     await fs.rm('textindex/index.json.tmp')
-    await fs.rm('watch-state.json.tmp') // 自动入库状态文件的原子写残留（平板端特有）
     let staged = []
     try { staged = await fs.readdir('files') } catch { /* 目录尚未建立 */ }
     for (const e of staged) {

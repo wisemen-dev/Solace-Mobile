@@ -1,10 +1,13 @@
 // 摘录链接锚点数据层：links/<docId>.json（移动端专有；与 notes/ 的 .md 解耦，
 // 桌面端不识别即忽略，同 annotations/ 模式）。
 // records[file] = { excerpts: [{ page, text, hint? }] }；损坏留档同 annotations-core
+import { checkDocId } from './doc-id.mjs'
+import { createSerialQueue } from './serial-queue.mjs'
+import { readSidecarJson } from './sidecar-json.mjs'
+
 export function createLinks ({ fs }) {
   function docFile (docId) {
-    if (!/^[A-Za-z0-9-]{1,64}$/.test(String(docId || ''))) throw new Error('非法文档标识')
-    return `links/${docId}.json`
+    return `links/${checkDocId(docId)}.json`
   }
 
   // 记录文件名：纯 basename、.md 结尾，其余约束与 notes-core 的 notePath 逐条
@@ -43,57 +46,39 @@ export function createLinks ({ fs }) {
 
   const emptyData = () => ({ version: 1, records: {} })
 
-  // 读+校验；损坏 → 留档（rename 顺延编号；失败用原文落副本兜底）→ 空+notice
-  async function loadValidated (docId) {
-    const p = docFile(docId)
-    if (!await fs.exists(p)) return emptyData()
-    const raw = await fs.readFileText(p)
-    try {
-      const d = JSON.parse(raw)
-      validate(d)
-      return d
-    } catch {
-      let n = 1
-      while (await fs.exists(`links/${docId}.corrupt-${n}.json`)) n++
-      const archive = `links/${docId}.corrupt-${n}.json`
-      let archived = false
-      try {
-        await fs.rename(p, archive)
-        archived = true
-      } catch {
-        try { await fs.writeText(archive, raw); archived = true; await fs.rm(p) } catch { /* notice 如实 */ }
-      }
-      return {
-        ...emptyData(),
-        notice: archived
-          ? '这本书的摘录链接数据损坏，已重置；原文件保留为资料库内 links 下的 .corrupt 备份。'
-          : '这本书的摘录链接数据损坏，已重置；原文件留档失败（文件可能被占用），再次写入将覆盖损坏文件。'
-      }
-    }
+  // 读+校验（损坏 → 留档 + 空回退 + notice，共用实现见 sidecar-json）
+  function loadValidated (docId) {
+    return readSidecarJson({
+      fs,
+      path: docFile(docId),
+      dir: 'links',
+      docId,
+      label: '摘录链接',
+      empty: emptyData,
+      validate
+    })
   }
 
-  let writeChain = Promise.resolve()
+  const writeQ = createSerialQueue()
 
-  async function read (docId, validFiles) {
-    await writeChain.catch(() => {})
-    const data = await loadValidated(docId)
-    if (validFiles instanceof Set) {
+  // 纯读：不写盘（孤儿剪除已拆到 pruneOrphans，读名即读）
+  async function read (docId) {
+    await writeQ.settled()
+    return loadValidated(docId)
+  }
+
+  // 孤儿剪除：validFiles（现存 .md 文件名集合）之外的条目删除，仅在发现
+  // 孤儿时写回（空表即删文件，见 writeLocked）；返回是否剪除过
+  function pruneOrphans (docId, validFiles) {
+    return writeQ.run(async () => {
+      const data = await loadValidated(docId)
       let pruned = false
       for (const key of Object.keys(data.records)) {
         if (!validFiles.has(key)) { delete data.records[key]; pruned = true }
       }
-      if (pruned) await write(docId, data)
-    }
-    return data
-  }
-
-  // 校验失败在排队前就拒绝（async 函数内同步抛错 = Promise 拒绝，调用方统一
-  // try/catch 即可；同 annotations-core.write 的约定）
-  async function write (docId, data) {
-    validate(data)
-    const run = writeChain.then(() => writeLocked(docId, data))
-    writeChain = run.then(() => {}, () => {})
-    return run
+      if (pruned) await writeLocked(docId, data)
+      return pruned
+    })
   }
 
   async function writeLocked (docId, data) {
@@ -115,15 +100,13 @@ export function createLinks ({ fs }) {
     return true
   }
 
-  // 读改写串行化（同一写链内：损坏文件先留档再写新数据，不丢原文）
+  // 读改写串行化（同一队列内：损坏文件先留档再写新数据，不丢原文）
   function mutate (docId, fn) {
-    const run = writeChain.then(async () => {
+    return writeQ.run(async () => {
       const data = await loadValidated(docId)
       fn(data)
       return writeLocked(docId, data)
     })
-    writeChain = run.then(() => {}, () => {})
-    return run
   }
 
   async function setEntry (docId, file, entry) {
@@ -137,5 +120,5 @@ export function createLinks ({ fs }) {
     return mutate(docId, (d) => { delete d.records[file] })
   }
 
-  return { read, write, setEntry, removeEntry }
+  return { read, pruneOrphans, setEntry, removeEntry }
 }

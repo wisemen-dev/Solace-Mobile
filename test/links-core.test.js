@@ -34,13 +34,15 @@ test('setEntry(null)：删条目；最后一条删除后文件被删', async () 
   assert.equal(await fs.exists(`links/${ID}.json`), false)
 })
 
-test('read(validFiles)：孤儿条目被剪除并写回', async () => {
+test('read 纯读不剪除；pruneOrphans 剪除孤儿并写回（无孤儿不写）', async () => {
   const { fs, links } = harness()
   await links.setEntry(ID, FILE, ENTRY)
   await links.setEntry(ID, 'gone.md', ENTRY)
-  await links.read(ID, new Set([FILE]))
+  assert.equal(Object.keys((await links.read(ID)).records).length, 2, 'read 不应动盘')
+  assert.equal(await links.pruneOrphans(ID, new Set([FILE])), true)
   const raw = JSON.parse(await fs.readFileText(`links/${ID}.json`))
   assert.deepEqual(Object.keys(raw.records), [FILE])
+  assert.equal(await links.pruneOrphans(ID, new Set([FILE])), false, '无孤儿时不应写回')
 })
 
 test('损坏：留档 corrupt-1 + 空回退 + notice', async () => {
