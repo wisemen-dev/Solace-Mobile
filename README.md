@@ -49,7 +49,7 @@ docs/PORTING.md 性能章节。
 npm install          # 安装依赖
 npm run www          # 从桌面仓库搬运渲染层 + 打移动端补丁 + 重建桥（见下）
 npm run bridge       # esbuild 打包桥接层 → www/vendor/solace-bridge.js
-npm test             # 数据层单测（内存 fs，纯 Node）
+npm test             # 数据层单测 + 界面回归测试（内存 fs / DOM 替身，纯 Node）
 npm run apk          # 同步资源并构建 debug APK
 npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验，见下）
 ```
@@ -99,18 +99,22 @@ SolaceMobile/
 │   ├── olib-watch.mjs     # 自动入库：SAF 目录补扫（watcher.js 的等价物）
 │   ├── native.mjs         # SolaceNative 原生插件的 JS 封装
 │   ├── boot.mjs           # window.solace 组装 + 返回键 + 补扫触发
+│   ├── serial-queue.mjs   # 串行事务队列（资料库写互斥、失败回滚）
+│   ├── file-errors.mjs    # 存储故障分类（区分文件缺失与 I/O/权限故障）
+│   ├── doc-id.mjs / constants.mjs / sidecar-json.mjs # 文档白名单 / 库根名·包名 / 侧车损坏回退
 │   └── base64.mjs / sha256.mjs
 ├── mobile-web/      # 移动端适配层（sync 时拷入 www/）
 │   ├── css/mobile.css     # 抽屉侧栏、触屏控件、悬停改点按、墨迹层、文本层
-│   └── js/mobile/mobile.js# 手势、内置笔记编辑器、抽屉
-│   └── js/mobile/ink.js   # 手写标注层：双 canvas 墨迹 + perfect-freehand
-│   └── js/mobile/link.js  # 摘录链接：文本层 + 选词 + 标记 + 记录编辑器
-│   └── js/mobile/link-text.mjs / link-md.mjs  # 切分映射 / 记录 md 纯函数（可单测）
+│   ├── js/mobile/mobile.js# 手势、内置笔记编辑器、抽屉
+│   ├── js/mobile/ink.js   # 手写标注层：双 canvas 墨迹 + perfect-freehand
+│   ├── js/mobile/link.js  # 摘录链接：文本层 + 选词 + 标记 + 记录编辑器
+│   ├── js/mobile/link-text.mjs / link-md.mjs  # 切分映射 / 记录 md 纯函数（可单测）
+│   └── js/mobile/page-jump.mjs  # #pageJump 合成 Enter 助手（ink/link 共用）
 ├── www/             # Capacitor webDir：桌面渲染层 + 补丁 + vendor 资产
 ├── android/         # Capacitor Android 工程（含 SolaceNativePlugin.java）
-├── test/            # 数据层单测（node:test + 内存 fs）
+├── test/            # node:test 单测：数据层（内存 fs）+ 界面回归（DOM/原生替身），纯 Node
 ├── scripts/         # sync-www / build-bridge / build-apk / install / push-library / cdp-eval
-└── docs/PORTING.md  # 移植文档：补丁清单、平台差异、已知问题
+└── docs/            # PORTING.md（移植文档）、ANNOTATION-DESIGN.md、EXCERPT-LINK-{DESIGN,PLAN}.md（设计/方案）、REVIEW-FIXES.md（审查修复记录）
 ```
 
 ## 数据存放在哪里
