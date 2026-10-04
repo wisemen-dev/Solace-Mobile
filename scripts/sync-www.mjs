@@ -142,8 +142,9 @@ patch('js/preview.js', [
       : { data: await window.solace.readPreview(id, sessionId), ...docParams }
     if (!isCurrentSession(token)) return
     const task = pdfjsLib.getDocument(loadOpts)`],
-  // 页面布局尺寸设定后通知墨迹层：w/h 设备像素尺寸，cssW/cssH 显示尺寸，
-  // baseW/baseH 是存储坐标系（scale=1 视口）尺寸——kx 由两者相除得出
+  // 页面布局尺寸设定后通知墨迹层与文本层：w/h 设备像素尺寸，cssW/cssH 显示
+  // 尺寸，baseW/baseH 是存储坐标系（scale=1 视口）尺寸——kx 由两者相除得出；
+  // pageObj/viewport 供摘录链接的文本层取文本与按 CSS 尺度重建视口
   [`    canvas.style.width = (fitted.viewport.width / dpr) + 'px'
     canvas.style.height = (fitted.viewport.height / dpr) + 'px'`,
    `    canvas.style.width = (fitted.viewport.width / dpr) + 'px'
@@ -153,7 +154,8 @@ patch('js/preview.js', [
       page: targetPage,
       w: fitted.width, h: fitted.height,
       cssW: fitted.viewport.width / dpr, cssH: fitted.viewport.height / dpr,
-      baseW: base.width, baseH: base.height
+      baseW: base.width, baseH: base.height,
+      pageObj: page, viewport: fitted.viewport
     } }))`],
   // 关闭预览：墨迹层冲刷保存并复位（在进度落库之前，避免与 closePreview
   // 的异步 flush 竞争——墨迹冲刷自身是异步的，失败各自 toast）

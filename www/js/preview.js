@@ -182,7 +182,8 @@ async function renderPage () {
       page: targetPage,
       w: fitted.width, h: fitted.height,
       cssW: fitted.viewport.width / dpr, cssH: fitted.viewport.height / dpr,
-      baseW: base.width, baseH: base.height
+      baseW: base.width, baseH: base.height,
+      pageObj: page, viewport: fitted.viewport
     } }))
 
     const task = page.render({ canvasContext: canvas.getContext('2d'), viewport: fitted.viewport })

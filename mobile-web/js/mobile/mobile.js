@@ -4,6 +4,7 @@
 // 手写标注层（ink.js）独立成模块，在此挂载
 import { askConfirm } from '../dialog.js'
 import './ink.js'
+import './link.js'
 
 const $ = (sel) => document.querySelector(sel)
 

@@ -62,8 +62,10 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 1. 预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
    优先、字节路径回落；会话守卫保留在异步解析之后（v0.3.0）
 2. 页面布局尺寸设定后 dispatch `solace-ink-layout`（detail：docId/页码/
-   设备像素 w·h/显示 cssW·cssH/存储坐标 baseW·baseH）——手写标注层
-   （mobile.js → ink.js）据此对齐墨迹画布并换算坐标（v0.4.0）
+   设备像素 w·h/显示 cssW·cssH/存储坐标 baseW·baseH/pageObj/viewport）——
+   手写标注层（mobile.js → ink.js）据此对齐墨迹画布并换算坐标，
+   摘录链接层（link.js）另用 pageObj 取文本、用 viewport 的 CSS 尺度重建
+   文本层视口（设备像素尺度会让文字大一倍，见下）（v0.4.0/v0.5.0）
 3. `closePreview()` 开头 dispatch `solace-ink-close`——墨迹层冲刷保存并
    弃内存模型，重开从盘上重读（v0.4.0）
 
