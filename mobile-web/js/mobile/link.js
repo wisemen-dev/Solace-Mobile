@@ -440,12 +440,17 @@ window.__linkRecordTap = (docId, file) => {
   return true
 }
 
-// 记录被删（notespanel 补丁回调）：清缓存 + 重绘标记，否则标记要等下次
-// 保存/重开预览才消失
+// 记录被删（notespanel 补丁回调，单条与批量两条路径都调）：清缓存 + 重绘
+// 标记，否则标记要等下次保存/重开预览才消失。批量删除会连续回调，重绘合并
+// 到一次（每个文件都重建文本层太浪费）
+let relinkTimer = 0
 window.__linkNoteDeleted = (docId, file) => {
   const cache = linksCache.get(docId)
   if (cache && cache.records) delete cache.records[file]
-  if (lastLayout && lastLayout.docId === docId) buildLayer(lastLayout).catch(() => {})
+  clearTimeout(relinkTimer)
+  relinkTimer = setTimeout(() => {
+    if (lastLayout && lastLayout.docId === docId) buildLayer(lastLayout).catch(() => {})
+  }, 30)
 }
 
 // 跳回：借页码输入框回车跳页，目标页渲染完成后由 pendingFlash 滚动 + 闪烁。

@@ -162,7 +162,7 @@ btnDel.addEventListener('click', async () => {
       window.toast?.(`删除失败：${err.message || err}`)
     }
   }
-  for (const file of files) noteSel.delete(file)
+  for (const file of files) { noteSel.delete(file); window.__linkNoteDeleted?.(session.id, file) }
   updateNoteBar()
   load(session)
   if (ok) window.toast?.(`已删除 ${ok} 条笔记`)

@@ -377,11 +377,18 @@ btnNew.addEventListener('click', async () => {`],
         await window.solace.trashNote(session.id, file, session.sessionId)
         if (!isCurrentSession(session)) return
         window.__linkNoteDeleted?.(session.id, file)
-        load(session)`]
+        load(session)`],
+  // 摘录链接：批量删除同样要通知（spec §5.4 明确「含批量删除路径」）
+  [`  for (const file of files) noteSel.delete(file)
+  updateNoteBar()
+  load(session)`,
+   `  for (const file of files) { noteSel.delete(file); window.__linkNoteDeleted?.(session.id, file) }
+  updateNoteBar()
+  load(session)`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×6（共38）')
+console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×7（共39）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

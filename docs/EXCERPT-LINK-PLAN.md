@@ -6,7 +6,7 @@
 
 **Architecture:** 渲染侧新模块 `link.js`（文本层用 pdf.js 官方 `TextLayer` + 自有点选/标记层）；纯函数拆两个可单测模块（`link-md.mjs` 记录 md 生成/解析、`link-text.mjs` 页面文本/切分/重锚定）；桥接侧新增 `links/<docId>.json` 数据层（`links-core.mjs`，同 annotations-core 模式）；记录仍是 `notes/` 下的普通 .md。
 
-**Tech Stack:** Capacitor 7 WebView；pdf.js v5（vendored，`TextLayer` 已导出）；node:test + mem-fs 单测；CDP headless Chrome harness（temp）。
+**Tech Stack:** Capacitor 7 WebView；vendored pdf.js（**实测 4.10.38**，非计划初稿所写 v5——`TextLayer` 已导出、构造签名与计划一致，但 CSS 契约是 4.x 的 `--scale-factor`）；node:test + mem-fs 单测；CDP headless Chrome harness（temp）。
 
 **Spec:** `docs/EXCERPT-LINK-DESIGN.md`（执行时两文对照；本计划从 spec 论证）
 
@@ -489,7 +489,7 @@ git commit -m "feat: 摘录链接 P1——boot 桥方法（readNoteLinks/setNote
 **Interfaces:**
 - Produces: 确认的 TextLayer 调用形态与必需 CSS（写回 Task 6 实现）
 
-- [ ] **Step 1: 写 spike 脚本**（CDP 样板照抄 p3-test.mjs 头部：Chrome 端口 9230、连 WS、evalJs）
+- [ ] **Step 1: 写 spike 脚本**（CDP 样板照抄 p3-test.mjs 头部：Chrome 端口 **9228**、连 WS、evalJs。计划初稿写 9230，与 Global Constraints 的「link-test 用 9228」冲突，以约束为准）
 
 核心 evaluate 片段（独立建一个 pdf.js 文档，不依赖 app 内部）：
 
@@ -553,19 +553,21 @@ const items = [
 ]
 
 test('buildPageText：hasEOL 插换行，spans 映射原文区间', () => {
+  // 'Hello world. ' 是 13 字符（计划初稿按 14 记，连带 span 区间与原语义
+  // 对应偏移整体错位一位；以真实长度为准）
   const { text, spans } = buildPageText(items)
   assert.equal(text, 'Hello world. Second one!\nNext line.')
-  assert.deepEqual(spans[0], { start: 0, end: 14 })
-  assert.deepEqual(spans[1], { start: 14, end: 25 })
-  assert.deepEqual(spans[2], { start: 26, end: 36 })
+  assert.deepEqual(spans[0], { start: 0, end: 13 })
+  assert.deepEqual(spans[1], { start: 13, end: 24 })
+  assert.deepEqual(spans[2], { start: 25, end: 35 })
 })
 
 test('offsetToItem：普通偏移与换行间隙（归前项末尾）', () => {
   const { spans } = buildPageText(items)
   assert.deepEqual(offsetToItem(spans, 0), { item: 0, char: 0 })
-  assert.deepEqual(offsetToItem(spans, 13), { item: 0, char: 13 })
-  assert.deepEqual(offsetToItem(spans, 25), { item: 1, char: 11 }) // 换行位置
-  assert.deepEqual(offsetToItem(spans, 26), { item: 2, char: 0 })
+  assert.deepEqual(offsetToItem(spans, 12), { item: 0, char: 12 })
+  assert.deepEqual(offsetToItem(spans, 24), { item: 1, char: 11 }) // 换行位置
+  assert.deepEqual(offsetToItem(spans, 25), { item: 2, char: 0 })
   assert.deepEqual(offsetToItem(spans, 999), { item: 2, char: 10 })
 })
 
@@ -624,8 +626,11 @@ test('findRangeByText：唯一命中 / 多处命中按 hint 就近 / 未命中',
 })
 
 test('findRangeByText：跨行目标（搜索侧归一化匹配）', () => {
+  // 返回半开区间 [start,end)：end = back[pick+len] 落在匹配后的第一个原文
+  // 字符上，不含尾随空白——与上一条 'alpha'→{0,5} 同一口径（计划初稿写 8，
+  // 会把尾随空格算进去，与上一条自相矛盾）
   const t = 'one\ntwo three'
-  assert.deepEqual(findRangeByText(t, 'one two'), { start: 0, end: 8 })
+  assert.deepEqual(findRangeByText(t, 'one two'), { start: 0, end: 7 })
 })
 ```
 
@@ -678,6 +683,10 @@ export function splitSentences (text) {
     if (!isEnd(text[i], text[i + 1])) continue
     let end = i + 1
     while (end < text.length && CLOSERS.includes(text[end])) end++
+    // 终止符后的空白归上一句：'.' 后跟空格才断句，那个空格属于本句；换行
+    // 同理（'\n' 是终止符本身，已被包含）。不吸收会切出只含 '\n' 的垃圾句
+    // ——归一化后为空，点上去毫无反应（计划初稿漏了这一段）
+    while (end < text.length && /\s/.test(text[end])) end++
     out.push({ start, end })
     start = end
   }
@@ -790,7 +799,7 @@ const objects = []
 objects.push('<< /Type /Catalog /Pages 2 0 R >>')
 objects.push('<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>')
 for (let i = 0; i < 3; i++) {
-  objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 8 0 R >> >> /Contents ${6 + i} 0 R >>`)
+  objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 9 0 R >> >> /Contents ${6 + i} 0 R >>`)
 }
 for (let i = 0; i < 3; i++) {
   const s = body(i)
@@ -822,7 +831,10 @@ Run: `node gen-text-pdf.mjs`；如 pdf.js 打开空白：优先核对页对象 `
     // 第三本书：文本 PDF（摘录链接场景）
     getDocUrl: async (id) => (id === DOC3.id ? '/test-text.pdf' : '/test.pdf'),
     // 笔记与锚点内存存储（localStorage 持久化）
-    listNotes: async (id) => Object.keys(loadNotes()[id] || {}).map(f => ({
+    // 注意形状：必须与真桥一致（notes-core.list → { notes: [...] }）。
+    // 返回裸数组会让 notespanel 的 `const { notes } = await ...` 解构出
+    // undefined，列表渲染抛「Cannot read properties of undefined」
+    listNotes: async (id) => ({ notes: Object.keys(loadNotes()[id] || {}).map(f => ({
       file: f, mtime: new Date().toISOString(), birth: new Date().toISOString(), size: (loadNotes()[id][f] || '').length
     })),
     openNote: async (id, file) => ({ inApp: true, title: '文本测试书', content: (loadNotes()[id] || {})[file] || '' }),
@@ -913,7 +925,9 @@ function ensureLayer () {
   layer.className = 'ink-text-layer'
   layer.hidden = true
   host.insertBefore(layer, document.getElementById('previewError'))
-  host.addEventListener('pointerup', onLayerTap)   // 事件委托；onLayerTap 在 T7 定义（函数声明提升）
+  // 选词的点按/选择监听在 T7 接入：onLayerTap 本任务尚不存在，提前引用会让
+  // layout 处理器抛 ReferenceError（L1 必挂）；且 ensureLayer 有 `if (layer)
+  // return` 早退，注册放里面在二次进入时会绑不上——T7 在模块作用域绑定
 }
 
 function applyLayout (d) {
@@ -922,25 +936,38 @@ function applyLayout (d) {
   layer.style.top = pdfCanvas.offsetTop + 'px'
   layer.style.width = d.cssW + 'px'
   layer.style.height = d.cssH + 'px'
+  // span 的字号与定位是 calc(var(--scale-factor)*…)：必须给 CSS 尺度而非
+  // 设备像素尺度（dpr=1 时两者相同，平板上差一倍、文字会大一圈且错位）
+  layer.style.setProperty('--scale-factor', String(d.cssW / d.baseW))
 }
 
 async function buildLayer (d) {
   const seq = ++buildSeq
   await loadLinks(d.docId)
   if (seq !== buildSeq) return
-  if (!shouldBuild()) { layer.innerHTML = ''; layer.hidden = true; return }
-  let entry = textCache.get(d.page)
+  if (!shouldBuild()) { layer.textContent = ''; layer.hidden = true; return }
+  const key = `${d.docId}:${d.page}` // 仅按 page 会在换书时串页
+  let entry = textCache.get(key)
   if (!entry) {
     const tc = await d.pageObj.getTextContent()
     if (seq !== buildSeq) return
     const { text, spans } = buildPageText(tc.items)
     entry = { tc, items: tc.items, pageText: text, spans }
-    textCache.set(d.page, entry)
+    textCache.set(key, entry)
   }
-  // TextLayer 构造形态以 T4 小样实测为准（v5 预期为 textContentSource+container+viewport）
-  const tl = new pdfjsLib.TextLayer({ textContentSource: entry.tc, container: layer, viewport: d.viewport })
+  // TextLayer 只往容器里 append：不清空会逐页/逐次累积
+  layer.textContent = ''
+  // T4 spike 实测（vendored 4.10.38）：容器必须设 --scale-factor，且 TextLayer
+  // 视口要用 CSS 尺度重建（不是 layout detail 里的设备像素 fitted.viewport）
+  const tl = new pdfjsLib.TextLayer({
+    textContentSource: entry.tc,
+    container: layer,
+    viewport: d.pageObj.getViewport({ scale: d.cssW / d.baseW })
+  })
   await tl.render()
   if (seq !== buildSeq) return
+  // textDivs[i] 与 items[i] 一一对应（含 hasEOL 项；br 不在 textDivs 里）
+  tl.textDivs.forEach((el, i) => { el.dataset.item = String(i) })
   layer.hidden = false
 }
 ```
@@ -952,13 +979,16 @@ async function buildLayer (d) {
 .ink-text-layer {
   position: absolute;
   z-index: 1;
+  overflow: hidden;
   line-height: 1;
   text-align: initial;
   text-size-adjust: none;
   transform-origin: 0 0;
   pointer-events: none;
 }
-.ink-text-layer span, .ink-text-layer br {
+/* 只作用于层的**直接子项**（文本项）。标记 span 是插在文本项**内部**的，
+   用后代选择器会让标记也被绝对定位+透明——跑出行首、整体错位 */
+.ink-text-layer > span, .ink-text-layer > br {
   color: transparent;
   position: absolute;
   white-space: pre;
@@ -995,7 +1025,7 @@ window.addEventListener('solace-ink-close', () => {
 })
 ```
 
-- [ ] **Step 8: harness 基建与 L1**（`link-test.mjs`，CDP 样板照抄 p3-test.mjs：端口 9230、send/evalJs/waitUntil/sleep/mouse/shot）
+- [ ] **Step 8: harness 基建与 L1**（`link-test.mjs`，CDP 样板照抄 p3-test.mjs：端口 **9228**（计划初稿写 9230，以 Global Constraints 为准）、send/evalJs/waitUntil/sleep/mouse/shot）
 
 ```js
 // link-test.mjs 头部 helper（样板同 p3-test.mjs，本套件自有部分如下）
@@ -1031,6 +1061,10 @@ async function gotoBook (id) {
 }
 
 async function clickSentence (i) {
+  // 选词置位是同步的、建层是异步的（openSelection 内 await buildLayer）：
+  // 不等 span 就点会点到空气；翻页后还要等本页文本到位，否则会点到上一页
+  // 残留的 span（caret 偏移按旧页文本换算 → 串页）
+  await waitUntil(`document.querySelectorAll('.ink-text-layer span').length > ${i}`, '待选句 span 就绪')
   const r = await evalJs(`(function () {
     const spans = [...document.querySelectorAll('.ink-text-layer span')]
     const b = spans[Math.min(${i}, spans.length - 1)].getBoundingClientRect()
@@ -1051,20 +1085,54 @@ async function clickMarker () {
   await sleep(150)
 }
 
-/* ---- L1 文本层：有记录的书建层、无记录的书不建 ---- */
+// 几何对齐：页 1 首行文本在 PDF 坐标 (72, 760)，页面 595×842（scale=1）。
+// 横向是精确值（左 = 72/595 ≈ 0.1210，无字体度量成分）；纵向顶边由 pdf.js
+// 按字体实测 ascent 定位（实测 ≈ 0.0823，T4 spike 的 style 也是 top: 8.23%），
+// 故用带容忍的区间。真正的 dpr 判据是「字体物理尺寸不随 dpr 变」
+const ALIGN_EXPR = `(function () {
+  const l = document.querySelector('.ink-text-layer')
+  const spans = [...l.querySelectorAll('span')]
+  const b = spans[0].getBoundingClientRect()
+  const c = document.getElementById('previewCanvas').getBoundingClientRect()
+  return {
+    n: spans.length, sample: spans[0].textContent,
+    hasItem0: !!l.querySelector('[data-item="0"]'),
+    dx: Math.abs(b.x - (c.x + c.width * (72 / 595))),
+    topFrac: (b.y - c.y) / c.height,
+    inside: b.x >= c.x - 2 && b.x + b.width <= c.right + 2 && b.y >= c.y - 2 && b.y + b.height <= c.bottom + 2,
+    spanH: b.height, spanW: b.width,
+    cssScale: getComputedStyle(l).getPropertyValue('--scale-factor').trim(),
+    dpr: window.devicePixelRatio
+  }
+})()`
+const checkAlign = (tag, r) => {
+  if (r.n < 3) throw new Error(tag + ' 文本层 span 太少: ' + r.n)
+  if (!r.hasItem0) throw new Error(tag + ' data-item 编号缺失（T7 的 caret 换算依赖它）')
+  if (!r.inside) throw new Error(tag + ' span 溢出页面')
+  if (r.dx > 5) throw new Error(tag + ' 文本层横向错位: dx=' + r.dx.toFixed(1))
+  if (r.topFrac < 0.075 || r.topFrac > 0.095) throw new Error(tag + ' 文本层纵向错位: topFrac=' + r.topFrac.toFixed(4))
+}
+
+/* ---- L1 文本层：有记录的书建层 + 几何对齐；无记录的书不建 ---- */
 await clearStores()
 await seedLinks(DOC3, { '2026-10-03 10.00.00.md': { excerpts: [{ page: 1, text: 'This is the second sentence.' }] } })
 await gotoBook(DOC3)
 await waitUntil(`!!document.querySelector('.ink-text-layer:not([hidden])')`, '文本层建立', 15000)
-const l1 = await evalJs(`(function () {
-  const l = document.querySelector('.ink-text-layer')
-  const spans = [...l.querySelectorAll('span')]
-  const r = spans.length ? spans[0].getBoundingClientRect() : null
-  const c = document.getElementById('previewCanvas').getBoundingClientRect()
-  return { n: spans.length, sample: spans[0] && spans[0].textContent, inside: !!r && r.x >= c.x - 2 && r.x <= c.right }
-})()`)
-if (l1.n < 3) throw new Error('L1 文本层 span 太少')
-if (!l1.inside) throw new Error('L1 span 溢出页面')
+const l1 = await evalJs(ALIGN_EXPR)
+checkAlign('L1', l1)
+
+// L1b：dpr=2 复验——文本层的物理尺寸（CSS px）不得随 dpr 变化。
+// 若 --scale-factor 误用设备像素尺度（或 TextLayer 视口用设备像素尺度），
+// 字号会翻倍：spanH 差出 ~40px
+await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 850, deviceScaleFactor: 2, mobile: false })
+await gotoBook(DOC3)
+await waitUntil(`!!document.querySelector('.ink-text-layer:not([hidden])')`, '文本层建立(dpr2)', 15000)
+const l1b = await evalJs(ALIGN_EXPR)
+checkAlign('L1b', l1b)
+if (Math.abs(l1b.spanH - l1.spanH) > 2) throw new Error('L1b 字号随 dpr 变化（尺度用错）: spanH ' + l1.spanH + ' → ' + l1b.spanH)
+if (Math.abs(l1b.spanW - l1.spanW) > 4) throw new Error('L1b 行宽随 dpr 变化')
+await send('Emulation.clearDeviceMetricsOverride')
+
 // 无记录的纯图形书（DOC）：不进选词且无记录 → 不建层
 await clearStores()
 await gotoBook(DOC)
@@ -1180,10 +1248,11 @@ function closeSelection (clear) {
   window.linkSelecting = false
   document.body.classList.remove('link-selecting')
   if (tray) tray.hidden = true
-  if (layer) layer.classList.remove('lnk-selected-mode')
   buildSeq++
-  if (lastLayout) buildLayer(lastLayout)
+  if (lastLayout) buildLayer(lastLayout).catch(() => {})
 }
+// （计划初稿这里还有一行 layer.classList.remove('lnk-selected-mode')——该项目
+// 无此 class 定义，已删）
 
 window.addEventListener('solace-link-cancel-request', () => { if (window.linkSelecting) closeSelection(true) })
 document.getElementById('btnLink')?.addEventListener('click', () => openSelection())
@@ -1219,6 +1288,12 @@ function onLayerTap (e) {
 
 // 占位：完整的记录编辑器在 T9 落地时替换本函数（保证中间提交不落破损态）
 function openEditor () { window.toast?.('记录编辑器将在下一任务接入') }
+
+// 点按监听绑在 #previewBody（静态 HTML，模块求值时已在）。文本层默认
+// pointer-events:none，选词模式下由 CSS 放开，事件冒泡到 body 层最稳。
+// 注意：**不能**把注册放进 ensureLayer——它开头就 `if (layer || !host) return`，
+// 二次进入（换书/关开预览）时根本走不到那一行
+document.getElementById('previewBody')?.addEventListener('pointerup', onLayerTap)
 ```
 
 （`data-item` 需在文本层渲染时补：`buildLayer` 中 render 后 `[...layer.children].forEach((el, i) => { if (el.tagName !== 'BR') el.dataset.item = i })`——只对 span 编号，遇 br 需与 items 索引对齐：按 `layer.querySelectorAll('span')` 顺序编号更稳，实现时以 T4 实测的 DOM 结构为准。）
@@ -1233,6 +1308,9 @@ function openEditor () { window.toast?.('记录编辑器将在下一任务接入
   background: rgba(18, 22, 27, 0.95); border: 1px solid rgba(255, 255, 255, 0.14);
   color: #e8edf2; font-size: 13px;
 }
+/* [hidden] 必须显式压回 display:none——设了 display:flex 后 hidden 属性的
+   UA 规则会失效，托盘会常显（style.css 为 .preview-error 记过同一个坑） */
+.link-tray[hidden] { display: none; }
 .ink-text-layer .lnk-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
 body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
 ```
@@ -1256,7 +1334,9 @@ if (!(await evalJs(`document.getElementById('linkTrayCount').textContent`)).incl
 await clickSentence(0)
 await evalJs(`document.getElementById('btnNextPage').click()`)
 await waitUntil(`document.getElementById('pageJump').value === '2'`, '翻页')
-await sleep(600)
+// 等**第 2 页的文本**就位再点，不能只等页码变化 + 固定 sleep：
+// 层里可能还是上一页残留的 span，caret 偏移会按旧页文本换算（串页）
+await waitUntil(`(document.querySelector('.ink-text-layer span') || {}).textContent === 'Page two opens here.'`, '第 2 页文本层就绪')
 await clickSentence(0)
 await sleep(300)
 const trayText = await evalJs(`document.getElementById('linkTrayCount').textContent`)
@@ -1341,61 +1421,89 @@ git commit -m "feat: 摘录链接 P2——选词模式（整句点选/托盘/跨
 - [ ] **Step 1: 标记渲染**（buildLayer render 之后调用）
 
 ```js
-function wrapRange (start, end, file, cls = 'lnk') {
-  const entry = textCache.get(lastLayout.page)
-  if (!entry) return
+// 把页面文本区间 [start,end) 拆到它覆盖的各个文本项上（存项内相对偏移）
+function rangesToItems (entry, start, end, file, cls, byItem) {
   for (let i = 0; i < entry.spans.length; i++) {
     const s = entry.spans[i]
     const a = Math.max(start, s.start)
     const b = Math.min(end, s.end)
     if (a >= b) continue
-    const el = layer.querySelector(`[data-item="${i}"]`)
-    if (!el) continue
-    const text = el.textContent
-    const left = a - s.start
-    const right = b - s.start
-    const mk = document.createElement('span')
-    mk.className = cls
-    mk.dataset.file = file
-    mk.textContent = text.slice(left, right)
-    const before = text.slice(0, left)
-    const after = text.slice(right)
-    el.textContent = ''
-    if (before) el.appendChild(document.createTextNode(before))
-    el.appendChild(mk)
-    if (after) el.appendChild(document.createTextNode(after))
+    const list = byItem.get(i) || []
+    list.push({ from: a - s.start, to: b - s.start, file, cls })
+    byItem.set(i, list)
   }
 }
 
-function renderMarkers (d) {
-  const docLinks = linksCache.get(d.docId)
-  if (!docLinks) return
-  const pageNum = d.page
-  for (const [file, rec] of Object.entries(docLinks.records || {})) {
-    for (const ex of rec.excerpts) {
-      if (ex.page !== pageNum) continue
-      const entry = textCache.get(pageNum)
-      if (!entry) continue
-      const hintRaw = ex.hint != null && entry.spans[ex.hint.item]
-        ? entry.spans[ex.hint.item].start + ex.hint.char
-        : null
-      const r = findRangeByText(entry.pageText, ex.text, hintRaw)
-      if (r) wrapRange(r.start, r.end, file)
+// 按区间把某项文本切成 文本节点 + 标记 span（一遍重建，重叠段取先登记者）
+function paintItem (el, list) {
+  const text = el.textContent
+  const cuts = [...new Set([0, text.length, ...list.flatMap(r => [r.from, r.to])])]
+    .filter(n => n >= 0 && n <= text.length).sort((a, b) => a - b)
+  el.textContent = ''
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const a = cuts[k]
+    const b = cuts[k + 1]
+    if (a >= b) continue
+    const seg = text.slice(a, b)
+    const hit = list.find(r => r.from <= a && b <= r.to)
+    if (hit) {
+      const mk = document.createElement('span')
+      mk.className = hit.cls
+      mk.dataset.file = hit.file
+      mk.textContent = seg
+      el.appendChild(mk)
+    } else {
+      el.appendChild(document.createTextNode(seg))
     }
   }
-  // 选中态（选词模式）：selections 当前页的区间
+}
+
+// 记录锚点（.lnk）+ 选词选中态（.lnk-sel）合并成**一遍**重建：分两遍时
+// 后一遍会拿原文本重切，把前一遍的标记覆盖掉（计划初稿的 wrapRange 逐区间
+// 改 DOM 就有这个问题）
+function renderMarkers (d) {
+  const entry = textCache.get(`${d.docId}:${d.page}`)
+  if (!entry) return
+  const byItem = new Map()
+  const docLinks = linksCache.get(d.docId)
+  for (const [file, rec] of Object.entries((docLinks && docLinks.records) || {})) {
+    for (const ex of (rec && rec.excerpts) || []) {
+      if (ex.page !== d.page) continue
+      const hint = ex.hint != null && entry.spans[ex.hint.item]
+        ? entry.spans[ex.hint.item].start + ex.hint.char
+        : null
+      const r = findRangeByText(entry.pageText, ex.text, hint)
+      if (r) rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
+    }
+  }
   if (window.linkSelecting) {
     for (const sel of selections) {
-      if (sel.page !== pageNum) continue
-      const entry = textCache.get(pageNum)
-      const hintRaw = entry.spans[sel.hint.item] ? entry.spans[sel.hint.item].start + sel.hint.char : null
-      const r = findRangeByText(entry.pageText, sel.text, hintRaw)
-      if (r) wrapRange(r.start, r.end, '__sel__', 'lnk-sel')
+      if (sel.page !== d.page) continue
+      const hint = entry.spans[sel.hint.item] ? entry.spans[sel.hint.item].start + sel.hint.char : null
+      const r = findRangeByText(entry.pageText, sel.text, hint)
+      if (r) rangesToItems(entry, r.start, r.end, '__sel__', 'lnk-sel', byItem)
+    }
+  }
+  for (const [i, list] of byItem) {
+    const el = layer.querySelector(`[data-item="${i}"]`)
+    if (el) paintItem(el, list)
+  }
+  // 跳回定位：目标页渲染完才闪（一次性消费）
+  if (pendingFlash && pendingFlash.docId === d.docId) {
+    const t = layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
+    pendingFlash = null
+    if (t) {
+      t.scrollIntoView({ block: 'center' })
+      t.classList.add('lnk-flash')
+      setTimeout(() => t.classList.remove('lnk-flash'), 1100)
     }
   }
 }
 ```
-（选中态用 `cls='lnk-sel'` 与 `data-file='__sel__'` 区分；点按分流见 Step 2）
+（选中态用 `cls='lnk-sel'` 与 `data-file='__sel__'` 区分；点按分流见 Step 2。
+另外 `renderMarkers` 依赖的文本层基础样式必须是 `.ink-text-layer > span`
+直接子选择器——标记 span 插在文本项**内部**，后代选择器会让它也被绝对
+定位 + 透明，跑出行首。）
 
 - [ ] **Step 2: 点按分流 + 渲染接线**
 
@@ -1404,13 +1512,20 @@ function renderMarkers (d) {
 ```js
 function onLayerTap (e) {
   if (!lastLayout) return
-  const t = e.target.closest('.lnk')
-  if (t && t.dataset.file !== '__sel__') {
-    openEditor({ mode: 'edit', file: t.dataset.file, docId: lastLayout.docId })
+  const mk = e.target && e.target.closest && e.target.closest('.lnk')
+  if (mk && mk.dataset.file !== '__sel__') {
+    openEditor({ mode: 'edit', file: mk.dataset.file, docId: lastLayout.docId })
     return
   }
   if (!window.linkSelecting) return
-  // ……原有选句逻辑不变
+  // ……原有选句逻辑不变，**但 caret 偏移必须改**：标记 span 把项文本切成了
+  // 多个节点，`caret.offset`（相对所在光标节点）不再等于项内偏移。
+  // 改用 Range 量出「相对整个文本项」的字符数：
+  //   const range = document.createRange()
+  //   range.selectNodeContents(itemEl)
+  //   range.setEnd(node, charInNode)          // 可能抛，需 try/catch
+  //   const charInItem = range.toString().length
+  //   const off = span.start + Math.min(charInItem, span.end - span.start)
 ```
 
 并在 `buildLayer` 的 `tl.render()` 之后调用 `renderMarkers(d)`；`renderMarkers` 末尾消费 `pendingFlash`（找 `.lnk[data-file]` → `scrollIntoView({ block: 'center' })` + `lnk-flash` 类 1s 后移除）
@@ -1713,9 +1828,27 @@ git commit -m "feat: 摘录链接 P3——记录编辑器（创建/编辑/保存
    `btnNew.addEventListener('click', async () => {
   const session = captureSession()
   if (!session) return
-  if (window.__linkNewOverride?.(session)) return`]
+  if (window.__linkNewOverride?.(session)) return`],
+  // 摘录链接：删除记录后通知渲染侧清缓存并重绘标记（计划初稿漏了这条——
+  // 没有它，「面板删记录 → 标记消失」要等下次保存/重开预览才成立）
+  [`      try {
+        await window.solace.trashNote(session.id, file, session.sessionId)
+        if (!isCurrentSession(session)) return
+        load(session)`,
+   `      try {
+        await window.solace.trashNote(session.id, file, session.sessionId)
+        if (!isCurrentSession(session)) return
+        window.__linkNoteDeleted?.(session.id, file)
+        load(session)`],
+  // 摘录链接：批量删除同样要通知（spec §5.4 明确「含批量删除路径」）
+  [`  for (const file of files) noteSel.delete(file)
+  updateNoteBar()
+  load(session)`,
+   `  for (const file of files) { noteSel.delete(file); window.__linkNoteDeleted?.(session.id, file) }
+  updateNoteBar()
+  load(session)`]
 ```
-（注意：sync-www.mjs 是 .mjs 源文件，模板里的 `${...}` 在补丁字符串中按需求转义——既有 notespanel 补丁已用 `\${...}` 写法，照抄。）计数日志 `notespanel.js×5`、`（共37）`。Run: `node scripts/sync-www.mjs` + `grep -n "__linkNoteRowExtra" www/js/notespanel.js`
+（注意：sync-www.mjs 是 .mjs 源文件，模板里的 `${...}` 在补丁字符串中按需求转义——既有 notespanel 补丁已用 `\${...}` 写法，照抄。）计数日志 `notespanel.js×7`、`（共39）`。Run: `node scripts/sync-www.mjs` + `grep -n "__linkNoteRowExtra" www/js/notespanel.js`
 
 - [ ] **Step 2: link.js hooks + 跳回**
 
@@ -1788,15 +1921,17 @@ window.openNoteEditor = function (docId, file, title, content) {
 Run: `node link-test.mjs` → 全过
 ```bash
 git add mobile-web/js/mobile/link.js mobile-web/js/mobile/mobile.js mobile-web/css/mobile.css scripts/sync-www.mjs www/
-git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/新建钩子/点击跳回定位）+ 补丁 35→38"
+git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/新建钩子/点击跳回定位）+ 补丁 35→39"
 ```
 
 **实施偏差（2026-10-04）**
 
-1. **多了第 3 个 notespanel 补丁，计数 35→38 而非 35→37**：Step 5 的 L7 要求
-   「面板删记录 → 标记消失」，但删除路径没有任何地方通知渲染侧——不补钩子
-   的话标记要等下次保存/重开预览才消失。新增「删除成功后回调
-   `__linkNoteDeleted`」。PORTING 补丁清单已同步（notespanel 6 处，共 38）。
+1. **多了第 3、4 个 notespanel 补丁，计数 35→39 而非 35→37**：Step 5 的 L7
+   要求「面板删记录 → 标记消失」，但删除路径没有任何地方通知渲染侧——不补
+   钩子的话标记要等下次保存/重开预览才消失。新增单条删除回调与**批量删除
+   回调**两个钩子（spec §5.4 明确「含批量删除路径」）。PORTING 补丁清单已
+   同步（notespanel 7 处，共 39）。渲染侧对连续回调做了重绘合并（批量删除
+   逐条回调，每个文件都重建文本层太浪费）。
 2. `jumpToExcerpt` 顺手 `closeNotes()`：不收起面板的话跳过去也被面板挡着，
    看不见闪烁的目标。（`__linkNewOverride` 进选词前本来就要收面板，一致。）
 3. **修 harness mock 的 bug**：计划给的 `listNotes` mock 返回**裸数组**，而
@@ -1817,7 +1952,7 @@ git commit -m "feat: 摘录链接 P3——笔记列表整合（记录行徽标/�
 - Modify: `CHANGELOG.md`（新版本条目草稿）
 - Modify: `docs/EXCERPT-LINK-DESIGN.md`（状态行改「已实现」，§12 补进度）
 
-- [ ] **Step 1: PORTING.md**：补丁计数与清单（index×11 / notespanel×5 / preview 加宽说明）；新增「摘录链接」小节（link.js / links-core / link-md / link-text / 数据位置 links/）
+- [ ] **Step 1: PORTING.md**：补丁计数与清单（index×11 / notespanel×7 / preview 加宽说明 / 共 39）；新增「摘录链接」小节（link.js / links-core / link-md / link-text / 数据位置 links/）
 - [ ] **Step 2: CHANGELOG.md**：条目（功能、入口替换说明、兼容性：旧 .md 不受影响）
 - [ ] **Step 3: 全量回归**
 
@@ -1848,6 +1983,6 @@ git commit -m "docs: 摘录链接 P4——移植文档/CHANGELOG 与方案书进
 | §7 文本层/切分/重锚定/降级 | T4、T5、T6（L1）、T8（L4）、T7（L10） |
 | §8 保存管线 | T9（L3b/L5/L8/L12） |
 | §9 桥接层 | T3（+两处接口微调见 Global Constraints） |
-| §10 补丁 34→37 | T6（preview 加宽）、T7（index +1）、T10（notespanel +2） |
+| §10 补丁 34→39 | T6（preview 加宽）、T7（index +1）、T10（notespanel +4——比设计多 2 处：单条与批量删除回调钩子） |
 | §11 阶段 | P1=T1-3、P2=T4-7、P3=T8-10、P4=T11 |
 | §12 已拍板 7 条 | 全节落实；有意的偏离仅两处接口微调（已注明） |
