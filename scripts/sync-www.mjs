@@ -96,7 +96,7 @@ patch('index.html', [
    '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>'],
   // 手写标注入口按钮（预览顶栏；ink.js 由 mobile.js 静态 import 挂载）
   ['        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>',
-   '        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>\n        <button id="btnInk" class="btn-ghost" title="手写标注">✏️ 标注</button>'],
+   '        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>\n        <button id="btnInk" class="btn-ghost" title="手写标注">✏️ 标注</button>\n        <button id="btnLink" class="btn-ghost" title="摘录链接">🔗 链接</button>'],
   // 监视文件夹输入框：平板端只读（目录经 SAF 授权选择，不能手输 URI）
   ['<input id="setWatchFolder" class="field-input" type="text" placeholder="D:\\Downloads\\books" />',
    '<input id="setWatchFolder" class="field-input" type="text" readonly placeholder="点「浏览…」选择 Olib 的保存目录" />'],
@@ -352,7 +352,7 @@ btnNew.addEventListener('click', async () => {`]
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×10, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共34）')
+console.log('补丁：index.html×11, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×3（共35）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

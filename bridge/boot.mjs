@@ -309,6 +309,12 @@ App.addListener('backButton', () => {
     lastBackAt = 0
     return
   }
+  // 摘录链接选词模式：返回键 = 取消选词（清空选集退出）
+  if (window.linkSelecting) {
+    window.dispatchEvent(new CustomEvent('solace-link-cancel-request'))
+    lastBackAt = 0
+    return
+  }
   // 标注模式：先退出标注（ink 退出即冲刷保存），而不是直接关预览
   if (window.inkActive) {
     window.dispatchEvent(new CustomEvent('solace-ink-exit-request'))

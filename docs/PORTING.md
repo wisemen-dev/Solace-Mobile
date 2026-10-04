@@ -38,9 +38,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 34 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 35 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
-### index.html（10 处）
+### index.html（11 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
@@ -54,6 +54,7 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
 10. 预览顶栏 `#btnNotes` 后加 `#btnInk`「✏️ 标注」按钮（手写标注入口，
     v0.4.0）
+11. 预览顶栏 `#btnInk` 后加 `#btnLink`「🔗 链接」按钮（摘录链接入口）
 
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。

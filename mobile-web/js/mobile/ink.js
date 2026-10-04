@@ -227,7 +227,11 @@ function setActive (on) {
   updateLayerVisibility()
 }
 
-document.getElementById('btnInk')?.addEventListener('click', () => setActive(!active))
+document.getElementById('btnInk')?.addEventListener('click', () => {
+  // 选词中进标注：先取消选词（清空选集退出），两种模式不并存
+  if (!active && window.linkSelecting) window.dispatchEvent(new CustomEvent('solace-link-cancel-request'))
+  setActive(!active)
+})
 
 /* ================= layout / close 事件（preview.js 补丁派发） ================= */
 

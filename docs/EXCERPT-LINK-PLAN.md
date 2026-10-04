@@ -1296,6 +1296,28 @@ if (await evalJs(`window.linkSelecting === true`)) throw new Error('L10 无文�
 - [ ] **Step 9: 运行 L1-L10（含既有 L1 回归）**
 
 Run: `node link-test.mjs` → 全过
+
+**实施偏差（2026-10-04）**
+
+1. **pointerup 注册落点**：T6 里 ensureLayer 的 `host.addEventListener(
+   'pointerup', onLayerTap)` 已按计划推迟，T7 改为在**模块作用域**绑定
+   `document.getElementById('previewBody')?.addEventListener('pointerup',
+   onLayerTap)`——ensureLayer 有 `if (layer) return` 早退，把注册放在里面
+   会导致二次进入（换书/关开预览）时绑不上。
+2. **CSS 补 `.link-tray[hidden] { display: none; }`**：`.link-tray` 设了
+   `display: flex`，会盖掉 `hidden` 属性的 UA 规则 → 托盘常显。仓库
+   style.css 为 `.preview-error` 记过同一个坑。
+3. `closeSelection` 里计划原文的 `layer.classList.remove('lnk-selected-mode')`
+   已删——该 class 全项目无定义（遗留）。
+4. L10 判据用 `tl.textDivs.length`（而非 `layer.querySelector('span')`），
+   与 data-item 编号同源、少一次 DOM 查询。
+5. harness：`clickSentence` 必须先等 span 就绪（选词置位是同步的、建层是
+   异步的）；L3a 翻页后要等**第 2 页文本**到位，不能只等页码变化+固定
+   sleep——否则会点到上一页残留的 span，caret 偏移按旧页文本换算导致串页。
+6. 新增 **L2b**：选词模式下边缘点按不得翻页（覆盖 mobile.js 的
+   `window.linkSelecting` 守卫；计划只写了代码没写测试），同时断言空白处
+   点按不改选集。
+7. 「完成」按钮在 T7 只弹占位 toast——记录编辑器 T9 接入（按计划）。
 - [ ] **Step 10: 提交**
 
 ```bash

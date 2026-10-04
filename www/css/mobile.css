@@ -202,6 +202,21 @@ body,
 .lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
 @keyframes lnk-flash { 50% { background: rgba(245, 159, 0, 0.75); } }
 
+/* 选词模式：放开文本层与 span 的指针/选择（点选整句，禁原生选择） */
+body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; }
+.ink-text-layer .lnk-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
+
+/* 选词托盘：浮在预览底栏上方居中（同墨迹工具栏位）。注意 [hidden] 必须显式
+   压回 display:none——设置 display:flex 后 hidden 属性的 UA 规则会失效 */
+.link-tray {
+  position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; z-index: 6;
+  padding: 8px 12px; border-radius: 12px;
+  background: rgba(18, 22, 27, 0.95); border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e8edf2; font-size: 13px;
+}
+.link-tray[hidden] { display: none; }
+
 /* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
    深浅色主题下都可读 */
 .ink-toolbar {

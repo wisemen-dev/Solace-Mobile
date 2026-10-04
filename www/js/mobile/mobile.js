@@ -84,6 +84,7 @@ previewBody.addEventListener('pointerup', (e) => {
   // 快速点按（非滑动）：左右 20% 是翻页热区，中央留给原生点击行为
   // （收起目录/笔记面板）
   if (dt < 300 && dist < 12) {
+    if (window.linkSelecting) return // 选词模式：点按=选句，关边缘点按翻页（滑动翻页保留）
     const rect = previewBody.getBoundingClientRect()
     const rel = (e.clientX - rect.left) / rect.width
     if (rel < 0.2) btnPrev?.click()

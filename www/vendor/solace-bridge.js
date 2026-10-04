@@ -2842,6 +2842,11 @@
       lastBackAt = 0;
       return;
     }
+    if (window.linkSelecting) {
+      window.dispatchEvent(new CustomEvent("solace-link-cancel-request"));
+      lastBackAt = 0;
+      return;
+    }
     if (window.inkActive) {
       window.dispatchEvent(new CustomEvent("solace-ink-exit-request"));
       lastBackAt = 0;
