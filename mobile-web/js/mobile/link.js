@@ -1,5 +1,6 @@
 // 摘录链接（link.js）：把页面的隐藏文本层铺在 PDF 之上，供选句与标记。
-// 文本层核心（懒建 + 代数作废 + 按页缓存）、选词模式、标记渲染与记录编辑器。
+// 文本层核心（懒建 + 代数作废 + 按页缓存）、选词模式、标记渲染、记录查看器
+// （点标记先看后编）与记录编辑器；追加会话（§6.7）向已有记录二次添加摘录。
 //
 // 三个来源共同决定层内容：layout 事件（docId/页码/pageObj/viewport）、
 // linksCache（本书的锚点记录）、textCache（按 doc:page 缓存的文本与区间映射）。
@@ -32,6 +33,7 @@ function textCacheSet (key, v) {
 }
 const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
+let appendTarget = null              // 追加会话目标文件名（null = 新建会话，§6.7）
 let tray = null                      // #linkTray（选词托盘，懒建）
 let pendingFlash = null              // { docId, file, page }：跳回定位待闪标记（同页当场闪，异页等渲染）
 let layerDown = null                 // 点按判定起点 { id, x, y, t }（与 mobile.js 同风格）
@@ -41,6 +43,8 @@ let dragSel = null                   // 进行中的拖选 { ptr, a, b }（页�
 let dragPending = null               // 抬手/短点后待确认的选区 { page, a, b, text, hint }
 let dragBar = null                   // 拖选确认小条（‹ › ✕ ✓ 圆钮）
 let dragRaf = 0                      // 拖选预览的 rAF 节流句柄
+let dragRowY = null                  // 拖选行锚：最近有效命中项的中心 y（防垂直抖动跳行）
+let dragRowH = 0                     // 行锚所在行高（吸附阈值 = 0.6 × 行高）
 const selPtrs = new Map()            // 选词模式的活动指针 id -> {x,y}（双指滚动用）
 let selScroll = null                 // 双指滚动锚点 {x,y}
 let flick = null                     // 单指快滑观察 { id, x, y }
@@ -260,17 +264,24 @@ function ensureTray () {
     <button id="btnLinkDone" class="btn-primary" disabled>完成</button>`
   document.getElementById('previewOverlay').appendChild(tray)
   tray.querySelector('#btnLinkCancel').addEventListener('click', () => closeSelection(true))
-  tray.querySelector('#btnLinkDone').addEventListener('click', () => openEditor({ mode: 'create' }))
+  tray.querySelector('#btnLinkDone').addEventListener('click', () => {
+    if (appendTarget) commitAppend().catch(() => {})
+    else openEditor({ mode: 'create' })
+  })
 }
 
 function trayUpdate () {
   if (!tray) return
   const pages = new Set(selections.map(s => s.page))
-  tray.querySelector('#linkTrayCount').textContent = `已选 ${selections.length} 处 · 跨 ${pages.size} 页`
-  tray.querySelector('#btnLinkDone').disabled = selections.length === 0
+  tray.querySelector('#linkTrayCount').textContent = appendTarget
+    ? `追加到「${appendTarget.replace(/\.md$/i, '')}」· 已选 ${selections.length} 处 · 跨 ${pages.size} 页`
+    : `已选 ${selections.length} 处 · 跨 ${pages.size} 页`
+  const done = tray.querySelector('#btnLinkDone')
+  done.disabled = selections.length === 0
+  done.textContent = appendTarget ? '併入' : '完成'
 }
 
-async function openSelection () {
+async function openSelection (opts = {}) {
   ensureDom(); ensureLayer(); ensureTray()
   // §6.5：进选词自动收起目录/笔记面板（preview.js 的「点正文收面板」只覆盖
   // 正文点击，从顶栏按钮进选词不经过它；留着面板会压住选词区与点按）
@@ -280,6 +291,7 @@ async function openSelection () {
   // 与墨水互斥：选词中不叠标注模式（ink 的退出即冲刷保存）
   if (window.inkActive) window.dispatchEvent(new CustomEvent('solace-ink-exit-request'))
   window.linkSelecting = true
+  appendTarget = opts.appendTo || null // 追加会话（§6.7）：目标记录在托盘文案示名
   selections = []
   trayUpdate()
   tray.hidden = false
@@ -289,6 +301,7 @@ async function openSelection () {
 
 function closeSelection (clear) {
   if (clear) selections = []
+  appendTarget = null // 会话结束（完成/取消/预览关闭/互斥退出）目标一并作废
   clearDragState() // 拖选/确认小条随模式退出一并清理（§6.6）
   window.linkSelecting = false
   document.body.classList.remove('link-selecting')
@@ -334,24 +347,30 @@ function caretToOffset (x, y) {
 // x 偏左取行首、偏右取行尾——精度足够拖选（误差至多半个文本项）
 function caretToOffsetFallback (x, y, entry) {
   if (!layer) return null
-  const lr = layer.getBoundingClientRect()
-  const ly = y - lr.top
-  const lx = x - lr.left
+  // §6.6 三轮修订（真机实测两处缺陷）：
+  // ① 必须用 getBoundingClientRect（视觉盒）：pdf.js 的文本项 span 带
+  //   transform:scale（--scale-factor ≈7.8），offsetTop/offsetHeight 是未
+  //   缩放的布局盒——与 clientY 混比坐标系错位，行选择完全失真；
+  // ② 不能「d=0 即停」：多行文本项的盒子高百余 px，垂直罩住后面的单项
+  //   行，先遍历到大盒就 break 会让终点跳回多行项开头（拖选稍偏即跨行）。
+  //   全遍历按（垂直距离，盒高）双键取最优：d 相同时矮盒胜——行级盒子
+  //   比跨行大盒更精确地指明指针所在的视觉行
   let best = null
-  let bestDist = Infinity
+  let bestKey = Infinity
   const items = layer.querySelectorAll('[data-item]')
   for (const el of items) {
-    const top = el.offsetTop
-    const h = el.offsetHeight || 1
-    const d = ly < top ? top - ly : (ly > top + h ? ly - top - h : 0)
-    if (d < bestDist) { bestDist = d; best = el }
-    if (d === 0) break // 已在行内，无需再找更近的
+    const r = el.getBoundingClientRect()
+    const h = r.height || 1
+    const d = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0)
+    const key = d * 1000 + Math.min(h, 200)
+    if (key < bestKey) { bestKey = key; best = el }
   }
   if (!best) return null
   const item = Number(best.dataset.item)
   const sp = entry.spans[item]
   if (!sp) return null
-  return lx > best.offsetLeft + (best.offsetWidth || 0) / 2 ? sp.end : sp.start
+  const br = best.getBoundingClientRect()
+  return x > br.left + (br.width || 0) / 2 ? sp.end : sp.start
 }
 
 // 拖选/点选共用的命中入口：先精确 caret，失败走行几何兜底
@@ -362,6 +381,24 @@ function caretOffsetForDrag (x, y) {
   const off = caretToOffset(x, y)
   if (off != null) return off
   return caretToOffsetFallback(x, y, entry)
+}
+
+// 行锚（§6.6 三轮）：页面文本偏移 → 所在文本项的行几何（client 坐标）。
+// 拖选期间据此把指针 y 吸附到当前行——垂直微偏（不足 0.6 行高）与快速
+// 滑动的稀疏采样抖动不再把终点命中到相邻行；大位移跨行选择不受影响
+function rowAnchorForOffset (off) {
+  if (!lastLayout || !layer) return null
+  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  if (!entry) return null
+  const it = offsetToItem(entry.spans, off)
+  if (!it) return null
+  const el = layer.querySelector(`[data-item="${it.item}"]`)
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  // 多行文本项的盒子跨多个视觉行，中心 y 不指向具体行——不锚（保持上一
+  // 个有效行锚），吸附半径也不会被百余 px 的大盒撑爆
+  if (r.height > 30) return null
+  return { y: r.top + r.height / 2, h: r.height || 14 }
 }
 
 function onLayerTap (e) {
@@ -375,7 +412,8 @@ function onLayerTap (e) {
   if (Date.now() - d.t >= 300 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 12) return
   const mk = e.target && e.target.closest && e.target.closest('.lnk')
   if (mk && mk.dataset.file !== '__sel__') {
-    openEditor({ mode: 'edit', file: mk.dataset.file, docId: lastLayout.docId })
+    // §6.7：点标记先看后编——查看器（只读）里再进编辑/追加
+    openViewer(lastLayout.docId, mk.dataset.file).catch(() => {})
     return
   }
   if (!window.linkSelecting) return
@@ -467,6 +505,8 @@ function clearDragState () {
   pressTimer = null
   press = null
   dragSel = null
+  dragRowY = null
+  dragRowH = 0
   dragPending = null
   window.linkDragging = false
   cancelAnimationFrame(dragRaf)
@@ -515,6 +555,9 @@ bodyEl?.addEventListener('pointerdown', (e) => {
     if (off == null) return
     cancelDragPending() // 长按开新段：此刻才替换待确认选区
     dragSel = { ptr: pid, a: off, b: off }
+    const anchor = rowAnchorForOffset(off)
+    dragRowY = anchor ? anchor.y : null
+    dragRowH = anchor ? anchor.h : 0
     window.linkDragging = true
     try { navigator.vibrate?.(8) } catch { /* 无振动模块忽略 */ }
     try { layer.setPointerCapture?.(pid) } catch { /* 合成事件无真实指针 */ }
@@ -535,9 +578,17 @@ bodyEl?.addEventListener('pointermove', (e) => {
   }
   // 长按拖选
   if (dragSel && e.pointerId === dragSel.ptr) {
-    const off = caretOffsetForDrag(e.clientX, e.clientY)
+    // 行锚吸附：垂直位移不足 0.6 行高时用行锚 y 命中（微偏/快滑不跳行），
+    // 超过则放行真实 y——跨行纵向拖选照常
+    let cy = e.clientY
+    if (dragRowY != null && dragRowH > 0 && Math.abs(cy - dragRowY) < dragRowH * 0.6) {
+      cy = dragRowY
+    }
+    const off = caretOffsetForDrag(e.clientX, cy)
     if (off != null && off !== dragSel.b) {
       dragSel.b = off
+      const anchor = rowAnchorForOffset(off)
+      if (anchor) { dragRowY = anchor.y; dragRowH = anchor.h }
       // rAF 节流：renderMarkers 重切 span 足够轻，但不随 move 事件频率跑
       if (!dragRaf) {
         dragRaf = requestAnimationFrame(() => {
@@ -625,6 +676,172 @@ bodyEl?.addEventListener('contextmenu', (e) => {
   if (window.linkSelecting || window.linkDragging) e.preventDefault()
 })
 
+/* ================= 记录查看器（§6.7：点标记先看后编 + 追加入口） ========= */
+
+let viewDlg = null
+let viewCtx = null       // { docId, file, degraded }
+let viewOpening = false  // openViewer 的 await 窗口防重入（同 edOpening 风格）
+let viewDeleting = false // 删除链防重入（确认框与 trashNote 的 await 窗口）
+
+function ensureViewer () {
+  if (viewDlg) return
+  const wrap = document.createElement('div')
+  wrap.innerHTML = `
+    <dialog id="linkViewDialog" class="dialog note-editor-dialog link-view-dialog">
+      <div class="stats-head"><h3 id="linkViewTitle">摘录记录</h3>
+        <button id="btnLinkViewClose" class="btn-ghost" title="关闭">✕</button></div>
+      <div id="linkViewChips" class="link-chips"></div>
+      <div id="linkViewBody" class="link-view-body"></div>
+      <div class="dialog-foot">
+        <button id="btnLinkViewDelete" class="btn-ghost" title="删除" aria-label="删除">🗑</button>
+        <button id="btnLinkViewAppend" class="btn-ghost" title="追加摘录" aria-label="追加摘录">＋</button>
+        <button id="btnLinkViewEdit" class="btn-primary" title="编辑" aria-label="编辑">✎</button>
+      </div>
+    </dialog>`
+  document.body.appendChild(wrap.firstElementChild)
+  viewDlg = document.getElementById('linkViewDialog')
+  viewDlg.querySelector('#btnLinkViewClose').addEventListener('click', () => viewDlg.close())
+  // 查看器无脏状态：Esc（cancel）与返回键（solace-close-request）都直接关——
+  // boot.mjs 对未 preventDefault 的 close-request 自动 close，此处无需接管
+  viewDlg.querySelector('#btnLinkViewEdit').addEventListener('click', () => {
+    if (!viewCtx) return
+    const { docId, file } = viewCtx
+    viewDlg.close()
+    openEditor({ mode: 'edit', docId, file, fromViewer: true }).catch(() => {})
+  })
+  viewDlg.querySelector('#btnLinkViewAppend').addEventListener('click', () => {
+    if (!viewCtx) return
+    const { docId, file } = viewCtx
+    viewDlg.close()
+    if (lastLayout && lastLayout.docId === docId) openSelection({ appendTo: file }).catch(() => {})
+  })
+  // 删除整条记录（§6.7 生命线补全）：确认 → trashNote（桥内同链清侧车）→
+  // 复用 notespanel 删除钩子的清理链（清缓存 + 防抖重绘标记）→ 通知列表刷新
+  viewDlg.querySelector('#btnLinkViewDelete').addEventListener('click', async () => {
+    if (!viewCtx || viewDeleting) return
+    const { docId, file } = viewCtx
+    viewDeleting = true
+    try {
+      const ok = await askConfirm({ title: '删除这条摘录记录？', text: '摘录引用与批注将一并删除，正文标记随之消失。', okText: '删除' })
+      if (!ok) return
+      await window.solace.trashNote(docId, file)
+      viewCtx = null
+      viewDlg.close()
+      window.__linkNoteDeleted(docId, file)
+      window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
+      window.toast?.('记录已删除')
+    } catch (err) {
+      window.toast?.(`删除失败：${err.message || err}`) // 查看器留在原地可重试
+    } finally {
+      viewDeleting = false
+    }
+  })
+}
+
+// 只读 chips：点按 = 关查看器 + 跳到该条摘录所在页并闪烁（定位语义同列表行）
+function renderViewerChips () {
+  const docLinks = linksCache.get(viewCtx.docId)
+  const rec = docLinks && docLinks.records[viewCtx.file]
+  const box = viewDlg.querySelector('#linkViewChips')
+  const chips = ((rec && rec.excerpts) || []).map((x, i) =>
+    `<span class="link-chip link-view-chip" data-k="${i}"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<i class="chip-go">›</i></span>`).join('')
+  box.innerHTML = (viewCtx.degraded
+    ? '<span class="link-chip-degraded">正文格式已被外部修改；编辑将按原样保存，追加仅入锚点</span>'
+    : '') + chips
+  box.querySelectorAll('.link-view-chip').forEach(el =>
+    el.addEventListener('click', () => {
+      if (!viewCtx) return
+      const { docId, file } = viewCtx
+      viewDlg.close()
+      jumpToExcerpt(docId, file, Number(el.dataset.k))
+    }))
+}
+
+async function openViewer (docId, file) {
+  if (viewOpening) return
+  viewOpening = true
+  try {
+    ensureViewer()
+    if (!linksCache.has(docId)) await loadLinks(docId)
+    const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
+    if (!rec || !rec.excerpts || !rec.excerpts.length) { window.toast?.('记录已不存在'); return }
+    let raw = ''
+    try {
+      raw = await window.solace.readNote(docId, file)
+    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+    const parsed = parseRecordMd(raw)
+    viewCtx = { docId, file, degraded: !parsed.ok }
+    viewDlg.querySelector('#linkViewTitle').textContent = `摘录记录 · ${file.replace(/\.md$/i, '')}`
+    viewDlg.querySelector('#linkViewBody').textContent = parsed.ok ? parsed.body : raw
+    renderViewerChips()
+    viewDlg.showModal()
+  } finally {
+    viewOpening = false
+  }
+}
+
+/* ================= 追加会话（§6.7：「併入」直接保存，不过编辑器） ========= */
+
+// 每句已经过确认小条，併入即保存；改正文走查看器的「编辑」专路
+let appendSaving = false
+
+async function commitAppend () {
+  if (appendSaving || !appendTarget || !lastLayout) return
+  const docId = lastLayout.docId
+  const file = appendTarget
+  appendSaving = true
+  // 存储等待期间冻结托盘按钮（防重复併入并发写）
+  const trayBtns = tray
+    ? [tray.querySelector('#btnLinkCancel'), tray.querySelector('#btnLinkDone')].filter(Boolean)
+    : []
+  trayBtns.forEach(b => { b.disabled = true })
+  try {
+    if (!linksCache.has(docId)) await loadLinks(docId)
+    const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
+    if (!rec || !rec.excerpts || !rec.excerpts.length) {
+      window.toast?.('记录已不存在')
+      closeSelection(true)
+      return
+    }
+    // 查重：与本记录现有摘录完全相同（页+文字+起点 hint）的选区跳过
+    const same = (a, b) => a.page === b.page && a.text === b.text &&
+      a.hint && b.hint && a.hint.item === b.hint.item && a.hint.char === b.hint.char
+    const fresh = selections.filter(s => !rec.excerpts.some(e => same(e, s)))
+    if (!fresh.length) {
+      window.toast?.('所选摘录均已在该记录中')
+      return // 留在选词：可取消或换选，不写盘
+    }
+    const merged = [
+      ...rec.excerpts.map(x => ({ ...x })),
+      ...fresh.map(s => ({ page: s.page, text: s.text, hint: s.hint }))
+    ]
+    let raw = ''
+    try {
+      raw = await window.solace.readNote(docId, file)
+    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+    const parsed = parseRecordMd(raw)
+    // 降级（正文被外部改过）→ md 原样不动、仅写侧车：与编辑器「降级按原样
+    // 保存」语义一致，不重建摘录区
+    if (parsed.ok) {
+      await window.solace.writeNote(docId, file, generateRecordMd(merged, parsed.body))
+    }
+    await window.solace.setNoteLinkEntry(docId, file, { excerpts: merged })
+    window.toast?.(`已追加 ${fresh.length} 处摘录`)
+    closeSelection(true)
+    linksCache.delete(docId)
+    await loadLinks(docId)
+    // 数据已落盘，标记渲染失败不该把追加报成失败（fire-and-forget）
+    if (lastLayout && lastLayout.docId === docId) buildLayer(lastLayout).catch(() => {})
+    window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
+    openViewer(docId, file).catch(() => {})
+  } catch (err) {
+    window.toast?.(`追加失败：${err.message || err}`) // 留在选词，重试幂等（合并结果一致）
+  } finally {
+    appendSaving = false
+    trayBtns.forEach(b => { b.disabled = false })
+  }
+}
+
 // 记录编辑器：创建（整理本次选集）与编辑（回读 .md 正文）两条入口
 let edDlg = null
 let edCtx = null       // { mode, docId, file?, title, total, excerpts, degraded }
@@ -638,7 +855,7 @@ function ensureEditor () {
   if (edDlg) return
   const wrap = document.createElement('div')
   wrap.innerHTML = `
-    <dialog id="linkRecordDialog" class="dialog note-editor-dialog">
+    <dialog id="linkRecordDialog" class="dialog note-editor-dialog link-edit-dialog">
       <div class="stats-head"><h3 id="linkRecordTitle">摘录记录</h3>
         <button id="btnLinkEdClose" class="btn-ghost" title="关闭">✕</button></div>
       <div id="linkChips" class="link-chips"></div>
@@ -693,7 +910,7 @@ async function openEditor (opts = {}) {
       if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
       const parsed = parseRecordMd(raw)
       // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
-      edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok }
+      edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok, fromViewer: !!opts.fromViewer }
       edDlg.querySelector('#linkRecordText').value = parsed.body
       edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
     } else {
@@ -729,7 +946,9 @@ async function requestEditorClose () {
     }
     edDirty = false
     edDlg.close()
-    // 创建流取消：选集保留、仍在选词模式（spec §6.3），无需额外动作
+    // 创建流取消：选集保留、仍在选词模式（spec §6.3），无需额外动作。
+    // 编辑流取消（放弃修改）：来源是查看器则回看旧内容（§6.7）
+    if (edCtx && edCtx.fromViewer) openViewer(edCtx.docId, edCtx.file).catch(() => {})
   } finally {
     edClosing = false
   }
@@ -764,6 +983,12 @@ async function saveEditor () {
     window.dispatchEvent(new CustomEvent('solace-note-saved', { detail: { docId } }))
     // 仅创建流程完成才退出选词：编辑已链接句保存时保留累积选集（§6.3 防误丢）
     if (edCtx.flow === 'create' && window.linkSelecting) closeSelection(true)
+    // 来源是查看器的编辑：保存后回看最新内容（§6.7）；摘录被全删则记录已
+    // 退化为普通笔记——无内容可看，说明后不重开
+    if (edCtx.fromViewer) {
+      if (edCtx.excerpts.length) openViewer(edCtx.docId, edCtx.file).catch(() => {})
+      else window.toast?.('摘录已全部移除，记录已退化为普通笔记')
+    }
   } catch (err) {
     window.toast?.(`保存失败：${err.message || err}`) // 留在编辑器，重试幂等（同一 file）
   } finally {
@@ -832,13 +1057,15 @@ function tryFlashNow () {
 }
 
 // 跳回：借页码输入框回车跳页，目标页渲染完成后由 pendingFlash 滚动 + 闪烁。
+// k 指定跳到第几处摘录（查看器 chip 跳转用，§6.7；列表行默认第一处）。
 // 顺手收起笔记面板——不然跳过去也被面板挡着，看不见闪烁的目标
-function jumpToExcerpt (docId, file) {
+function jumpToExcerpt (docId, file, k = 0) {
   const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
   if (!rec || !rec.excerpts.length) return false
+  const ex = rec.excerpts[k] || rec.excerpts[0]
   closeNotes()
-  pendingFlash = { docId, file, page: rec.excerpts[0].page }
-  if (!tryFlashNow()) jumpPage(rec.excerpts[0].page) // 异页：借页码回车跳页
+  pendingFlash = { docId, file, page: ex.page }
+  if (!tryFlashNow()) jumpPage(ex.page) // 异页：借页码回车跳页
   return true
 }
 

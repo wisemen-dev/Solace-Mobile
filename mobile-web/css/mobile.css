@@ -256,6 +256,83 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
 .link-chip-degraded { font-size: 12px; color: #8a94a0; }
 
+/* 记录查看器（§6.7，link.js 懒建 #linkViewDialog）：批注短小精悍——容器
+   紧贴内容，操作按钮纯图标（🗑 ＋ ✎）。复用 note-editor-dialog 的骨架与
+   flex 布局，宽度上限 480px、高度随内容自适应（长批注到上限后正文区滚动） */
+.link-view-dialog {
+  width: min(84vw, 480px);
+  /* height:auto 不行：dialog:modal 的 UA 样式是 inset:0 + margin:auto，
+     auto 高度在此约束下解析为「撑满可用空间」（真机实测顶到 max-height、
+     无上限时满屏）——fit-content 才是「内容高 + 上限截断」 */
+  height: fit-content;
+  max-height: min(80vh, 720px);
+  overflow: hidden;
+}
+/* 纯图标按钮：34px 圆钮（与拖选确认小条同一视觉语言），描边/实心区分
+   次主操作——比文字钮的框小一圈，批注弹窗不占宽 */
+.link-view-dialog .dialog-foot button {
+  min-width: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+.link-view-body {
+  /* flex 0 1 auto（非 grow）：grow 子项在有 max-height 的自适应容器里会被
+     拉伸填满——短批注时大片空白（真机实测 468px 撑出一行字）。按内容高、
+     超限收缩 + overflow 滚动 */
+  flex: 0 1 auto;
+  min-height: 0;
+  margin-top: 4px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.8;
+  font-family: var(--font-display);
+  white-space: pre-wrap;
+  overflow: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.link-view-body:empty::before { content: '（无正文）'; color: #8a94a0; }
+.link-view-chip { cursor: pointer; }
+.link-view-chip:active { background: rgba(245, 159, 0, 0.34); }
+.link-view-chip .chip-go { font-style: normal; color: #b26a00; padding-left: 2px; }
+/* 删除（危险动作）：与普通 ghost 按钮拉开颜色 */
+#btnLinkViewDelete { color: #d64545; }
+
+/* 摘录编辑器（#linkRecordDialog）同步紧凑化：批注是短文本速记，不需要
+   普通笔记编辑器（720×86vh）的体量——宽度与查看器一致、高度自适应；
+   textarea 按内容伸缩（短批注几行、长文到上限内部滚动） */
+.link-edit-dialog {
+  width: min(84vw, 480px);
+  height: fit-content;
+  max-height: min(80vh, 720px);
+  overflow: hidden;
+}
+.link-edit-dialog .note-editor-text {
+  flex: 0 1 auto;
+  min-height: 100px; /* 保底 ~4 行：短批注速记，不为长文预留（真机评审反馈） */
+  max-height: 44vh;
+}
+
+/* 退出动画收口（真机 rAF 帧采样定位）：[open] 移除的首帧，:modal 的
+   inset 布局立即收回，fit-content 高度一帧塌 ~74px（221→148）——塌陷帧
+   叠在退出动画起点上闪跳（编辑保存回看时最明显）。对策：关闭瞬断
+   （transition:none 时 display 不再被 allow-discrete 延迟，塌陷布局
+   永不上屏）；进入动画保留（实测平滑无跳帧）。纯 CSS，返回键的
+   boot.mjs 通用关闭路径同样覆盖 */
+.link-view-dialog:not([open]),
+.link-edit-dialog:not([open]) { transition: none; }
+
 /* 笔记列表的摘录记录行：🔗 徽标 + 首条摘录片段 */
 .note-link-row { display: flex; align-items: center; gap: 6px; padding: 2px 0 0; font-size: 12px; color: #8a94a0; }
 .link-badge { color: #b26a00; }

@@ -86,6 +86,7 @@ function uiHarness (name, expose, solace) {
     esc: text => String(text), localStorage: { getItem: () => null, setItem () {} },
     setTimeout: fn => { timers.set(++timerSeq, fn); return timerSeq },
     clearTimeout: id => timers.delete(id), requestAnimationFrame: fn => fn(),
+    cancelAnimationFrame: () => {},
     CustomEvent: class {
       constructor (type, options = {}) { this.type = type; Object.assign(this, options) }
       preventDefault () { this.defaultPrevented = true }
@@ -252,3 +253,222 @@ class uiEvent {
   constructor (type) { this.type = type; this.defaultPrevented = false }
   preventDefault () { this.defaultPrevented = true }
 }
+
+/* ===== 摘录记录查看器 + 追加会话（§6.7）===== */
+
+// 追加/查看 harness：直接驱动 link.js 的会话状态（lastLayout/appendTarget/
+// selections），绕开选词手势——手势链已有真机验证，这里测数据与流程面
+function linkFlowHarness (solace, toasts = []) {
+  const harness = uiHarness('link', `({
+    setup(d, file) {
+      lastLayout = d
+      appendTarget = file || null
+      window.linkSelecting = true
+      ensureTray(); tray.hidden = false
+    },
+    select(list) { selections = list; trayUpdate() },
+    run() { return commitAppend() },
+    open(file) { return openViewer(lastLayout.docId, file) },
+    state() { return { appendTarget, selecting: window.linkSelecting, saving: appendSaving } }
+  })`, solace)
+  harness.context.window.toast = (m) => toasts.push(m)
+  return harness
+}
+
+const OLD = { page: 2, text: '旧句一', hint: { item: 3, char: 0 } }
+
+test('追加会话併入：查重合并 excerpts、重建 md 头、退出选词并重开查看器', async () => {
+  const toasts = []
+  const a = { page: 3, text: '新句甲', hint: { item: 5, char: 2 } }
+  const b = { page: 4, text: '新句乙', hint: { item: 7, char: 1 } }
+  let entry = null, wrote = null
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: [OLD] } } }),
+    readNote: async () => generateRecordMd([OLD], '原有批注'),
+    writeNote: async (_id, _file, text) => { wrote = text },
+    setNoteLinkEntry: async (_id, _file, e) => { entry = e }
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([a, b])
+  await api.run()
+  await settle()
+  assert.equal(entry.excerpts.length, 3)
+  assert.equal(entry.excerpts[1].page, a.page)
+  assert.equal(entry.excerpts[1].text, a.text)
+  assert.equal(entry.excerpts[1].hint.item, a.hint.item)
+  assert.equal(entry.excerpts[2].text, b.text)
+  assert.equal(wrote, generateRecordMd([OLD, a, b], '原有批注'))
+  const st = api.state()
+  assert.equal(st.appendTarget, null) // 会话结束
+  assert.equal(st.selecting, false)
+  assert.equal(element('linkViewDialog').open, true) // 併入后重开查看器
+  assert.ok(toasts.some(t => t.includes('已追加 2 处')))
+})
+
+test('追加查重：相同选区（页+文字+起点）跳过；全重复不写盘且留在选词', async () => {
+  const dup = { page: 2, text: '旧句一', hint: { item: 3, char: 0 } }
+  const novo = { page: 9, text: '全新句', hint: { item: 1, char: 0 } }
+  let wrote = 0, entry = null
+  const { api } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: [OLD] } } }),
+    readNote: async () => generateRecordMd([OLD], ''),
+    writeNote: async () => { wrote++ },
+    setNoteLinkEntry: async (_id, _file, e) => { entry = e }
+  })
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([dup, novo])
+  await api.run()
+  assert.equal(entry.excerpts.length, 2) // 旧 + 仅新句（dup 跳过）
+  assert.equal(wrote, 1)
+
+  const toasts2 = []
+  let wrote2 = 0, entry2 = null
+  const h2 = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: [OLD] } } }),
+    readNote: async () => generateRecordMd([OLD], ''),
+    writeNote: async () => { wrote2++ },
+    setNoteLinkEntry: async (_id, _file, e) => { entry2 = e }
+  }, toasts2)
+  h2.api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  h2.api.select([dup])
+  await h2.api.run()
+  assert.equal(wrote2, 0)
+  assert.equal(entry2, null)
+  assert.equal(h2.api.state().appendTarget, 'r.md') // 留在选词可换选
+  assert.ok(toasts2.some(t => t.includes('均已在该记录中')))
+})
+
+test('降级追加：md 被外部改过则原样不动，仅写侧车（新旧合并）', async () => {
+  const novo = { page: 8, text: '降级新句', hint: { item: 2, char: 0 } }
+  let wrote = 0, entry = null
+  const { api } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: [OLD] } } }),
+    readNote: async () => '# 被桌面手改的全文',
+    writeNote: async () => { wrote++ },
+    setNoteLinkEntry: async (_id, _file, e) => { entry = e }
+  })
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([novo])
+  await api.run()
+  assert.equal(wrote, 0) // md 不重写
+  assert.equal(entry.excerpts.length, 2) // 侧车仍合并
+  assert.equal(entry.excerpts[1].text, novo.text)
+  assert.equal(entry.excerpts[1].hint.item, novo.hint.item)
+})
+
+test('追加目标记录消失：不写盘、toast 说明并退出会话', async () => {
+  const toasts = []
+  let wrote = 0, entry = null
+  const { api } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => '',
+    writeNote: async () => { wrote++ },
+    setNoteLinkEntry: async (_id, _file, e) => { entry = e }
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([{ page: 1, text: '句', hint: { item: 0, char: 0 } }])
+  await api.run()
+  assert.equal(wrote, 0)
+  assert.equal(entry, null)
+  assert.equal(api.state().appendTarget, null)
+  assert.ok(toasts.some(t => t.includes('记录已不存在')))
+})
+
+test('追加保存等待期间托盘冻结；写失败留在选词，重试幂等成功', async () => {
+  const gate = deferred()
+  const toasts = []
+  const novo = { page: 6, text: '失败重试句', hint: { item: 4, char: 0 } }
+  let fail = true, entry = null
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: [OLD] } } }),
+    readNote: async () => generateRecordMd([OLD], ''),
+    writeNote: async () => { if (fail) throw new Error('EIO'); await gate.promise },
+    setNoteLinkEntry: async (_id, _file, e) => { entry = e }
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([novo])
+  await api.run() // 首次：写失败
+  assert.ok(toasts.some(t => t.includes('追加失败')))
+  assert.equal(api.state().appendTarget, 'r.md') // 留在选词
+  assert.equal(element('btnLinkDone').disabled, false) // 按钮已恢复（可重试）
+  fail = false
+  const ran = api.run() // 重试：writeNote 挂在 gate 上 → 冻结窗口打开
+  await settle()
+  assert.equal(element('btnLinkDone').disabled, true)
+  assert.equal(element('btnLinkCancel').disabled, true)
+  gate.resolve()
+  await ran
+  assert.equal(entry.excerpts.length, 2) // 重试合并成功
+  assert.equal(api.state().appendTarget, null)
+})
+
+test('查看器：填标题/只读 chips/正文；降级显示提示与原文', async () => {
+  const ex = [{ page: 3, text: '查看句一' }, { page: 5, text: '查看句二' }]
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'v.md': { excerpts: ex } } }),
+    readNote: async () => generateRecordMd(ex, '查看正文')
+  })
+  api.setup({ docId: 'doc', page: 1 })
+  await api.open('v.md')
+  assert.equal(element('linkViewDialog').open, true)
+  assert.ok(element('linkViewTitle').textContent.includes('v'))
+  assert.equal(element('linkViewBody').textContent, '查看正文')
+  assert.ok(element('linkViewChips').innerHTML.includes('第 3 页'))
+  assert.ok(element('linkViewChips').innerHTML.includes('查看句二'))
+
+  const h2 = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'v.md': { excerpts: ex } } }),
+    readNote: async () => '# 手改过的全文'
+  })
+  h2.api.setup({ docId: 'doc', page: 1 })
+  await h2.api.open('v.md')
+  assert.equal(h2.element('linkViewBody').textContent, '# 手改过的全文')
+  assert.ok(h2.element('linkViewChips').innerHTML.includes('已被外部修改'))
+})
+
+test('查看器打开期间记录被删（cache 刷新后无条目）：toast 不开窗', async () => {
+  const toasts = []
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => ''
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 })
+  await api.open('gone.md')
+  assert.equal(element('linkViewDialog').open, false)
+  assert.ok(toasts.some(t => t.includes('记录已不存在')))
+})
+
+test('查看器删除：确认后 trashNote + 关窗 + toast（§6.7 生命线）', async () => {
+  const ex = [{ page: 3, text: '待删句' }]
+  const toasts = []
+  let trashed = null
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: ex } } }),
+    readNote: async () => generateRecordMd(ex, '正文'),
+    trashNote: async (id, file) => { trashed = { id, file } }
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 })
+  await api.open('r.md')
+  assert.equal(element('linkViewDialog').open, true)
+  element('btnLinkViewDelete').dispatchEvent({ type: 'click' })
+  await settle()
+  assert.deepEqual(trashed, { id: 'doc', file: 'r.md' })
+  assert.equal(element('linkViewDialog').open, false)
+  assert.ok(toasts.some(t => t.includes('记录已删除')))
+})
+
+test('查看器删除：确认框取消则不动数据、查看器留在原地', async () => {
+  const ex = [{ page: 3, text: '保留句' }]
+  const { api, element, context } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: { 'r.md': { excerpts: ex } } }),
+    readNote: async () => generateRecordMd(ex, '正文'),
+    trashNote: async () => { throw new Error('不应被调用') }
+  })
+  context.askConfirm = async () => null // 用户取消确认
+  api.setup({ docId: 'doc', page: 1 })
+  await api.open('r.md')
+  element('btnLinkViewDelete').dispatchEvent({ type: 'click' })
+  await settle()
+  assert.equal(element('linkViewDialog').open, true)
+  assert.equal(element('btnLinkViewDelete').disabled, false)
+})
