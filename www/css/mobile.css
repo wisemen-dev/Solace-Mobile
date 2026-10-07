@@ -683,16 +683,20 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .tools-trigger:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
 .tools-trigger:active { transform: scale(0.94); }
 
-/* 三条杠 → ✕：上杠顺旋 45°、中杠缩没、下杠逆旋 45°（杠心距 4.8px =
-   杠高 1.8 + 行距 3），200ms 纯 transform（§5.3；就地小形变双向同曲线） */
+/* 三条杠：展开态不再形变为 ✕（平板评审 2.2）。
+   原实现上杠顺旋 45°、下杠逆旋 45° 合成 ✕，用意是「点我再收回」——但
+   预览顶栏右侧本来就有「✕ 关闭」，两者撞型且间距仅 12px（触发器外扩
+   命中区后只余 8px，物理 2.0mm），语义无法区分：一个收菜单、一个关预览，
+   误触直接关掉阅读。
+   展开态改由既有光环（.tools-trigger.tools-active 的 accent 描边 + 光圈）
+   与菜单本身可见表达「已展开」，三杠形状保持不变——它的形状表达的是
+   「点开有更多」，不该同时兼任「已展开」。
+   收敛为单条 transform 声明（原为 1/3 两条 + 中间缩没），可读性更好 */
 .tools-bar {
   display: block; width: 12px; height: 1.8px; border-radius: 1px;
   background: currentColor;
   transition: transform 200ms var(--ease-out-expo), opacity 150ms var(--ease-out-expo);
 }
-.tools-cluster.open .tools-bar:nth-child(1) { transform: translateY(4.8px) rotate(45deg); }
-.tools-cluster.open .tools-bar:nth-child(2) { transform: scaleX(0.2); opacity: 0; }
-.tools-cluster.open .tools-bar:nth-child(3) { transform: translateY(-4.8px) rotate(-45deg); }
 
 /* 模式光环：标注/选词激活时亮 accent 描边 + 光圈（tools.js 切类，§5.4） */
 .tools-trigger.tools-active {
@@ -701,68 +705,65 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* 展开菜单：竖列圆钮，右对齐触发器下探。材质与 toc-panel 同语言
-   （panel 底 + line 描边 + 同款阴影）。真机评审三轮「割裂感」修正：
-   ① ::before 锚点小箭指向触发器——菜单是从按钮长出来的气泡，不是
-   另一块漂浮面板；② 下探间距 10→8px、内距/行距收紧（10/10→8/6）；
-   ③ 展开项去描边去底色（见 .tools-circle）——「有边的是把手，无边的是
-   内容」，双层镶边是割裂感的主源。收起态面板没入触发器方向 */
+/* 展开菜单：**沿顶栏水平向左长出的一排**（平板评审 2.3 重做）。
+   原实现是竖列圆钮从触发器向下探 + 一个气泡小箭，实测观感是「一块漂在
+   PDF 页面上的面板」，与触发器的从属关系弱——菜单与触发器只有 8px 的
+   纵向接触，视觉重心却错开了半个身位。
+   重做为水平一排的理由：工具簇本来就长在顶栏这一**水平**语境里，向左
+   排队既不占阅读区高度、也与所在条带同轴；且触发器贴在顶栏右端、左侧
+   全是空白，横向有充裕空间。
+   材质仍与 toc-panel 同语言（panel 底 + line 描边 + 同款阴影）。
+   小箭去掉：水平同轴排列不再需要「从按钮长出」的气泡隐喻——两者本来
+   就在同一条线上。垂直居中（top:50% + translateY(-50%)）保证与触发器
+   同轴，不因菜单高度变化而偏移 */
 .tools-menu {
   position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
+  top: 50%;
+  right: calc(100% + 6px);
+  transform: translateY(-50%) scale(0.96);
+  transform-origin: 100% 50%;
   z-index: 7; /* 高于目录/笔记面板(6)；低于触发器(8) */
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
   padding: 8px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 999px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   opacity: 0;
-  transform: translateY(-6px) scale(0.9);
-  transform-origin: 100% 0;
   pointer-events: none;
   transition: opacity 200ms var(--ease-in-expo), transform 200ms var(--ease-in-expo);
 }
-/* 气泡锚点：10px 旋转方块从上边探出，指向触发器中心（right 13px =
- * 触发器宽 36 的一半 18px − 小箭半宽 5px；上左边描边接续菜单描边） */
-.tools-menu::before {
-  content: '';
-  position: absolute;
-  top: -5.5px;
-  right: 13px;
-  width: 10px; height: 10px;
-  background: var(--panel);
-  border-left: 1px solid var(--line);
-  border-top: 1px solid var(--line);
-  border-top-left-radius: 3px;
-  transform: rotate(45deg);
-}
 .tools-cluster.open .tools-menu {
   opacity: 1;
-  transform: none;
+  /* 只有缩放、不含位移：菜单始终与触发器同轴，展开时贴着触发器的右端
+     向右「展开」，不上下浮动 */
+  transform: translateY(-50%);
   pointer-events: auto;
   transition: opacity 300ms var(--ease-out-expo), transform 300ms var(--ease-out-expo);
 }
 
-/* 展开项槽位：位移/缩放/透明度全在槽上（钮自身只管按压反馈），
-   origin 顶边 = 向触发器方向生长（§5.1）。--tools-i：0 标注/1 链接/2 笔记 */
+/* 展开项槽位：位移/缩放/透明度全在槽上（钮自身只管按压反馈）。
+   --tools-i：0 标注 / 1 链接 / 2 笔记；横向排列下 0 在最左端、2 紧邻触发器。
+   方向改为**水平向左生长**：收起态整体压在触发器右侧方向、origin 取右缘
+   （100% 50%），展开时各钮自右向左「抽」出来，与菜单整体向左长出的方向一致 */
 .tools-slot {
-  transform: translateY(-10px) scale(0.4);
-  transform-origin: 50% 0;
+  transform: translateX(14px) scale(0.4);
+  transform-origin: 100% 50%;
   opacity: 0;
   pointer-events: none;
-  /* 回程（展开 → 收起）：互逆曲线、更快、远端先收（§5.2） */
+  /* 回程（展开 → 收起）：互逆曲线、更快、远端先收（§5.2）——
+     横向排布下 i 越小越靠左即越远，故延迟随 i 递减 */
   transition: transform 200ms var(--ease-in-expo), opacity 200ms var(--ease-in-expo);
-  transition-delay: calc((2 - var(--tools-i)) * 30ms);
+  transition-delay: calc(var(--tools-i) * 30ms);
 }
 .tools-cluster.open .tools-slot {
   transform: none;
   opacity: 1;
   pointer-events: auto;
-  /* 去程（收起 → 展开）：临界阻尼无过冲，近触发者先出（§5.1） */
+  /* 去程（收起 → 展开）：临界阻尼无过冲，近触发者先出（§5.1）——
+     横向排布下 i 越大越靠近触发器，故延迟随 i 递减 */
   transition: transform 300ms var(--ease-out-expo), opacity 300ms var(--ease-out-expo);
-  transition-delay: calc(var(--tools-i) * 40ms);
+  transition-delay: calc((2 - var(--tools-i)) * 40ms);
 }
 
 /* 展开项：44px 纯图标圆钮（触达标准），图标 currentColor 随主题。
@@ -791,12 +792,13 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .tools-circle:active { transform: scale(0.92); background: var(--card-hover); }
 .tools-circle svg { display: block; pointer-events: none; }
 
-/* 降级（§5.6）：减弱动效下菜单与展开项均只做淡入淡出，去位移/缩放/步进；
-   三杠 → ✕ 保留（12px 图标就地旋转，非前庭类大幅运动） */
+/* 降级（§5.6）：减弱动效下菜单与展开项只做淡入淡出，去缩放与步进。
+   注意菜单的 translateY(-50%) 是**布局语义**（与触发器垂直同轴），不是动画，
+   必须保留——写成 transform:none 会让菜单与触发器顶边对齐而错位 */
 @media (prefers-reduced-motion: reduce) {
   .tools-menu,
   .tools-cluster.open .tools-menu {
-    transform: none;
+    transform: translateY(-50%);
     transition: opacity 150ms ease;
   }
   .tools-slot,
