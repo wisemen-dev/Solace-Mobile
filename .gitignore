@@ -14,3 +14,7 @@ dist/
 .DS_Store
 Thumbs.db
 npm-debug.log*
+
+# ZCode 会话目录（本机工具产物）
+.zcode/
+.zcodeignore
