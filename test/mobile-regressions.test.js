@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { createAnnotations } from '../bridge/annotations-core.mjs'
 import { createMemFs } from './mem-fs.mjs'
 import { generateRecordMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
+import { splitStroke } from '../mobile-web/js/mobile/ink-erase.mjs'
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const layout = { docId: ID, page: 1, w: 100, h: 100, cssW: 100, cssH: 100, baseW: 100, baseH: 100 }
@@ -81,7 +82,7 @@ function uiHarness (name, expose, solace) {
   let timerSeq = 0
   const timers = new Map()
   const context = {
-    window, document, console, generateRecordMd, parseRecordMd,
+    window, document, console, generateRecordMd, parseRecordMd, splitStroke,
     getStroke: () => [], askConfirm: async () => true, jumpPage () {}, closeNotes () {},
     esc: text => String(text), localStorage: { getItem: () => null, setItem () {} },
     setTimeout: fn => { timers.set(++timerSeq, fn); return timerSeq },
@@ -112,6 +113,10 @@ function inkHarness (solace) {
       onDown(e); onUp(e);
     },
     down(e) { onDown(e) }, move(e) { onMove(e) }, up(e) { onUp(e) },
+    pick(t) { setTool(t) },
+    undo() { doUndo() }, redo() { doRedo() },
+    stack() { return [undoStack.length, redoStack.length] },
+    strokes(p = 1) { return ((book.pages[p] || {}).strokes || []) },
     turn(d) { lastLayout = d },
     flushSave, retry() {syncBookToDoc(lastLayout.docId)},
     state() { return {book, dirty, pendingWrite, loadedDoc} }
@@ -183,12 +188,105 @@ test('落笔后未抬手翻页：该笔作废，不得把旧页坐标提交进�
   const pen = (x, y) => ({ pointerId: 1, pointerType: 'pen', button: 0, clientX: x, clientY: y, pressure: 0.5, preventDefault () {} })
   api.down(pen(10, 10))
   api.move(pen(15, 15))
-  api.turn({ ...layout, page: 2 }) // 另一指点底栏翻页：layout 已切新页
+  api.turn({ ...layout, page: 2 }) // 另指点底栏翻页：layout 已切新页
   api.move(pen(20, 20))            // 旧代码会把新页坐标混进旧页笔画
   api.up(pen(20, 20))              // 旧代码会把整笔提交进第 2 页
   const st = api.state()
   assert.ok(!st.book.pages[2] || st.book.pages[2].strokes.length === 0)
   assert.ok(!st.dirty) // 作废的笔画不触发保存
+})
+
+/* ---- 橡皮局部擦拭（矢量切割，拍板 2026-10-07） ---- */
+
+// 页 1 放一条横线（x=0..150 步进 10，y=50，16 点）与一条不受影响的竖线（x=50, y=10..30）。
+// 橡皮默认 14 + 笔宽 1 = 有效半径 15：一刀圆心在线上恰抹掉相邻 3 点
+const lineStroke = { tool: 'pen', color: '#000000', width: 2, pressure: 0, pts: Array.from({ length: 16 }, (_, i) => [i * 10, 50]).flat() }
+const crossStroke = { tool: 'pen', color: '#111111', width: 2, pressure: 0, pts: [50, 10, 50, 20, 50, 30] }
+async function eraseStore () {
+  const fs = createMemFs()
+  const annotations = createAnnotations({ fs })
+  await annotations.write(ID, { version: 1, pages: { 1: { w: 100, h: 100, strokes: [lineStroke, crossStroke] } } })
+  return { fs, annotations }
+}
+const eraserEv = (x, y) => ({ pointerId: 2, pointerType: 'touch', button: 0, clientX: x, clientY: y, preventDefault () {} })
+
+test('橡皮局部擦拭：中段切割成两段、邻笔不受影响、一次手势一条撤销、落盘段数正确', async () => {
+  const { annotations } = await eraseStore()
+  const { api } = inkHarness({
+    readAnnotations: id => annotations.read(id),
+    writeAnnotations: (...a) => annotations.write(...a)
+  })
+  api.setup(layout)
+  await settle()
+  api.pick('eraser')
+  api.down(eraserEv(80, 50)) // 一刀抹掉 x=70/80/90
+  api.move(eraserEv(80, 50))
+  api.up(eraserEv(80, 50))
+  const strokes = api.strokes()
+  assert.equal(strokes.length, 3) // 横线切两段 + 竖线原样
+  assert.deepEqual(strokes[0].pts, Array.from({ length: 7 }, (_, i) => [i * 10, 50]).flat())      // 0..60
+  assert.deepEqual(strokes[1].pts, Array.from({ length: 6 }, (_, i) => [(i + 10) * 10, 50]).flat()) // 100..150
+  assert.deepEqual(strokes[2].pts, crossStroke.pts)
+  assert.equal(api.stack()[0], 1); assert.equal(api.stack()[1], 0)
+  await api.flushSave()
+  assert.equal((await annotations.read(ID)).pages[1].strokes.length, 3)
+})
+
+test('切割可撤销复原整笔、可重做恢复切割（modify op 引用定位）', async () => {
+  const { annotations } = await eraseStore()
+  const { api } = inkHarness({
+    readAnnotations: id => annotations.read(id),
+    writeAnnotations: (...a) => annotations.write(...a)
+  })
+  api.setup(layout)
+  await settle()
+  api.pick('eraser')
+  api.down(eraserEv(80, 50))
+  api.up(eraserEv(80, 50))
+  assert.equal(api.strokes().length, 3)
+  api.undo()
+  const strokes = api.strokes()
+  assert.equal(strokes.length, 2)
+  assert.deepEqual(strokes[0].pts, lineStroke.pts) // 整笔按原采样复原
+  assert.deepEqual(strokes[1].pts, crossStroke.pts)
+  api.redo()
+  assert.equal(api.strokes().length, 3)
+})
+
+test('一次手势多刀只记一条撤销；逐刀撤销回到上一刀结果', async () => {
+  const { annotations } = await eraseStore()
+  const { api } = inkHarness({
+    readAnnotations: id => annotations.read(id),
+    writeAnnotations: (...a) => annotations.write(...a)
+  })
+  api.setup(layout)
+  await settle()
+  api.pick('eraser')
+  api.down(eraserEv(80, 50))  // 第一刀：横线 → 两段（0..60 / 100..150）
+  api.move(eraserEv(30, 50))  // 第二刀切左段中部（抹 20/30/40）→ 左段再分两段（同一手势）
+  api.up(eraserEv(30, 50))
+  assert.equal(api.strokes().length, 4) // 横线三段 + 竖线
+  assert.equal(api.stack()[0], 1); assert.equal(api.stack()[1], 0)
+  api.undo()
+  assert.equal(api.strokes().length, 2) // 整笔复原（一条撤销回到手势前）
+})
+
+test('擦除手势中途翻页：已切割保持并补齐记录，新页不再受擦', async () => {
+  const { annotations } = await eraseStore()
+  const { api } = inkHarness({
+    readAnnotations: id => annotations.read(id),
+    writeAnnotations: (...a) => annotations.write(...a)
+  })
+  api.setup(layout)
+  await settle()
+  api.pick('eraser')
+  api.down(eraserEv(80, 50)) // 切了一刀
+  api.turn({ ...layout, page: 2 })
+  api.move(eraserEv(80, 50)) // 中途翻页：手势中止，已切保持
+  api.up(eraserEv(80, 50))
+  assert.equal(api.strokes(1).length, 3)
+  assert.ok(!api.strokes(2).length)
+  assert.equal(api.stack()[0], 1); assert.equal(api.stack()[1], 0) // 补齐一条记录
 })
 
 for (const kind of ['mobile', 'link']) {

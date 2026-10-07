@@ -455,6 +455,23 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .ink-width.on { border-color: #fff; background: rgba(255, 255, 255, 0.12); }
 .ink-width i { display: block; width: 22px; background: #e8edf2; border-radius: 3px; }
+/* 橡皮尺寸档：圆点（vs 笔粗细的横条），宽高由内联样式按档给出 */
+.ink-width .ink-erase-dot { border-radius: 50%; }
+
+/* 橡皮光圈：细描边圆环随指针移动，实时显示当前擦拭范围（拍板 2026-10-07）。
+   双色描边（深环+浅晕）保证在深色墨迹与白纸上都可见 */
+.ink-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid rgba(73, 80, 87, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  pointer-events: none;
+  display: none;
+  z-index: 3;
+}
 
 /* 墨迹 canvas 必须透明：桌面 style.css 的 `.preview-body canvas` 会给
    页面区所有 canvas 上白底/阴影/圆角（对 PDF 页 canvas 是需要的），

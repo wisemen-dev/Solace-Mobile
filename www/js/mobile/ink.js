@@ -13,24 +13,28 @@
 import { getStroke } from '../../vendor/perfect-freehand.js'
 import { askConfirm } from '../dialog.js'
 import { jumpPage } from './page-jump.mjs'
+import { splitStroke } from './ink-erase.mjs'
 
-// 工具配置：色板与粗细按工具独立（拍板：笔 5 色、荧光笔独立 1 色；粗细三档）
+// 工具配置：色板与粗细按工具独立（荧光笔 5 色、笔 5 色、粗细三档；
+// 橡皮无色板、尺寸三档——拍板 2026-10-07）
 const TOOLS = {
   pen: { colors: ['#212529', '#e03131', '#1971c2', '#2f9e44', '#868e96'], widths: [1.5, 2.5, 4.0] },
-  hl: { colors: ['#fff00a'], widths: [8, 12, 18] }
+  hl: { colors: ['#fff00a', '#ff6b6b', '#51cf66', '#4dabf7', '#b197fc'], widths: [8, 12, 18] },
+  eraser: { sizes: [8, 14, 22] }
 }
 const TOOL_STATE_KEY = 'solace.ink.tools'
-const ERASE_R = 10 // 橡皮命中半径（页面单位）
 // 工具/颜色/粗细记忆：各工具一套，跨会话保留（localStorage，不进 library.json）
-const toolMemo = { tool: 'pen', pen: { color: '#e03131', width: 2.5 }, hl: { color: '#fff00a', width: 12 } }
+const toolMemo = { tool: 'pen', pen: { color: '#e03131', width: 2.5 }, hl: { color: '#fff00a', width: 12 }, eraser: { r: 14 } }
 {
   try {
     const raw = JSON.parse(localStorage.getItem(TOOL_STATE_KEY) || '{}')
-    if (raw.tool === 'eraser' || TOOLS[raw.tool]) toolMemo.tool = raw.tool
+    if (TOOLS[raw.tool]) toolMemo.tool = raw.tool
     for (const t of ['pen', 'hl']) {
       const m = raw[t]
       if (m && TOOLS[t].colors.includes(m.color) && TOOLS[t].widths.includes(m.width)) toolMemo[t] = { color: m.color, width: m.width }
     }
+    const em = raw.eraser
+    if (em && TOOLS.eraser.sizes.includes(em.r)) toolMemo.eraser = { r: em.r }
   } catch { /* 存值损坏回默认 */ }
 }
 let tool = toolMemo.tool
@@ -69,7 +73,8 @@ let failToastAt = 0      // 写失败 toast 节流（持续失败时不刷屏）
 let drawing = null       // 活动笔画 { ptr, docId, pts:[{x,y,p}], tool, color, width }
 let rafPending = false
 let penDown = false      // 手写笔在屏期间忽略 touch：防手掌误触（已确认用笔）
-let erasing = null       // 橡皮手势 { ptr, page, docId, removed: [{index, stroke}] }
+let erasing = null       // 橡皮手势 { ptr, page, docId, origins:Map<原笔,首切下标>, segOrigin:Map<段,原笔> }
+let cursorEl = null      // 橡皮光圈（尺寸预览，随指针移动）
 const pointers = new Map() // 活动指针（双指滚动仲裁）：pointerId → { x, y }
 let scrolling = null     // 双指滚动中：两指中点（页面 client 坐标）
 const undoStack = []     // 会话级操作栈（关预览/换书清空）；op：add / remove
@@ -91,12 +96,15 @@ function ensureDom () {
   staticCv.className = 'ink-canvas'
   liveCv = document.createElement('canvas')
   liveCv.className = 'ink-canvas'
-  layer.append(staticCv, liveCv)
+  cursorEl = document.createElement('div')
+  cursorEl.className = 'ink-cursor'
+  layer.append(staticCv, liveCv, cursorEl)
   host.appendChild(layer)
   layer.addEventListener('pointerdown', onDown)
   layer.addEventListener('pointermove', onMove)
   layer.addEventListener('pointerup', onUp)
   layer.addEventListener('pointercancel', onUp)
+  layer.addEventListener('pointerleave', () => { if (cursorEl) cursorEl.style.display = 'none' })
 
   toolbar = document.createElement('div')
   toolbar.className = 'ink-toolbar'
@@ -104,7 +112,7 @@ function ensureDom () {
   toolbar.innerHTML = `
     <button class="ink-btn ink-tool" data-tool="pen" title="画笔">✏️ 笔</button>
     <button class="ink-btn ink-tool" data-tool="hl" title="荧光笔">🖍️ 荧光</button>
-    <button class="ink-btn ink-tool" data-tool="eraser" title="橡皮（划过整笔删除）">🧽 橡皮</button>
+    <button class="ink-btn ink-tool" data-tool="eraser" title="橡皮（按大小局部擦拭）">🧽 橡皮</button>
     <span class="ink-sep"></span>
     <button class="ink-btn" id="btnInkUndo" title="撤销">↶</button>
     <button class="ink-btn" id="btnInkRedo" title="重做">↷</button>
@@ -139,7 +147,7 @@ function togglePop (id) {
   else openPop(id)
 }
 function openPop (id) {
-  if (tool === 'eraser') return // 橡皮无颜色/粗细
+  if (tool === 'eraser' && id === 'inkPalette') return // 橡皮无颜色，尺寸走粗细弹层
   closePops()
   buildPops()
   popOpen = id
@@ -155,45 +163,57 @@ function closePops () {
 function buildPops () {
   const pal = document.getElementById('inkPalette')
   pal.innerHTML = ''
-  for (const c of TOOLS[tool].colors) {
-    const b = document.createElement('button')
-    b.className = 'ink-color' + (c === curTool().color ? ' on' : '')
-    b.dataset.color = c
-    b.style.background = c
-    b.title = c
-    b.addEventListener('click', () => {
-      curTool().color = c
-      saveToolState()
-      closePops()
-      syncToolbarUI()
-    })
-    pal.appendChild(b)
+  // 橡皮无色板（色板钮已禁用，但弹层内容必须清空——否则残留上一工具的色钮）
+  if (TOOLS[tool].colors) {
+    for (const c of TOOLS[tool].colors) {
+      const b = document.createElement('button')
+      b.className = 'ink-color' + (c === curTool().color ? ' on' : '')
+      b.dataset.color = c
+      b.style.background = c
+      b.title = c
+      b.addEventListener('click', () => {
+        curTool().color = c
+        saveToolState()
+        closePops()
+        syncToolbarUI()
+      })
+      pal.appendChild(b)
+    }
   }
   const ws = document.getElementById('inkWidths')
   ws.innerHTML = ''
-  TOOLS[tool].widths.forEach((w, i) => {
+  // 橡皮的「粗细」= 擦拭半径（页面单位），展示为圆点而非横条
+  const isEraser = tool === 'eraser'
+  const sizes = isEraser ? TOOLS.eraser.sizes : TOOLS[tool].widths
+  const curSize = isEraser ? curTool().r : curTool().width
+  sizes.forEach((w, i) => {
     const b = document.createElement('button')
-    b.className = 'ink-width' + (w === curTool().width ? ' on' : '')
+    b.className = 'ink-width' + (w === curSize ? ' on' : '')
     b.dataset.width = String(w)
-    b.innerHTML = `<i style="height:${[4, 6, 9][i] || 5}px"></i>`
+    b.innerHTML = isEraser
+      ? `<i class="ink-erase-dot" style="width:${[10, 15, 21][i] || 12}px;height:${[10, 15, 21][i] || 12}px"></i>`
+      : `<i style="height:${[4, 6, 9][i] || 5}px"></i>`
     b.title = String(w)
     b.addEventListener('click', () => {
-      curTool().width = w
+      if (isEraser) curTool().r = w
+      else curTool().width = w
       saveToolState()
       closePops()
       syncToolbarUI()
+      syncCursorSize()
     })
     ws.appendChild(b)
   })
 }
 function setTool (t) {
   if (t === tool) return
-  if (t !== 'eraser' && !TOOLS[t]) return // 橡皮无颜色/粗细配置，不走 TOOLS
+  if (!TOOLS[t]) return
   tool = t
   toolMemo.tool = t
   saveToolState()
   closePops()
   syncToolbarUI()
+  syncCursorSize()
 }
 function syncToolbarUI () {
   if (!toolbar) return
@@ -201,9 +221,8 @@ function syncToolbarUI () {
   const dot = document.getElementById('inkDot')
   if (dot) dot.style.background = tool === 'eraser' ? 'transparent' : curTool().color
   const palBtn = document.getElementById('btnInkPalette')
-  const wBtn = document.getElementById('btnInkWidth')
-  if (palBtn) palBtn.disabled = tool === 'eraser'
-  if (wBtn) wBtn.disabled = tool === 'eraser'
+  if (palBtn) palBtn.disabled = tool === 'eraser' // 橡皮无颜色；尺寸走粗细弹层
+  syncCursorSize()
   const undo = document.getElementById('btnInkUndo')
   const redo = document.getElementById('btnInkRedo')
   if (undo) undo.disabled = !undoStack.length
@@ -428,8 +447,11 @@ async function flushSave () {
 
 /* ================= 撤销/重做（会话级操作栈） ================= */
 
-// op：{ type:'add', page, index, stroke } | { type:'remove', page, removed:[{index, stroke}] }
-// remove 的下标是「移除当时」的数组下标——撤销按记录反序插回即可精确还原
+// op：{ type:'add', page, index, stroke }
+//   | { type:'remove', page, removed:[{index, stroke}] }
+//   | { type:'modify', page, mods:[{before, after:[stroke], index}] }（局部擦除切割）
+// remove/modify 的下标是「操作当时」的数组下标——重放按引用优先定位，
+// 下标兜底（后续操作可能移动位置）；撤销按记录反序处理即可精确还原
 
 function pushOp (op) {
   undoStack.push(op)
@@ -446,6 +468,22 @@ function applyOp (op, inverse) {
       if (i >= 0) pageObj.strokes.splice(i, 1)
     } else {
       pageObj.strokes.splice(Math.min(op.index, pageObj.strokes.length), 0, op.stroke)
+    }
+  } else if (op.type === 'modify') {
+    if (inverse) {
+      // 撤销切割：幸存段列（同源段在页内连续）换回原笔
+      for (let m = op.mods.length - 1; m >= 0; m--) {
+        const mod = op.mods[m]
+        const i = mod.after.length ? pageObj.strokes.indexOf(mod.after[0]) : Math.min(mod.index, pageObj.strokes.length)
+        if (i < 0) continue
+        pageObj.strokes.splice(i, mod.after.length, mod.before)
+      }
+    } else {
+      for (const mod of op.mods) {
+        const i = pageObj.strokes.indexOf(mod.before)
+        if (i < 0) continue
+        pageObj.strokes.splice(i, 1, ...mod.after)
+      }
     }
   } else if (inverse) {
     for (let i = op.removed.length - 1; i >= 0; i--) pageObj.strokes.splice(op.removed[i].index, 0, op.removed[i].stroke)
@@ -561,7 +599,7 @@ function onDown (e) {
   e.preventDefault()
   try { layer.setPointerCapture?.(e.pointerId) } catch { /* 合成事件无真实指针，可忽略 */ }
   if (tool === 'eraser') {
-    erasing = { ptr: e.pointerId, page: String(lastLayout.page), docId: lastLayout.docId, removed: [] }
+    erasing = { ptr: e.pointerId, page: String(lastLayout.page), docId: lastLayout.docId, origins: new Map(), segOrigin: new Map() }
     eraseAt(toPageXY(e))
     return
   }
@@ -579,6 +617,7 @@ function onDown (e) {
 
 function onMove (e) {
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  moveCursor(e)
   if (scrolling) {
     if (pointers.size >= 2) {
       const m = twoMid()
@@ -631,48 +670,29 @@ function onUp (e) {
   commitStroke()
 }
 
-/* ---- 橡皮（笔画级：点距遍历命中整笔删除） ---- */
+/* ---- 橡皮（局部擦拭：矢量切割，ink-erase.mjs） ---- */
 
-function segDist2 (x, y, x1, y1, x2, y2) {
-  const dx = x2 - x1
-  const dy = y2 - y1
-  const len2 = dx * dx + dy * dy
-  let t = len2 ? ((x - x1) * dx + (y - y1) * dy) / len2 : 0
-  t = Math.max(0, Math.min(1, t))
-  const ex = x1 + t * dx - x
-  const ey = y1 + t * dy - y
-  return ex * ex + ey * ey
-}
-
-function strokeHit (s, pt, r) {
-  const P = s.pts
-  const step = s.pressure ? 3 : 2
-  const r2 = r * r
-  let px = P[0]
-  let py = P[1]
-  if ((pt.x - px) ** 2 + (pt.y - py) ** 2 <= r2) return true
-  for (let i = step; i + 1 < P.length; i += step) {
-    const x = P[i]
-    const y = P[i + 1]
-    if (segDist2(pt.x, pt.y, px, py, x, y) <= r2) return true
-    px = x
-    py = y
-  }
-  return false
-}
-
-// 擦除手势被中止（第二指落下转滚动 / 中途翻页）：已删的保持删除，但必须补齐
-// 记录与落盘——否则屏幕已删、盘未删，且撤销栈缺条（§12.5 一次手势 = 一条记录）
+// 擦除手势被中止（第二指落下转滚动 / 中途翻页）：已切的保持切割，但必须
+// 补齐记录与落盘——否则屏幕已切、盘未切，且撤销栈缺条（§12.5 一次手势 = 一条记录）
 function settleErase (g) {
-  if (!g || !g.removed.length || loadedDoc !== g.docId) return false // 书已换：旧模型已弃，无从补写
-  pushOp({ type: 'remove', page: g.page, removed: g.removed })
+  if (!g || !g.origins.size || loadedDoc !== g.docId) return false // 书已换：旧模型已弃，无从补写
+  const pageObj = book.pages[g.page]
+  const mods = []
+  if (pageObj) {
+    for (const [origin, firstIdx] of g.origins) {
+      // 该原笔的全部幸存段（同手势多刀只记一条：原笔 → 最终段集）
+      const after = pageObj.strokes.filter(s => g.segOrigin.get(s) === origin)
+      mods.push({ before: origin, after, index: after.length ? pageObj.strokes.indexOf(after[0]) : firstIdx })
+    }
+  }
+  if (mods.length) pushOp({ type: 'modify', page: g.page, mods })
   scheduleSave()
   return true
 }
 
 function eraseAt (pt) {
   if (!erasing) return
-  // 手势中途翻页/换书：放弃后续擦除；已删的保持删除并补齐记录与落盘（同书），
+  // 手势中途翻页/换书：放弃后续擦除；已切的保持切割并补齐记录与落盘（同书），
   // 书已换则旧模型已弃，无从补写（操作栈随换书清空）
   if (loadedDoc !== erasing.docId || String(lastLayout.page) !== erasing.page) {
     const g = erasing
@@ -684,18 +704,44 @@ function eraseAt (pt) {
   }
   const pageObj = book.pages[erasing.page]
   if (!pageObj) return
+  const r = curTool().r
   let hit = false
   for (let i = pageObj.strokes.length - 1; i >= 0; i--) {
-    if (strokeHit(pageObj.strokes[i], pt, ERASE_R)) {
-      const [s] = pageObj.strokes.splice(i, 1)
-      erasing.removed.push({ index: i, stroke: s })
-      hit = true
-    }
+    const s = pageObj.strokes[i]
+    const segs = splitStroke(s, pt.x, pt.y, r)
+    if (!segs) continue
+    // 段的原始归属：同手势对同一笔多刀切割只更新归属与最终段集
+    const origin = erasing.segOrigin.get(s) ?? s
+    if (!erasing.origins.has(origin)) erasing.origins.set(origin, i)
+    pageObj.strokes.splice(i, 1, ...segs)
+    for (const seg of segs) erasing.segOrigin.set(seg, origin)
+    hit = true
   }
   if (hit) {
     redrawStatic()
     updateLayerVisibility()
   }
+}
+
+/* ---- 橡皮光圈：尺寸随指针实时可见（拍板 2026-10-07） ---- */
+
+function syncCursorSize () {
+  if (!cursorEl || !lastLayout) return
+  if (tool !== 'eraser') { cursorEl.style.display = 'none'; return }
+  // 直径 = 2r 页面单位 × 每单位 CSS 像素（cssW / baseW）
+  const d = Math.max(6, Math.round(2 * curTool().r * (lastLayout.cssW / lastLayout.baseW)))
+  cursorEl.style.width = d + 'px'
+  cursorEl.style.height = d + 'px'
+}
+
+function moveCursor (e) {
+  if (!cursorEl) return
+  if (tool !== 'eraser') return
+  const rect = layer.getBoundingClientRect()
+  if (!rect.width) return
+  cursorEl.style.display = 'block'
+  cursorEl.style.left = (e.clientX - rect.left) + 'px'
+  cursorEl.style.top = (e.clientY - rect.top) + 'px'
 }
 
 function commitStroke () {
@@ -740,6 +786,7 @@ function applyLayout (d) {
     cv.style.width = d.cssW + 'px'
     cv.style.height = d.cssH + 'px'
   }
+  syncCursorSize() // 布局尺寸变了，光圈直径跟随重算
 }
 
 function decodePts (s) {
