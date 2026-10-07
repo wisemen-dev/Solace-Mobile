@@ -57,7 +57,7 @@ npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
-`scripts/sync-www.mjs` 搬运并施加 **38 处移动端补丁**（锚点校验：上游改动
+`scripts/sync-www.mjs` 搬运并施加 **42 处移动端补丁**（锚点校验：上游改动
 导致锚点消失会显式报错，防止静默漂移）。桌面端更新后：
 
 ```bash

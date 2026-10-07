@@ -50,7 +50,8 @@
 2. **侧车移动端专有**：`links/<docId>.json` 桌面静默忽略；schema 升 v2
    向后兼容（v1 文件照读，无 summary 字段视作纯摘录记录）。
 3. **摘录既有流程零改动**：选词/拖选/併入/追加/标记渲染全部原样。
-4. **补丁体系**：唯一新补丁 = preview.js 目录构建处派发大纲（+1，38→39）；
+4. **补丁体系**（实施修订，第四轮审查 Spec-c1 回填）：新补丁 ×2——preview.js
+   目录构建处派发大纲（+1）与 notespanel.js 列表排序钩子（+1），38→40；
    其余全部落在 mobile-web 自有文件与运行时注入。
 5. **提醒零持久化**：提示去重只在内存（每次开书重置），不写库不写侧车。
 
@@ -156,7 +157,8 @@
 
 | 文件 | 改动 | 规模 |
 |---|---|---|
-| `scripts/sync-www.mjs` | 补丁 +1：preview.js 目录构建处 `dispatchEvent('solace-outline', { items: [{title,page,level}] })` | +8 行 |
+| `scripts/sync-www.mjs` | 补丁 +1：preview.js 目录构建处 `dispatchEvent('solace-outline', { items: [{title,page,depth}] })`（实施与
+   PORTING 统一用 depth 字段，此处原文 level 系笔误，第四轮审查 Spec-c4 订正） | +8 行 |
 | `mobile-web/js/mobile/chapter-prompt.mjs` | **新增（纯函数）**：章边界表构建、翻页跨界判定、守卫与去重判定——node 可单测 | ~60 行 |
 | `mobile-web/js/mobile/chapter-prompt.js` | **新增（DOM 层）**：听 `solace-outline` + `solace-ink-layout`，驱动小条；调 link.js 钩子开编辑器 | ~90 行 |
 | `mobile-web/js/mobile/link.js` | `window.__linkOpenSummary(docId, chapter)`（建/续写章总结）；行钩子 `__linkNoteRowExtra` 改内容优先 + 排序键；查看器章 chip 与隐藏追加钮 | ~70 行 |
@@ -164,7 +166,7 @@
 | `mobile-web/js/mobile/notespanel` 侧 | 行渲染与排序（经既有补丁钩子扩展）；面板 📝 钮运行时注入 | ~40 行 |
 | `bridge/links-core.mjs` | schema v2 校验（§7.2） | ~15 行 |
 | `mobile-web/css/mobile.css` | 小条样式（复用 drag-bar 语言）+ 行两行式 | ~30 行 |
-| `docs/PORTING.md` | 补丁清单 38→39 | 文案 |
+| `docs/PORTING.md` | 补丁清单 38→40（preview.js + notespanel.js） | 文案 |
 
 **不动**：ink.js、tools.js、boot.mjs、原生层、桌面仓库。
 

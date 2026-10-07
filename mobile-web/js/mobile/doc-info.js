@@ -5,13 +5,14 @@
 import pdfjsLib from '../pdfjs.js'
 import { esc } from '../util.js'
 import { docStats } from './doc-info-stats.mjs'
+import { makeLru } from './lru-cache.mjs'
 
 const grid = document.getElementById('docGrid')
 
 let dlg = null
 let seq = 0                 // 打开序号：异步装载的代数作废（关卡/换书即弃）
 let openCard = null         // 当前简介对应的卡元素（动作复用时校验仍在 DOM）
-const authorCache = new Map() // docId -> 作者串（''=无/失败）；LRU 12
+const authorCache = makeLru(12) // docId -> 作者串（''=无/失败；undefined=未缓存）
 
 /* ---- 拦截：捕获相先于 body 委托（冒泡相），stopPropagation 即截断 ---- */
 if (grid) {
@@ -93,7 +94,8 @@ function progressText (doc) {
 }
 
 async function authorOf (docId) {
-  if (authorCache.has(docId)) return authorCache.get(docId)
+  const hit = authorCache.get(docId) // ''=已缓存的无/失败，undefined=未缓存
+  if (hit !== undefined) return hit
   try {
     const url = await window.solace.getDocUrl(docId)
     const task = pdfjsLib.getDocument({ url })
@@ -103,7 +105,6 @@ async function authorOf (docId) {
     await pdf.destroy()
     const a = md && md.info && md.info.Author ? String(md.info.Author).trim().slice(0, 60) : ''
     authorCache.set(docId, a)
-    if (authorCache.size > 12) authorCache.delete(authorCache.keys().next().value)
     return a
   } catch {
     authorCache.set(docId, '') // 失败也缓存：同会话不重试（下一会话再试）
@@ -162,6 +163,11 @@ async function openInfo (docId, card) {
     window.solace.readAnnotations(docId),
     window.solace.listNotes(docId)
   ])
+  // 故障不吞（审查四轮 Standards-6）：装饰性统计降级按 0 显示，但必须留痕——
+  // 否则 I/O 故障与「没有记录」在界面上不可区分
+  for (const r of [links, annos, notes]) {
+    if (r.status === 'rejected') console.warn('doc-info 统计源读取失败：', r.reason)
+  }
   if (mySeq !== seq) return
   const st = docStats(links.value, annos.value, notes.value)
   dlg.querySelector('#docInfoStats').innerHTML =

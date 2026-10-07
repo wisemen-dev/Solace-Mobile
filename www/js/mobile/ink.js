@@ -16,11 +16,12 @@ import { jumpPage } from './page-jump.mjs'
 import { splitStroke } from './ink-erase.mjs'
 
 // 工具配置：色板与粗细按工具独立（荧光笔 5 色、笔 5 色、粗细三档；
-// 橡皮无色板、尺寸三档——拍板 2026-10-07）
+// 橡皮无色板（colors 恒空——各弹层/按钮逻辑按「有无色板」统一判定，不特判
+// 工具名）、尺寸三档——拍板 2026-10-07）
 const TOOLS = {
   pen: { colors: ['#212529', '#e03131', '#1971c2', '#2f9e44', '#868e96'], widths: [1.5, 2.5, 4.0] },
   hl: { colors: ['#fff00a', '#ff6b6b', '#51cf66', '#4dabf7', '#b197fc'], widths: [8, 12, 18] },
-  eraser: { sizes: [8, 14, 22] }
+  eraser: { colors: [], sizes: [8, 14, 22] }
 }
 const TOOL_STATE_KEY = 'solace.ink.tools'
 // 工具/颜色/粗细记忆：各工具一套，跨会话保留（localStorage，不进 library.json）
@@ -147,7 +148,7 @@ function togglePop (id) {
   else openPop(id)
 }
 function openPop (id) {
-  if (tool === 'eraser' && id === 'inkPalette') return // 橡皮无颜色，尺寸走粗细弹层
+  if (!TOOLS[tool].colors.length && id === 'inkPalette') return // 无色板的工具（橡皮）不弹色板
   closePops()
   buildPops()
   popOpen = id
@@ -163,8 +164,8 @@ function closePops () {
 function buildPops () {
   const pal = document.getElementById('inkPalette')
   pal.innerHTML = ''
-  // 橡皮无色板（色板钮已禁用，但弹层内容必须清空——否则残留上一工具的色钮）
-  if (TOOLS[tool].colors) {
+  // 无色板的工具（橡皮）：弹层清空即止——不留上一工具的残留色钮
+  if (TOOLS[tool].colors.length) {
     for (const c of TOOLS[tool].colors) {
       const b = document.createElement('button')
       b.className = 'ink-color' + (c === curTool().color ? ' on' : '')
@@ -182,20 +183,20 @@ function buildPops () {
   }
   const ws = document.getElementById('inkWidths')
   ws.innerHTML = ''
-  // 橡皮的「粗细」= 擦拭半径（页面单位），展示为圆点而非横条
-  const isEraser = tool === 'eraser'
-  const sizes = isEraser ? TOOLS.eraser.sizes : TOOLS[tool].widths
-  const curSize = isEraser ? curTool().r : curTool().width
+  // 带尺寸档的工具（橡皮）：擦拭半径（页面单位），展示为圆点而非横条
+  const hasSizes = !!TOOLS[tool].sizes
+  const sizes = hasSizes ? TOOLS[tool].sizes : TOOLS[tool].widths
+  const curSize = hasSizes ? curTool().r : curTool().width
   sizes.forEach((w, i) => {
     const b = document.createElement('button')
     b.className = 'ink-width' + (w === curSize ? ' on' : '')
     b.dataset.width = String(w)
-    b.innerHTML = isEraser
+    b.innerHTML = hasSizes
       ? `<i class="ink-erase-dot" style="width:${[10, 15, 21][i] || 12}px;height:${[10, 15, 21][i] || 12}px"></i>`
       : `<i style="height:${[4, 6, 9][i] || 5}px"></i>`
     b.title = String(w)
     b.addEventListener('click', () => {
-      if (isEraser) curTool().r = w
+      if (hasSizes) curTool().r = w
       else curTool().width = w
       saveToolState()
       closePops()
@@ -221,7 +222,7 @@ function syncToolbarUI () {
   const dot = document.getElementById('inkDot')
   if (dot) dot.style.background = tool === 'eraser' ? 'transparent' : curTool().color
   const palBtn = document.getElementById('btnInkPalette')
-  if (palBtn) palBtn.disabled = tool === 'eraser' // 橡皮无颜色；尺寸走粗细弹层
+  if (palBtn) palBtn.disabled = !TOOLS[tool].colors.length // 橡皮无颜色；尺寸走粗细弹层
   syncCursorSize()
   const undo = document.getElementById('btnInkUndo')
   const redo = document.getElementById('btnInkRedo')
@@ -480,8 +481,9 @@ function applyOp (op, inverse) {
       }
     } else {
       for (const mod of op.mods) {
-        const i = pageObj.strokes.indexOf(mod.before)
-        if (i < 0) continue
+        // 引用优先定位；异常序列下未命中时按下标兜底插入（与 add 分支同宽恕度）
+        let i = pageObj.strokes.indexOf(mod.before)
+        if (i < 0) { pageObj.strokes.splice(Math.min(mod.index, pageObj.strokes.length), 0, ...mod.after); continue }
         pageObj.strokes.splice(i, 1, ...mod.after)
       }
     }
@@ -727,7 +729,7 @@ function eraseAt (pt) {
 
 function syncCursorSize () {
   if (!cursorEl || !lastLayout) return
-  if (tool !== 'eraser') { cursorEl.style.display = 'none'; return }
+  if (!TOOLS[tool].sizes) { cursorEl.style.display = 'none'; return } // 光圈是带尺寸档工具（橡皮）专属
   // 直径 = 2r 页面单位 × 每单位 CSS 像素（cssW / baseW）
   const d = Math.max(6, Math.round(2 * curTool().r * (lastLayout.cssW / lastLayout.baseW)))
   cursorEl.style.width = d + 'px'
@@ -736,7 +738,7 @@ function syncCursorSize () {
 
 function moveCursor (e) {
   if (!cursorEl) return
-  if (tool !== 'eraser') return
+  if (!TOOLS[tool].sizes) return
   const rect = layer.getBoundingClientRect()
   if (!rect.width) return
   cursorEl.style.display = 'block'

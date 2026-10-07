@@ -11,26 +11,16 @@ import { closeNotes } from '../notespanel.js'
 import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText, makeFreeSelection, stepEndpoint } from './link-text.mjs'
 import { generateRecordMd, generateSummaryMd, parseRecordMd } from './link-md.mjs'
 import { jumpPage } from './page-jump.mjs'
+import { makeLru } from './lru-cache.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
 let pdfCanvas = null
 let layer = null           // .ink-text-layer（懒建）
 let lastLayout = null      // 最近一次 layout detail（含 pageObj/viewport）
 let buildSeq = 0
-const textCache = new Map()          // `${docId}:${page}` -> { tc, items, pageText, spans }
 // 每页 TextContent 数十 KB 级且无失效时机，LRU 封顶防长会话逐页翻多本书后
 // 只增不减（移动 WebView 内存压力 → OOM）
-const TEXT_CACHE_MAX = 24
-function textCacheGet (key) {
-  if (!textCache.has(key)) return undefined
-  const v = textCache.get(key)
-  textCache.delete(key); textCache.set(key, v) // 重插 = 标记最近使用
-  return v
-}
-function textCacheSet (key, v) {
-  textCache.delete(key); textCache.set(key, v)
-  while (textCache.size > TEXT_CACHE_MAX) textCache.delete(textCache.keys().next().value)
-}
+const textCache = makeLru(24) // `${docId}:${page}` -> { tc, items, pageText, spans }
 const linksCache = new Map()         // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let appendTarget = null              // 追加会话目标文件名（null = 新建会话，§6.7）
@@ -110,13 +100,13 @@ async function buildLayer (d) {
   if (seq !== buildSeq) return
   if (!shouldBuild()) { layer.textContent = ''; layer.hidden = true; return }
   const key = `${d.docId}:${d.page}`
-  let entry = textCacheGet(key)
+  let entry = textCache.get(key)
   if (!entry) {
     const tc = await d.pageObj.getTextContent()
     if (seq !== buildSeq) return
     const { text, spans } = buildPageText(tc.items)
     entry = { tc, items: tc.items, pageText: text, spans }
-    textCacheSet(key, entry)
+    textCache.set(key, entry)
   }
   // TextLayer 只会往容器里 append：不清空会逐页/逐次累积
   layer.textContent = ''
@@ -149,16 +139,13 @@ window.addEventListener('solace-ink-layout', async (e) => {
 })
 
 window.addEventListener('solace-ink-close', () => {
-  // 预览关闭 = 会话结束：选词状态必须全复位——残留的 linkSelecting 会挡住
-  // 边缘点按翻页、吞掉下一个返回键；残留的选集/托盘会在下一本书里以当前书
-  // 为 docId 误存旧书摘录
-  selections = []
-  window.linkSelecting = false
-  document.body.classList.remove('link-selecting')
-  if (tray) tray.hidden = true
+  // 预览关闭 = 会话结束：统一走 closeSelection 收口（§6.7「预览关闭：会话作废，
+  // appendTarget 清空」+ §6.6 拖选/确认小条清理）——此前只复位选词子集，追加
+  // 目标与待确认选区会残留到同书重开后的新会话（第四轮审查 Spec-1）。
+  // 先断布局再收口：closeSelection 的重建分支（buildLayer）随之自然跳过
   pendingFlash = null
-  buildSeq++
   lastLayout = null
+  closeSelection(true)
   if (layer) { layer.textContent = ''; layer.hidden = true }
 })
 
@@ -204,7 +191,7 @@ function paintItem (el, list) {
 // 记录锚点（.lnk，text 经 findRangeByText 重锚定）+ 选词选中态（.lnk-sel）
 // 合并成**一遍**重建：分两遍时后一遍会拿原文本重切，把前一遍的标记覆盖掉
 function renderMarkers (d) {
-  const entry = textCacheGet(`${d.docId}:${d.page}`)
+  const entry = textCache.get(`${d.docId}:${d.page}`)
   if (!entry) return
   const byItem = new Map()
   const docLinks = linksCache.get(d.docId)
@@ -326,7 +313,7 @@ function caretToOffset (x, y) {
   const itemEl = el && el.closest('[data-item]')
   if (!itemEl || !layer.contains(itemEl)) return null
   const item = Number(itemEl.dataset.item)
-  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry || !entry.spans[item]) return null
   // caret 偏移要相对**整个文本项**量：标记 span 把项文本切成了多个节点，
   // 直接取 caret.offset（相对所在文本节点）会算错
@@ -376,7 +363,7 @@ function caretToOffsetFallback (x, y, entry) {
 // 拖选/点选共用的命中入口：先精确 caret，失败走行几何兜底
 function caretOffsetForDrag (x, y) {
   if (!lastLayout) return null
-  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry) return null
   const off = caretToOffset(x, y)
   if (off != null) return off
@@ -388,7 +375,7 @@ function caretOffsetForDrag (x, y) {
 // 滑动的稀疏采样抖动不再把终点命中到相邻行；大位移跨行选择不受影响
 function rowAnchorForOffset (off) {
   if (!lastLayout || !layer) return null
-  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry) return null
   const it = offsetToItem(entry.spans, off)
   if (!it) return null
@@ -422,7 +409,7 @@ function onLayerTap (e) {
   if (dragPending) { cancelDragPending(); return }
   const off = caretToOffset(e.clientX, e.clientY)
   if (off == null) return
-  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry) return
   const sentences = splitSentences(entry.pageText)
   const si = sentenceAt(sentences, off)
@@ -464,7 +451,7 @@ function ensureDragBar () {
 // 端点步进后重算选区：text/hint 跟随端点变化（hint 恒为当前起点）
 function stepDrag (dir) {
   if (!dragPending || !lastLayout) return
-  const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
   if (!entry) return
   if (dir < 0) dragPending.a = stepEndpoint(entry.pageText, dragPending.a, -1)
   else dragPending.b = stepEndpoint(entry.pageText, dragPending.b, 1)
@@ -549,7 +536,7 @@ bodyEl?.addEventListener('pointerdown', (e) => {
     pressTimer = null
     press = null
     if (!lastLayout) return
-    const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+    const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
     if (!entry) return
     const off = caretOffsetForDrag(x, y)
     if (off == null) return
@@ -632,7 +619,7 @@ bodyEl?.addEventListener('pointerup', (e) => {
     // 永久失效、横滑翻页失灵（真机实测）。见 mobile.js 的对应让位
     e.__consumedByLink = true
     if (!lastLayout) return
-    const entry = textCacheGet(`${lastLayout.docId}:${lastLayout.page}`)
+    const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
     const made = entry && makeFreeSelection(entry.pageText, entry.spans, sel.a, sel.b)
     // 空/微选区（<2 字，拖回起点附近）静默丢弃，不出小条——「拖空即取消」
     if (!made || made.text.length < 2) { renderMarkers(lastLayout); return }
@@ -740,6 +727,9 @@ function ensureViewer () {
 
 // 只读 chips：点按 = 关查看器 + 跳到该条摘录所在页并闪烁（定位语义同列表行）。
 // 章总结记录：唯一 chip = 章锚点，点按跳章首页（无正文标记可闪）
+// chip 主文字（查看器/编辑器共用，审查四轮 Standards-3 去重）：页码 + 截断文本
+const chipLabel = (x) => `<b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}`
+
 function renderViewerChips () {
   const docLinks = linksCache.get(viewCtx.docId)
   const rec = docLinks && docLinks.records[viewCtx.file]
@@ -747,7 +737,7 @@ function renderViewerChips () {
   const chips = rec && rec.summary
     ? `<span class="link-chip link-view-chip" data-k="s"><b>第 ${rec.summary.page} 页</b> ${esc(rec.summary.chapter)}<i class="chip-go">›</i></span>`
     : ((rec && rec.excerpts) || []).map((x, i) =>
-      `<span class="link-chip link-view-chip" data-k="${i}"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<i class="chip-go">›</i></span>`).join('')
+      `<span class="link-chip link-view-chip" data-k="${i}">${chipLabel(x)}<i class="chip-go">›</i></span>`).join('')
   box.innerHTML = (viewCtx.degraded
     ? '<span class="link-chip-degraded">正文格式已被外部修改；编辑将按原样保存，追加仅入锚点</span>'
     : '') + chips
@@ -762,6 +752,19 @@ function renderViewerChips () {
     }))
 }
 
+// 读取并解析一份记录 md（查看器/编辑器/追加三处共用；审查四轮 Standards-3 去重）。
+// 读取失败返回 { error }（调用方各自 toast/退出），成功返回 { raw, parsed, degraded }
+async function loadRecordMd (docId, file) {
+  let raw = ''
+  try {
+    raw = await window.solace.readNote(docId, file)
+  } catch (err) {
+    return { error: err }
+  }
+  const parsed = parseRecordMd(raw)
+  return { raw, parsed, degraded: !parsed.ok }
+}
+
 async function openViewer (docId, file) {
   if (viewOpening) return
   viewOpening = true
@@ -770,12 +773,10 @@ async function openViewer (docId, file) {
     if (!linksCache.has(docId)) await loadLinks(docId)
     const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
     if (!rec || (!rec.excerpts.length && !rec.summary)) { window.toast?.('记录已不存在'); return }
-    let raw = ''
-    try {
-      raw = await window.solace.readNote(docId, file)
-    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
-    const parsed = parseRecordMd(raw)
-    viewCtx = { docId, file, degraded: !parsed.ok }
+    const ld = await loadRecordMd(docId, file)
+    if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
+    const { raw, parsed, degraded } = ld
+    viewCtx = { docId, file, degraded }
     viewDlg.querySelector('#linkViewTitle').textContent = rec.summary
       ? `章节总结 · ${rec.summary.chapter.slice(0, 24)}`
       : `摘录记录 · ${file.replace(/\.md$/i, '')}`
@@ -824,11 +825,9 @@ async function commitAppend () {
       ...rec.excerpts.map(x => ({ ...x })),
       ...fresh.map(s => ({ page: s.page, text: s.text, hint: s.hint }))
     ]
-    let raw = ''
-    try {
-      raw = await window.solace.readNote(docId, file)
-    } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
-    const parsed = parseRecordMd(raw)
+    const ld = await loadRecordMd(docId, file)
+    if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
+    const { parsed } = ld
     // 降级（正文被外部改过）→ md 原样不动、仅写侧车：与编辑器「降级按原样
     // 保存」语义一致，不重建摘录区
     if (parsed.ok) {
@@ -894,7 +893,7 @@ function renderChips () {
     return
   }
   const chips = edCtx.excerpts.map((x, i) =>
-    `<span class="link-chip"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
+    `<span class="link-chip">${chipLabel(x)}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
   // 降级（正文被外部改过）时正文按原样保存、不重建摘录区，但摘录条目仍要
   // 可移除——归属释放（§6.2）与「全移除退化为普通笔记」（§6.3）都靠它
   box.innerHTML = (edCtx.degraded
@@ -918,18 +917,16 @@ async function openEditor (opts = {}) {
       const docLinks = linksCache.get(opts.docId)
       const rec = docLinks && docLinks.records[opts.file]
       if (!rec) { window.toast?.('记录已不存在'); return }
-      let raw = ''
-      try {
-        raw = await window.solace.readNote(opts.docId, opts.file)
-      } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
+      const ld = await loadRecordMd(opts.docId, opts.file)
+      if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
       if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
-      const parsed = parseRecordMd(raw)
+      const { parsed, degraded } = ld
       // 正文被外部改过（无【摘录】/【总结】头）→ 降级：按普通笔记保存，锚点保留不动
       edCtx = {
         mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file,
         excerpts: rec.excerpts.map(x => ({ ...x })),
         summary: rec.summary ? { ...rec.summary } : null,
-        degraded: !parsed.ok, fromViewer: !!opts.fromViewer
+        degraded, fromViewer: !!opts.fromViewer
       }
       edDlg.querySelector('#linkRecordText').value = parsed.body
       edDlg.querySelector('#linkRecordTitle').textContent = rec.summary ? '章节总结' : '摘录记录'

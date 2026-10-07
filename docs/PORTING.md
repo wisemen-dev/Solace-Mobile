@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 40 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 42 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -42,7 +42,7 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 40 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 42 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
 ### index.html（10 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
@@ -267,7 +267,9 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 设计与数据格式的权威文档是 `docs/EXCERPT-LINK-DESIGN.md`（§12 已拍板）；
 实施明细（含偏差回填）见 `docs/EXCERPT-LINK-PLAN.md`。代码：
 `mobile-web/js/mobile/link.js`（自有资产，非补丁）+ `link-md.mjs` /
-`link-text.mjs`（纯函数，随单测）+ `bridge/links-core.mjs`；补丁：
+`link-text.mjs`（纯函数，随单测）+ `bridge/links-core.mjs`。以下补丁计数
+为 **0.5.0 当时口径（历史）**，后续版本有增补——权威数字以上方清单为准
+（0.5.2 起 notespanel.js 共 8 处、preview.js 新增大纲派发等）：
 index.html +1（`#btnLink`「🔗 链接」）、notespanel.js +4（行徽标钩子 /
 ＋新建钩子 / 单条与批量删除回调钩子）、preview.js 既有 layout 补丁加宽
 （detail 增补 `pageObj`/`viewport`，条数不变）。

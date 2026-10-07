@@ -7,6 +7,7 @@ import { createAnnotations } from '../bridge/annotations-core.mjs'
 import { createMemFs } from './mem-fs.mjs'
 import { generateRecordMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
 import { splitStroke } from '../mobile-web/js/mobile/ink-erase.mjs'
+import { makeLru } from '../mobile-web/js/mobile/lru-cache.mjs'
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const layout = { docId: ID, page: 1, w: 100, h: 100, cssW: 100, cssH: 100, baseW: 100, baseH: 100 }
@@ -82,7 +83,7 @@ function uiHarness (name, expose, solace) {
   let timerSeq = 0
   const timers = new Map()
   const context = {
-    window, document, console, generateRecordMd, parseRecordMd, splitStroke,
+    window, document, console, generateRecordMd, parseRecordMd, splitStroke, makeLru,
     getStroke: () => [], askConfirm: async () => true, jumpPage () {}, closeNotes () {},
     esc: text => String(text), localStorage: { getItem: () => null, setItem () {} },
     setTimeout: fn => { timers.set(++timerSeq, fn); return timerSeq },
@@ -569,4 +570,23 @@ test('查看器删除：确认框取消则不动数据、查看器留在原地',
   await settle()
   assert.equal(element('linkViewDialog').open, true)
   assert.equal(element('btnLinkViewDelete').disabled, false)
+})
+
+/* ---- 第四轮全量审查修复回归 ---- */
+
+test('预览关闭统一收口追加会话：appendTarget 作废、选词退出（§6.7 审查 Spec-1）', async () => {
+  const { api, context } = linkFlowHarness({
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => '> 【摘录】第 1 页\n> 原文\n\n正文',
+    writeNote: async () => {}
+  })
+  api.setup(layout, 'r.md')
+  await settle()
+  assert.equal(api.state().appendTarget, 'r.md')
+  assert.equal(api.state().selecting, true)
+  context.window.dispatchEvent({ type: 'solace-ink-close' })
+  await settle()
+  const st = api.state()
+  assert.equal(st.appendTarget, null)       // 旧实现残留：同书重开后新选区併入失效目标
+  assert.equal(st.selecting, false)
 })
