@@ -12,6 +12,7 @@ import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem,
 import { generateRecordMd, generateSummaryMd, parseRecordMd } from './link-md.mjs'
 import { jumpPage } from './page-jump.mjs'
 import { makeLru } from './lru-cache.mjs'
+import { groupRectsToBands } from './bands.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
 let pdfCanvas = null
@@ -188,8 +189,84 @@ function paintItem (el, list) {
   }
 }
 
-// 记录锚点（.lnk，text 经 findRangeByText 重锚定）+ 选词选中态（.lnk-sel）
-// 合并成**一遍**重建：分两遍时后一遍会拿原文本重切，把前一遍的标记覆盖掉
+// 沿文本项子节点（文本节点 + .lnk 标记 span）累计字符长度，把项内相对偏移
+// [from, to] 定位成 DOM Range 端点；越界/落空返回 null（该项无字可选）
+function locateOffsets (el, from, to) {
+  let acc = 0
+  let s = null
+  let e = null
+  const walk = (node) => {
+    if (s && e) return
+    if (node.nodeType === 3) {
+      const len = node.data.length
+      if (!s && from >= acc && from <= acc + len) s = { node, off: from - acc }
+      if (!e && to >= acc && to <= acc + len) e = { node, off: to - acc }
+      acc += len
+    } else {
+      for (const c of node.childNodes) { walk(c); if (s && e) return }
+    }
+  }
+  walk(el)
+  return s && e ? { s, e } : null
+}
+
+// 按行统一带渲染（拍板 2026-10-07）：拖选（蓝）/入选（紫）不再做内联背景，
+// 而是层内 .lnk-bands 容器上的等高带 div——容器插在层首，与文本项同为绝对
+// 定位按 DOM 序绘制，天然垫在琥珀标记之下（链接态优先保持）。
+// 几何用 DOM Range 的 getClientRects：字符级精确，多行文本项自动逐行分片
+function renderBands (bandSel, bandDrag) {
+  if (!layer) return
+  let box = layer.querySelector(':scope > .lnk-bands')
+  if (!box) {
+    box = document.createElement('div')
+    box.className = 'lnk-bands'
+    layer.insertBefore(box, layer.firstChild)
+  }
+  box.textContent = ''
+  if (typeof document.createRange !== 'function') return // node 桩环境：带渲染跳过（断言不看 DOM）
+  const layerRect = layer.getBoundingClientRect()
+  if (!layerRect.width && !layerRect.height) return
+  for (const [map, cls] of [[bandDrag, 'lnk-band-drag'], [bandSel, 'lnk-band-sel']]) {
+    const rects = []
+    for (const [i, list] of map) {
+      const el = layer.querySelector(`[data-item="${i}"]`)
+      if (!el) continue
+      for (const { from, to } of list) {
+        const loc = locateOffsets(el, from, to)
+        if (!loc) continue
+        const range = document.createRange()
+        try {
+          range.setStart(loc.s.node, loc.s.off)
+          range.setEnd(loc.e.node, loc.e.off)
+          // pdf.js 文本项是「大字号 + transform 缩放」：Range 矩形的**高**按未缩放
+          // 行盒计算（恒 ~39px 且不分字号），只有 X 是字符级可靠——X 取 Range、
+          // Y/高取元素视觉盒（getBoundingClientRect 已含 transform，真机实测）
+          const ir = el.getBoundingClientRect()
+          let x0 = Infinity; let x1 = -Infinity
+          for (const rr of range.getClientRects()) {
+            if (rr.width <= 0) continue
+            x0 = Math.min(x0, rr.x); x1 = Math.max(x1, rr.x + rr.width)
+          }
+          if (x1 > x0) rects.push({ x: x0 - layerRect.x, y: ir.y - layerRect.y, w: x1 - x0, h: ir.height })
+        } catch { /* 端点落在非法节点边界：本项跳过，其余带照画 */ }
+      }
+    }
+    for (const b of groupRectsToBands(rects)) {
+      const div = document.createElement('div')
+      div.className = 'lnk-band ' + cls
+      div.style.left = b.x + 'px'
+      div.style.top = b.y + 'px'
+      div.style.width = b.w + 'px'
+      div.style.height = b.h + 'px'
+      box.appendChild(div)
+    }
+  }
+}
+
+// 记录锚点（.lnk，text 经 findRangeByText 重锚定）合并成**一遍**重建：
+// 分两遍时后一遍会拿原文本重切，把前一遍的标记覆盖掉。
+// 选词选中态/拖选高亮（拍板 2026-10-07）改为**按行统一带**（renderBands）——
+// 旧内联背景随文本项字体盒高低错落，跨字号混排观感差
 function renderMarkers (d) {
   const entry = textCache.get(`${d.docId}:${d.page}`)
   if (!entry) return
@@ -205,24 +282,24 @@ function renderMarkers (d) {
       if (r) rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
     }
   }
+  const bandSel = new Map() // item -> [{from, to}]（项内相对偏移）
+  const bandDrag = new Map()
   if (window.linkSelecting) {
     for (const sel of selections) {
       if (sel.page !== d.page) continue
       const hint = entry.spans[sel.hint.item] ? entry.spans[sel.hint.item].start + sel.hint.char : null
       const r = findRangeByText(entry.pageText, sel.text, hint)
-      if (r) rangesToItems(entry, r.start, r.end, '__sel__', 'lnk-sel', byItem)
+      if (r) rangesToItems(entry, r.start, r.end, null, null, bandSel)
     }
-    // 自由拖选（§6.6）：进行中与待确认共用 .lnk-drag；offset 是页面文本偏移，
-    // 无需重锚定搜索。与 .lnk 重叠时按 paintItem 先登记者规则以链接态优先
+    // 自由拖选（§6.6）：进行中与待确认共用；offset 是页面文本偏移，无需重锚定
     const drag = dragPending && String(dragPending.page) === String(d.page)
       ? dragPending
       : (dragSel ? { a: dragSel.a, b: dragSel.b } : null)
-    if (drag) rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), '__drag__', 'lnk-drag', byItem)
+    if (drag) rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), null, null, bandDrag)
   }
   // 上一轮画过标记的项也要重切：byItem 只含本轮有条目的项，不补则旧标记
-  // 残留（拖选高亮取消/缩短后不消失——真机实测残留 31 字）。空列表 =
-  // paintItem 重切回纯文本
-  for (const mk of layer.querySelectorAll('.lnk, .lnk-sel, .lnk-drag')) {
+  // 残留（真机实测残留 31 字）。空列表 = paintItem 重切回纯文本
+  for (const mk of layer.querySelectorAll('.lnk')) {
     const itemEl = mk.closest && mk.closest('[data-item]')
     const i = itemEl && Number(itemEl.dataset.item)
     if (i !== undefined && !byItem.has(i)) byItem.set(i, [])
@@ -231,6 +308,7 @@ function renderMarkers (d) {
     const el = layer.querySelector(`[data-item="${i}"]`)
     if (el) paintItem(el, list)
   }
+  renderBands(bandSel, bandDrag)
   // 跳回定位：目标页渲染完才闪（一次性消费；同页跳回在 jumpToExcerpt 直接闪）
   if (pendingFlash && pendingFlash.docId === d.docId && String(pendingFlash.page) === String(d.page)) {
     tryFlashNow()

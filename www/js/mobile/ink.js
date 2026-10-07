@@ -17,11 +17,13 @@ import { splitStroke } from './ink-erase.mjs'
 
 // 工具配置：色板与粗细按工具独立（荧光笔 5 色、笔 5 色、粗细三档；
 // 橡皮无色板（colors 恒空——各弹层/按钮逻辑按「有无色板」统一判定，不特判
-// 工具名）、尺寸三档——拍板 2026-10-07）
+// 工具名）、尺寸四档（拍板 2026-10-07：最小 4 = 屏上 ≈14px，恰为最粗笔画
+// 宽的「笔尖级」精确档；调研锚点 GoodNotes 6 Precision Eraser / Notability
+// 滑杆——用户普遍嫌最小档太大，见 ANNOTATION-DESIGN §13 增补））
 const TOOLS = {
   pen: { colors: ['#212529', '#e03131', '#1971c2', '#2f9e44', '#868e96'], widths: [1.5, 2.5, 4.0] },
   hl: { colors: ['#fff00a', '#ff6b6b', '#51cf66', '#4dabf7', '#b197fc'], widths: [8, 12, 18] },
-  eraser: { colors: [], sizes: [8, 14, 22] }
+  eraser: { colors: [], sizes: [4, 8, 14, 22] }
 }
 const TOOL_STATE_KEY = 'solace.ink.tools'
 // 工具/颜色/粗细记忆：各工具一套，跨会话保留（localStorage，不进 library.json）
@@ -192,7 +194,7 @@ function buildPops () {
     b.className = 'ink-width' + (w === curSize ? ' on' : '')
     b.dataset.width = String(w)
     b.innerHTML = hasSizes
-      ? `<i class="ink-erase-dot" style="width:${[10, 15, 21][i] || 12}px;height:${[10, 15, 21][i] || 12}px"></i>`
+      ? `<i class="ink-erase-dot" style="width:${[6, 10, 15, 21][i] || 12}px;height:${[6, 10, 15, 21][i] || 12}px"></i>`
       : `<i style="height:${[4, 6, 9][i] || 5}px"></i>`
     b.title = String(w)
     b.addEventListener('click', () => {

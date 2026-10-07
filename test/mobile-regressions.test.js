@@ -8,6 +8,7 @@ import { createMemFs } from './mem-fs.mjs'
 import { generateRecordMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
 import { splitStroke } from '../mobile-web/js/mobile/ink-erase.mjs'
 import { makeLru } from '../mobile-web/js/mobile/lru-cache.mjs'
+import { groupRectsToBands } from '../mobile-web/js/mobile/bands.mjs'
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const layout = { docId: ID, page: 1, w: 100, h: 100, cssW: 100, cssH: 100, baseW: 100, baseH: 100 }
@@ -83,7 +84,7 @@ function uiHarness (name, expose, solace) {
   let timerSeq = 0
   const timers = new Map()
   const context = {
-    window, document, console, generateRecordMd, parseRecordMd, splitStroke, makeLru,
+    window, document, console, generateRecordMd, parseRecordMd, splitStroke, makeLru, groupRectsToBands,
     getStroke: () => [], askConfirm: async () => true, jumpPage () {}, closeNotes () {},
     esc: text => String(text), localStorage: { getItem: () => null, setItem () {} },
     setTimeout: fn => { timers.set(++timerSeq, fn); return timerSeq },
