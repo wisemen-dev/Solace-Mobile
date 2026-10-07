@@ -105,6 +105,10 @@ button,
     align-items: center;
   }
   .topbar { gap: 10px; }
+  /* 溢出菜单触发器：单字符「⋯」在 12px 内距下只有 38px 宽，补到 44×44
+     （命中面积与视觉大小在此处一致，不靠外扩伪元素）。
+     注意只对这一颗生效——通用规则里刻意不设 min-width，理由见上 */
+  .topbar .topbar-more-trigger { min-width: 44px; padding: 0 10px; }
   /* 搜索框在宽屏下不再压缩到不可用 */
   .search { flex: 1 1 320px; min-width: 200px; }
 }
