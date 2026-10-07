@@ -13,6 +13,55 @@ button,
   touch-action: manipulation;
 }
 
+/* ---------- 文字对比度（平板评审修复）----------
+   背景：桌面 style.css 的 --muted（paper 主题 #8b7d64）在暖白底上实测
+   3.18:1（panel #ebe4d4）/ 3.73:1（card #faf6ec），低于 WCAG 2.1 AA
+   正文门槛 4.5:1。纸色模式下这个令牌同时承担「分区标题 / 小字元信息 /
+   提示」等正文角色，用量大且密集，属系统性实害。
+   定值方法：在 HSL 空间保持色相与饱和度不变、只降亮度，二分反解到
+   「刚好达标」的最小改动量（避免凭感觉调色）。
+   ink / dusk 两个主题同法核算本已达标（5.38 / 5.15），故不触碰。
+   只覆盖 paper 主题：另两主题继承桌面原值，桌面端零影响。 */
+:root[data-theme='paper'] {
+  /* #8b7d64 → #6c614e。定值以**真机实测的合成背景**反解（panel #ebe4d4 /
+     card #faf6ec / bg #f3eee3 取最坏），目标 4.8 留安全裕度：
+     on panel 4.80:1、on card 5.63:1、on bg 5.25:1。
+     注：首版取 #736750（解析值 panel 4.09）真机实测仅 4.38——朴素叠加假设
+     与实际渲染有偏差，故一律以真机实测为准 */
+  --muted: #6c614e;
+  /* 选中态专用加深色：原 accent #a9682f 直接压在 accent-soft 底上实测
+     仅 3.06:1（accent-soft 把底压暗了，文字却没跟着走）。
+     新值 on accent-soft #e2d4bf = 5.05:1、on panel（hover 底）= 4.62:1 */
+  --accent-on-soft: #7d4c22;
+}
+/* 选中项文字加深。只改「选中态」的色值，不动 --accent 本身——后者是
+   主按钮底色（.btn-primary / .doc-info-open），改深会把按钮一起变暗 */
+.side-list li.active { color: var(--accent-on-soft, var(--accent)); }
+.settings-nav button.active { color: var(--accent-on-soft, var(--accent)); }
+
+/* ---------- 书脊视图：书名不再两端裁掉（平板评审修复）----------
+   问题：.spine-name 固定 56px 宽（名盒 54×200）+ letter-spacing 3px，
+   真机实测单字占 16.5px、可用高 176px → 仅容纳约 10 字；而实际书名
+   13–62 字。竖排下 overflow:hidden + text-overflow:clip 会把长书名
+   **首尾同时裁掉**且无省略号（Chrome 的 ellipsis 在 vertical-rl 下不可靠），
+   读起来像两个书名撞在一起。
+   对策：① 字距 3px → 1.5px（13.5px 字号下 3px 相当于 +22% 字距，偏松）；
+   ② 书脊改「内容驱动宽度」——min-width:max-content 让每根书脊按书名
+   实际长度撑开，clamp 在 56–80px。
+   取舍说明：max-content 会被 200px 高度约束「截断」，故同一行内长书名
+   会收敛到同一宽度，宽窄差异主要来自**行与行之间**；这反而让书架更像
+   真书架（书有厚薄），且避免 143–157px 那种把一行挤到只剩 6 本的膨胀。
+   余量：24 字以上仍会裁切，但可见字数由 10 提升到 15–16，且不再出现
+   「首尾都断」的观感。彻底解法（按标题实测宽度逐根定厚）需改 app.js
+   模板，本文件不做——保住 sync 可重跑的纪律。 */
+.spine-mode .spine-row .doc-card {
+  width: auto;
+  min-width: 56px;
+  max-width: 80px;
+  flex: 0 0 auto;
+}
+.spine-mode .spine-name { letter-spacing: 1.5px; }
+
 /* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出。
    先给 vh 兜底（老 WebView 无 dvh），支持 dvh 的浏览器再覆盖 */
 body,
@@ -208,7 +257,6 @@ body,
    关键：浏览器 pan-y 会在拖选带纵向分量时启动滚动并发 pointercancel 杀死
    拖选（真机实测）；交出 pan 后，快滑滚动/双指滚动由 link.js 自实现 */
 body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; touch-action: none; }
-.ink-text-layer .lnk-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
 
 /* 选词托盘：浮在预览底栏上方居中（同墨迹工具栏位）。注意 [hidden] 必须显式
    压回 display:none——设置 display:flex 后 hidden 属性的 UA 规则会失效 */
@@ -221,9 +269,14 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .link-tray[hidden] { display: none; }
 
-/* 自由拖选（§6.6）：进行中/待确认的高亮——蓝底虚线，介于选中态（蓝紫）与
-   链接态（琥珀）之间的第三种视觉 */
-.ink-text-layer .lnk-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
+/* 按行统一带（拍板 2026-10-07）：拖选（蓝）/入选（紫）的等高高亮带——
+   容器插在文本层首部，同为绝对定位按 DOM 序绘制，垫在文本项与琥珀标记之下。
+   带高 = 该行最高文本项 ×1.12（几何分组见 bands.mjs），跨字号混排不再随
+   字体盒高低错落。位置/尺寸由 renderBands 按视觉坐标内联给出 */
+.lnk-bands { position: absolute; inset: 0; pointer-events: none; }
+.lnk-band { position: absolute; border-radius: 3px; }
+.lnk-band-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
+.lnk-band-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
 
 /* 拖选确认小条（§6.6 修订）：小圆形图标按钮组胶囊——无文字预览（页面高亮
    即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分。
