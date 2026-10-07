@@ -388,30 +388,21 @@ function renderDocList () {
     return
   }
 
-  $('#docGrid').innerHTML = docs.map((d, i) => {
-    const cached = cache.get(d.id)
-    // 阅读进度：封面墙显示右上角进度环，书脊模式显示底部细进度条
-    const pr = d.progress
-    const pct = pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
-    // 全文命中标记：标题/文件名没中但正文命中时提示首个命中页
-    const hitPage = nkw && !normText(d.title).includes(nkw) && !normText(d.fileName).includes(nkw)
-      ? textHit(d.id, nkw)
-      : 0
+  // 书脊陈列：按分类分组（每个分类一行，组内放不下自动换行）
+  if (sessionView === 'spine') {
+    renderSpineShelves(docs, entrance)
+  } else {
+    $('#docGrid').innerHTML = docs.map((d, i) => {
+      const cached = cache.get(d.id)
+      // 阅读进度：封面墙显示右上角进度环
+      const pr = d.progress
+      const pct = pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
+      // 全文命中标记：标题/文件名没中但正文命中时提示首个命中页
+      const hitPage = nkw && !normText(d.title).includes(nkw) && !normText(d.fileName).includes(nkw)
+        ? textHit(d.id, nkw)
+        : 0
 
-    if (sessionView === 'spine') {
-      // 书脊陈列：纯浏览视图（点击预览、拖拽归档仍可用）
       return `
-    <div class="doc-card${entrance ? ' enter' : ''}" data-id="${d.id}" draggable="true" style="--i:${i}">
-      <div class="doc-cover" data-action="preview-doc" data-id="${d.id}"
-           title="${esc(d.title)}${pct ? `（读到 ${pct}%）` : ''} · 点击预览">
-        <img class="doc-cover-img" data-doc-id="${d.id}" alt="" ${cached ? `src="${cached}"` : ''}/>
-        <span class="spine-name">${esc(d.title)}</span>
-        ${pct ? `<i class="spine-progress${pct >= 100 ? ' done' : ''}" style="--p:${pct}"></i>` : ''}
-      </div>
-    </div>`
-    }
-
-    return `
     <div class="doc-card${entrance ? ' enter' : ''}" data-id="${d.id}" draggable="true" style="--i:${i}">
       <div class="doc-cover" data-action="preview-doc" data-id="${d.id}" title="点击预览">
         ${batchMode ? `<span class="doc-check${batchSelected.has(d.id) ? ' on' : ''}"></span>` : ''}
@@ -434,13 +425,63 @@ function renderDocList () {
         </div>
       </div>
     </div>`
-  }).join('')
+    }).join('')
+  }
 
-  // 没有缓存的封面交给观察器：滚动可见时才读取/生成
+  // 没有缓存的封面交给观察器：滚动可见时才读取/生成（三个陈列视图共用）
   for (const img of document.querySelectorAll('.doc-cover-img:not([src])')) {
     const doc = data.documents.find(x => x.id === img.dataset.docId)
     if (doc) coverObserver.observe(img)
   }
+}
+
+/* ================= 书脊视图：分类分组陈列 =================
+   每个分类独占一行，组内 flex-wrap——一行放不下的书脊自动排进下一行，
+   不再把所有分类挤作一排。组序与侧栏分类树一致（父前子后），
+   「未分类」收尾；只列有书的分类，空分类没有书脊可排。 */
+
+function renderSpineShelves (docs, entrance) {
+  const cache = coverCache()
+  // 【移动补丁】分组口径换用 spine-group.mjs（顶级归并/搜索与单组平铺/悬空 id 归未分类）
+  const spine = window.__spineGroups
+    ? window.__spineGroups(docs, data.categories, normText(filters.keyword) || '')
+    : { flat: true, groups: [{ key: null, name: '', docs: [] }] }
+  const groups = spine.groups
+
+  // 组头圆点与书架书堆、足迹环形图同源：按顶级分类顺序取色，子分类继承顶级色
+  const topIndex = new Map(data.categories.filter(c => !c.parentId).map((c, i) => [c.id, i]))
+  const colorOf = (catId) => {
+    if (!catId) return MISC_COLOR
+    let c = data.categories.find(x => x.id === catId)
+    while (c && c.parentId) c = data.categories.find(x => x.id === c.parentId)
+    return c && topIndex.has(c.id) ? PALETTE[topIndex.get(c.id) % PALETTE.length] : MISC_COLOR
+  }
+
+  let i = 0 // 入场 stagger 序号跨组连续：整墙书脊按序错峰入场
+  $('#docGrid').innerHTML = groups.map(g => `
+    <section class="spine-group">
+      ${spine.flat ? '' : `<div class="spine-group-head" data-action="filter-cat" data-id="${g.key || 'none'}" title="只看该分类">
+        <span class="pile-dot" style="background:${colorOf(g.key)}"></span>
+        <span class="spine-group-name">${esc(g.name)}</span>
+        <span class="pile-badge">${g.docs.length} 本</span>
+      </div>`}
+      <div class="spine-row">${
+        g.docs.map(d => {
+          const cached = cache.get(d.id)
+          const pr = d.progress
+          const pct = pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
+          return `
+        <div class="doc-card${entrance ? ' enter' : ''}" data-id="${d.id}" draggable="true" style="--i:${i++}">
+          <div class="doc-cover" data-action="preview-doc" data-id="${d.id}"
+               title="${esc(d.title)}${pct ? `（读到 ${pct}%）` : ''} · 点击预览">
+            <img class="doc-cover-img" data-doc-id="${d.id}" alt="" ${cached ? `src="${cached}"` : ''}/>
+            <span class="spine-name">${esc(d.title)}</span>
+            ${pct ? `<i class="spine-progress${pct >= 100 ? ' done' : ''}" style="--p:${pct}"></i>` : ''}
+          </div>
+        </div>`
+        }).join('')
+      }</div>
+    </section>`).join('')
 }
 
 /* ================= 顶栏：视图与主题切换 ================= */

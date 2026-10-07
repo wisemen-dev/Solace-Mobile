@@ -109,12 +109,20 @@ SolaceMobile/
 │   ├── js/mobile/ink.js   # 手写标注层：双 canvas 墨迹 + perfect-freehand
 │   ├── js/mobile/link.js  # 摘录链接：文本层 + 选词 + 标记 + 记录编辑器
 │   ├── js/mobile/link-text.mjs / link-md.mjs  # 切分映射 / 记录 md 纯函数（可单测）
+│   ├── js/mobile/tools.js # 预览顶栏阅读工具簇（标注/笔记/链接三钮收拢）
+│   ├── js/mobile/chapter-prompt.{mjs,js}  # 跨章总结提醒（纯函数 + DOM 层）
+│   ├── js/mobile/doc-info.js / doc-info-stats.mjs  # 图书简介卡（拦截 + 统计纯函数）
+│   ├── js/mobile/spine-group.mjs / spine-group.js  # 书脊分组口径（纯函数 + 钩子注册）
 │   └── js/mobile/page-jump.mjs  # #pageJump 合成 Enter 助手（ink/link 共用）
 ├── www/             # Capacitor webDir：桌面渲染层 + 补丁 + vendor 资产
 ├── android/         # Capacitor Android 工程（含 SolaceNativePlugin.java）
 ├── test/            # node:test 单测：数据层（内存 fs）+ 界面回归（DOM/原生替身），纯 Node
 ├── scripts/         # sync-www / build-bridge / build-apk / install / push-library / cdp-eval
-└── docs/            # PORTING.md（移植文档）、ANNOTATION-DESIGN.md、EXCERPT-LINK-{DESIGN,PLAN}.md（设计/方案）、REVIEW-FIXES.md（审查修复记录）
+└── docs/            # PORTING.md（移植文档与补丁清单）、各功能设计书：
+                     #   ANNOTATION-DESIGN（手写标注）、EXCERPT-LINK-{DESIGN,PLAN}（摘录链接）、
+                     #   TOOLS-CLUSTER-DESIGN（阅读工具簇）、READING-RECORDS-DESIGN（书内记录）、
+                     #   DOC-INFO-DESIGN（图书简介卡）、SPINE-GROUP-DESIGN（书脊分组）、
+                     #   REVIEW-FIXES.md（审查修复记录）
 ```
 
 ## 数据存放在哪里

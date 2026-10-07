@@ -731,3 +731,26 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   padding: 8px 11px;
 }
 #btnPreviewClose:hover { color: var(--text); border-color: transparent; }
+
+/* ---------- 书脊分组头（移动补丁，2026-10-07 拍板）----------
+   轻量文字行：隐去色点、徽标退掉胶囊底（纯次要色文字），无底色无边框
+   ——「无边的是内容」；组头可点（filter-cat 只看该分类），按压才浮现反馈。
+   分组本体（顶级归并/搜索与单组平铺）在 spine-group.mjs，见 app.js 补丁 */
+.spine-mode .spine-group-head .pile-dot { display: none; }
+.spine-mode .spine-group-name {
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+.spine-mode .spine-group-head .pile-badge {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+}
+.spine-mode .spine-group-head {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.spine-mode .spine-group-head:active .spine-group-name,
+.spine-mode .spine-group-head:active .pile-badge { color: var(--accent); }

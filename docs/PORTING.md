@@ -89,12 +89,19 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 1. 索引提取的 PDF 加载同上 URL 直读
 2. 预览打开时索引队列让路（同上，500ms 轮询）
 
-### app.js（5 处）
+### app.js（7 处）
 1. `open-doc` 动作：平板端直接开内置预览（无外部阅读器）
 2. `drop` 导入：平板端直接 return（无拖拽）
 3. 单删笔记确认文案：回收站 → 直接删除
 4. 批删笔记确认文案：同上
 5. 删除结果 toast：回收站字样改为平板端表述
+6. `renderSpineShelves` 分组计算整段换用 `window.__spineGroups` 钩子
+   （mobile-web spine-group.mjs，v0.6.0）：桌面按直接分类分组/搜索仍分组，
+   平板改为顶级归并、搜索与单组平铺、悬空 id 归未分类（四项拍板
+   2026-10-07，设计书 SPINE-GROUP-DESIGN.md）；钩子缺席属异常时序，
+   退化为空陈列显式暴露问题
+7. 书脊组头模板加 `filter-cat`（可点只看该分类）与 `spine.flat` 条件
+   （平铺时整段组头不渲染），同上决策
 
 ### settings.js（5 处）
 1. 监视文件夹显示名：平板端显示 SAF 目录名（watchFolderName）

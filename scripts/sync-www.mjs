@@ -276,7 +276,46 @@ patch('js/app.js', [
   // 平板端无回收站，文案如实
   ['同时删除这本书的全部笔记（移入系统回收站）', '同时删除这本书的全部笔记（直接删除，无回收站）'],
   ['同时删除所选书籍的全部笔记（移入系统回收站）', '同时删除所选书籍的全部笔记（直接删除，无回收站）'],
-  ['（系统回收站不可用）', '（平板端无回收站）']
+  ['（系统回收站不可用）', '（平板端无回收站）'],
+  // 书脊分组（四项拍板 2026-10-07，设计书 docs/SPINE-GROUP-DESIGN.md）：
+  // 桌面按直接分类分组、组头纯展示、搜索仍分组；平板改为 mobile-web
+  // spine-group.mjs 的口径——顶级归并、搜索与单组平铺、悬空 id 归未分类。
+  // 钩子 window.__spineGroups 由 mobile.js（先于 app.js 执行）注册；缺席属
+  // 异常时序，退化为空陈列：显式暴露问题优于按桌面口径静默错排
+  [`  const cache = coverCache()
+  const byCat = new Map()
+  for (const d of docs) {
+    const key = d.categoryId || null
+    if (!byCat.has(key)) byCat.set(key, [])
+    byCat.get(key).push(d)
+  }
+  const groups = orderedCategories(false)
+    .filter(({ cat }) => byCat.has(cat.id))
+    .map(({ cat }) => ({ key: cat.id, name: cat.name, docs: byCat.get(cat.id) }))
+  // 兜底：指向已不存在分类的书（元数据损坏）不从书脊视图凭空消失
+  const known = new Set(groups.map(g => g.key))
+  for (const [key, ds] of byCat) {
+    if (key && !known.has(key)) groups.push({ key, name: '未知', docs: ds })
+  }
+  if (byCat.has(null)) groups.push({ key: null, name: '未分类', docs: byCat.get(null) })`,
+   `  const cache = coverCache()
+  // 【移动补丁】分组口径换用 spine-group.mjs（顶级归并/搜索与单组平铺/悬空 id 归未分类）
+  const spine = window.__spineGroups
+    ? window.__spineGroups(docs, data.categories, normText(filters.keyword) || '')
+    : { flat: true, groups: [{ key: null, name: '', docs: [] }] }
+  const groups = spine.groups`],
+  // 书脊组头：平板可点（复用 filter-cat 侧栏筛选流，只看该分类，书脊视图
+  // 不切走）；搜索/单组平铺时不渲染组头（spine.flat 由上一补丁的分组钩子给出）
+  [`      <div class="spine-group-head">
+        <span class="pile-dot" style="background:\${colorOf(g.key)}"></span>
+        <span class="spine-group-name">\${esc(g.name)}</span>
+        <span class="pile-badge">\${g.docs.length} 本</span>
+      </div>`,
+   `      \${spine.flat ? '' : \`<div class="spine-group-head" data-action="filter-cat" data-id="\${g.key || 'none'}" title="只看该分类">
+        <span class="pile-dot" style="background:\${colorOf(g.key)}"></span>
+        <span class="spine-group-name">\${esc(g.name)}</span>
+        <span class="pile-badge">\${g.docs.length} 本</span>
+      </div>\`}`]
 ])
 
 patch('js/settings.js', [
@@ -441,7 +480,7 @@ btnNew.addEventListener('click', async () => {`],
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×10, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×8（共40）')
+console.log('补丁：index.html×10, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×7, settings.js×5, notespanel.js×8（共42）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

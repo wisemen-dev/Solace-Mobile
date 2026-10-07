@@ -8,6 +8,7 @@ import './link.js'
 import './tools.js'
 import './chapter-prompt.js'
 import './doc-info.js'
+import './spine-group.js'
 
 const $ = (sel) => document.querySelector(sel)
 
