@@ -319,9 +319,21 @@ async function refreshTextHits (kw) {
 /* ================= 主区：陈列视图 =================
    grid 封面墙 / spine 书脊 / shelf 书架（分类书堆总览，参考 Lumin） */
 
-// 分类分布图表与书架书堆共用的调色板（按顶级分类顺序循环取色）
+// 分类调色板：按顶级分类顺序循环取色。书架书堆与书脊组头经
+// topCategoryColor 取色（子分类继承顶级色）；分类分布图表按自己的
+// 排序直接索引
 const PALETTE = ['#6ea8fe', '#7bd88f', '#ffd166', '#ef8354', '#c792ea', '#4dd0e1', '#f06292', '#aed581', '#ffb74d']
 const MISC_COLOR = '#5b6672'
+
+// 未分类与悬空引用（元数据损坏指向已删分类）用补色；
+// 其余沿 parentId 上溯到顶级分类后按其在顶级序列中的位置取色
+function topCategoryColor (catId) {
+  if (!catId) return MISC_COLOR
+  const topIndex = new Map(data.categories.filter(c => !c.parentId).map((c, i) => [c.id, i]))
+  let c = data.categories.find(x => x.id === catId)
+  while (c && c.parentId) c = data.categories.find(x => x.id === c.parentId)
+  return c ? PALETTE[topIndex.get(c.id) % PALETTE.length] : MISC_COLOR
+}
 
 function visibleDocs () {
   const kw = normText(filters.keyword)
@@ -337,6 +349,13 @@ function visibleDocs () {
     if (kw && !normText(d.title).includes(kw) && !normText(d.fileName).includes(kw) && !textHit(d.id, kw)) return false
     return true
   })
+}
+
+// 阅读进度百分比（0–100）：无进度记录或页数异常时记 0。
+// 封面墙右上角进度环与书脊底部细进度条共用一套口径
+function progressPct (d) {
+  const pr = d.progress
+  return pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
 }
 
 function renderDocList () {
@@ -394,9 +413,9 @@ function renderDocList () {
   } else {
     $('#docGrid').innerHTML = docs.map((d, i) => {
       const cached = cache.get(d.id)
-      // 阅读进度：封面墙显示右上角进度环
+      // 阅读进度：封面墙显示右上角进度环（进度环 title 还需要 pr 的原始页码）
       const pr = d.progress
-      const pct = pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
+      const pct = progressPct(d)
       // 全文命中标记：标题/文件名没中但正文命中时提示首个命中页
       const hitPage = nkw && !normText(d.title).includes(nkw) && !normText(d.fileName).includes(nkw)
         ? textHit(d.id, nkw)
@@ -448,28 +467,18 @@ function renderSpineShelves (docs, entrance) {
     : { flat: true, groups: [{ key: null, name: '', docs: [] }] }
   const groups = spine.groups
 
-  // 组头圆点与书架书堆、足迹环形图同源：按顶级分类顺序取色，子分类继承顶级色
-  const topIndex = new Map(data.categories.filter(c => !c.parentId).map((c, i) => [c.id, i]))
-  const colorOf = (catId) => {
-    if (!catId) return MISC_COLOR
-    let c = data.categories.find(x => x.id === catId)
-    while (c && c.parentId) c = data.categories.find(x => x.id === c.parentId)
-    return c && topIndex.has(c.id) ? PALETTE[topIndex.get(c.id) % PALETTE.length] : MISC_COLOR
-  }
-
   let i = 0 // 入场 stagger 序号跨组连续：整墙书脊按序错峰入场
   $('#docGrid').innerHTML = groups.map(g => `
     <section class="spine-group">
       ${spine.flat ? '' : `<div class="spine-group-head" data-action="filter-cat" data-id="${g.key || 'none'}" title="只看该分类">
-        <span class="pile-dot" style="background:${colorOf(g.key)}"></span>
+        <span class="pile-dot" style="background:${topCategoryColor(g.key)}"></span>
         <span class="spine-group-name">${esc(g.name)}</span>
         <span class="pile-badge">${g.docs.length} 本</span>
       </div>`}
       <div class="spine-row">${
         g.docs.map(d => {
           const cached = cache.get(d.id)
-          const pr = d.progress
-          const pct = pr && pr.totalPages >= 1 ? Math.min(100, Math.round(pr.page / pr.totalPages * 100)) : 0
+          const pct = progressPct(d)
           return `
         <div class="doc-card${entrance ? ' enter' : ''}" data-id="${d.id}" draggable="true" style="--i:${i++}">
           <div class="doc-cover" data-action="preview-doc" data-id="${d.id}"
@@ -563,10 +572,10 @@ const PILE_STACKS = {
 function renderPileShelf (entrance) {
   const topCats = data.categories.filter(c => !c.parentId)
   const counts = categoryCounts()
-  const piles = topCats.map((c, i) => ({
+  const piles = topCats.map(c => ({
     key: c.id,
     name: c.name,
-    color: PALETTE[i % PALETTE.length],
+    color: topCategoryColor(c.id),
     count: counts.counts[c.id] || 0,
     books: docsInCategory(c.id).slice(0, 4)
   }))

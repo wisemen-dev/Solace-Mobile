@@ -62,6 +62,59 @@ button,
 }
 .spine-mode .spine-name { letter-spacing: 1.5px; }
 
+/* ---------- 触控目标 44px（平板评审修复）----------
+   实测：真机视口 1120 CSS px 落在 320dpi 面板上，1 CSS px ≈ 0.16mm，
+   于是桌面尺寸的控件在平板上只有一半大小——顶栏按钮高 27px（≈4.3mm）、
+   侧栏分类行 31px（≈4.9mm）、搜索框 33px，而触屏最小可靠目标约 44px
+   （≈7mm）。桌面端是鼠标操作，44px 不适用，故本组规则只落在移动适配层。
+   用 min-height 而非加大 padding：命中区由高度保证，内边距留给视觉呼吸，
+   两者不互相牵制；flex 居中保证文字与图标垂直居中 */
+.side-list li {
+  min-height: 44px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+/* 分区标题的「＋」：34×27 → 44×44。它是新建分类/标签/收藏夹的唯一入口，
+   又紧贴分区标题，是最容易被指尖错过的一类目标 */
+.side-head .btn-ghost {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 16px;
+}
+/* 搜索框与顶栏按钮。窄屏（≤899.98px）下已有 7px/12px 的内距设定，
+   此处只抬高度；宽屏（横屏平板，走桌面双栏）连内距一并给足 */
+.search {
+  min-height: 44px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+@media (min-width: 900px) {
+  /* 顶栏按钮：只抬高度到 44，不设 min-width。
+     真机实测教训：给 .btn-ghost 加 min-width:44px 会把「足迹」「设置」
+     这类 2 字钮撑宽，顶栏 11 个控件在 1120px 下放不进一行 → 换行成两行
+     （顶栏高 73px），且搜索框被挤到 221px。高度 44 已满足触屏命中的主要
+     维度，宽度交给文字自然决定（实测 37–56px），一行放得下 */
+  .topbar .btn-ghost {
+    min-height: 44px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .topbar { gap: 10px; }
+  /* 搜索框在宽屏下不再压缩到不可用 */
+  .search { flex: 1 1 320px; min-width: 200px; }
+}
+
+/* 底栏缩放控件（桌面端新增，见 style.css 的 .preview-zoom）：随预览底栏
+   一同放大到 44px，与既有的翻页钮同规格；状态钮要能容下「适应高度」四字 */
+.preview-zoom { gap: 8px; }
+.preview-zoom .btn-ghost { padding: 11px 14px; font-size: 14px; min-width: 44px; }
+.preview-zoom .zoom-state { min-width: 76px; }
+
 /* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出。
    先给 vh 兜底（老 WebView 无 dvh），支持 dvh 的浏览器再覆盖 */
 body,

@@ -285,7 +285,8 @@ patch('js/app.js', [
   [`  const cache = coverCache()
   const byCat = new Map()
   for (const d of docs) {
-    const key = d.categoryId || null
+    // 未分类口径与 visibleDocs 一致（?? null：空串不算未分类）
+    const key = d.categoryId ?? null
     if (!byCat.has(key)) byCat.set(key, [])
     byCat.get(key).push(d)
   }
@@ -306,13 +307,15 @@ patch('js/app.js', [
   const groups = spine.groups`],
   // 书脊组头：平板可点（复用 filter-cat 侧栏筛选流，只看该分类，书脊视图
   // 不切走）；搜索/单组平铺时不渲染组头（spine.flat 由上一补丁的分组钩子给出）
+  // 注：色点取色函数在桌面 v0.16.0 由 colorOf 更名为 topCategoryColor，
+  // 锚点与替换串一并跟上（两侧都用同一个函数名，平板口径不变）
   [`      <div class="spine-group-head">
-        <span class="pile-dot" style="background:\${colorOf(g.key)}"></span>
+        <span class="pile-dot" style="background:\${topCategoryColor(g.key)}"></span>
         <span class="spine-group-name">\${esc(g.name)}</span>
         <span class="pile-badge">\${g.docs.length} 本</span>
       </div>`,
    `      \${spine.flat ? '' : \`<div class="spine-group-head" data-action="filter-cat" data-id="\${g.key || 'none'}" title="只看该分类">
-        <span class="pile-dot" style="background:\${colorOf(g.key)}"></span>
+        <span class="pile-dot" style="background:\${topCategoryColor(g.key)}"></span>
         <span class="spine-group-name">\${esc(g.name)}</span>
         <span class="pile-badge">\${g.docs.length} 本</span>
       </div>\`}`]
