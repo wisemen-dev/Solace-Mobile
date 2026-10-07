@@ -228,8 +228,13 @@ body,
 }
 
 /* ---------- 宽屏（横屏平板）：桌面双栏布局 ---------- */
+/* 抽屉把手在此屏宽下必须隐藏（横屏走常驻双栏，侧栏 position:static、无抽屉）。
+   写法用**重复类名**把特异性抬到 (0,2,0)——因为同一份文件的平板触控目标
+   规则 `.topbar .btn-ghost { display: inline-flex }` 也是 (0,2,0)，而它排在
+   后面会赢；抬高这一条后由源码顺序取胜，无需 !important。
+   真机踩坑：曾漏了这一点，横屏平板上「☰」被放出来（36×44 且点了没反应） */
 @media (min-width: 900px) {
-  .btn-drawer { display: none; }
+  .btn-drawer.btn-drawer { display: none; }
 }
 
 /* ---------- 预览：触屏控制条加大 ---------- */
