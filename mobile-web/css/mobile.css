@@ -115,6 +115,33 @@ button,
 .preview-zoom .btn-ghost { padding: 11px 14px; font-size: 14px; min-width: 44px; }
 .preview-zoom .zoom-state { min-width: 76px; }
 
+/* ---------- 浮层与功能色令牌（平板评审 3.2）----------
+   移动端有一批「不随主题走」的浮层与功能色：它们压在 PDF 页面上（不属于
+   主题色域），因此桌面 style.css 里没有对应令牌——实测这些色在桌面源中
+   出现 0 次（桌面用 Typora 与外部阅读器，没有这些浮层）。故令牌就地定义
+   在移动层，桌面零影响。
+   收敛对象是**重复**：同一支深色浮层在 5 处各自手写、同一支动作蓝 2 处、
+   危险红 3 处写法不一——这类散落最容易在后续调色时改漏一处。 */
+:root {
+  /* 深色浮层（选词托盘 / 墨迹工具栏 / 色板弹层）：压在白纸上，故不跟主题 */
+  --overlay-dark: rgba(18, 22, 27, 0.95);
+  --overlay-dark-line: rgba(255, 255, 255, 0.14);
+  --on-dark: #e8edf2;
+  /* 浅色浮层直接复用主题的 --panel / --line（本身已随主题），
+     这里只补「浅底上的深字」与动作色 */
+  --on-light: #1f2733;
+  /* 动作蓝：拖选确认条主钮与章节提醒的「写总结」。原为 #3b7ddd，与 paper
+     主题的 accent（#a9682f）不是同一支——浮层压在 PDF 上，沿用主题 accent
+     会在暖色主题下与摘录琥珀混淆，故独立一支冷色 */
+  --action: #3b7ddd;
+  --danger-flat: #d64545;
+  /* 拾色器笔红（墨迹工具）：用户自选颜色，不跟主题 */
+  --ink-red: #e03131;
+  /* 次级灰字：原 #8a94a0 在深色浮层上约 3.4:1、在卡片底上约 3:1，
+     均低于 AA——压深一档 */
+  --muted-soft: #6f7987;
+}
+
 /* 动态视口高度：Android 系统栏显隐时 100vh 会留白/溢出。
    先给 vh 兜底（老 WebView 无 dvh），支持 dvh 的浏览器再覆盖 */
 body,
@@ -317,8 +344,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%);
   display: flex; align-items: center; gap: 10px; z-index: 6;
   padding: 8px 12px; border-radius: 12px;
-  background: rgba(18, 22, 27, 0.95); border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #e8edf2; font-size: 13px;
+  background: var(--overlay-dark); border: 1px solid var(--overlay-dark-line);
+  color: var(--on-dark); font-size: 13px;
 }
 .link-tray[hidden] { display: none; }
 
@@ -347,9 +374,9 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   width: 34px; height: 34px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   border: 1px solid rgba(0, 0, 0, 0.16); background: transparent;
-  color: #1f2733; font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
+  color: var(--on-light); font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
 }
-.link-drag-bar button.primary { background: #3b7ddd; border-color: #3b7ddd; color: #fff; }
+.link-drag-bar button.primary { background: var(--action); border-color: var(--action); color: #fff; }
 
 /* 记录编辑器的摘录 chips */
 .link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
@@ -360,7 +387,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .link-chip b { color: #b26a00; font-weight: 600; }
 .chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
-.link-chip-degraded { font-size: 12px; color: #8a94a0; }
+.link-chip-degraded { font-size: 12px; color: var(--muted-soft); }
 
 /* 记录查看器（§6.7，link.js 懒建 #linkViewDialog）：批注短小精悍——容器
    紧贴内容，操作按钮纯图标（🗑 ＋ ✎）。复用 note-editor-dialog 的骨架与
@@ -408,12 +435,12 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   user-select: text;
   -webkit-user-select: text;
 }
-.link-view-body:empty::before { content: '（无正文）'; color: #8a94a0; }
+.link-view-body:empty::before { content: '（无正文）'; color: var(--muted-soft); }
 .link-view-chip { cursor: pointer; }
 .link-view-chip:active { background: rgba(245, 159, 0, 0.34); }
 .link-view-chip .chip-go { font-style: normal; color: #b26a00; padding-left: 2px; }
 /* 删除（危险动作）：与普通 ghost 按钮拉开颜色 */
-#btnLinkViewDelete { color: #d64545; }
+#btnLinkViewDelete { color: var(--danger-flat); }
 
 /* 摘录编辑器（#linkRecordDialog）同步紧凑化：批注是短文本速记，不需要
    普通笔记编辑器（720×86vh）的体量——宽度与查看器一致、高度自适应；
@@ -455,7 +482,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(0, 0, 0, 0.12);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-  color: #1f2733; font-size: 13px;
+  color: var(--on-light); font-size: 13px;
 }
 .chapter-prompt[hidden] { display: none; }
 .chapter-prompt .cp-text { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -463,11 +490,11 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   height: 34px; border-radius: 999px;
   display: flex; align-items: center; justify-content: center; gap: 4px;
   border: 1px solid rgba(0, 0, 0, 0.16); background: transparent;
-  color: #1f2733; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 10px;
+  color: var(--on-light); font-size: 14px; line-height: 1; cursor: pointer; padding: 0 10px;
   -webkit-tap-highlight-color: transparent;
 }
 .chapter-prompt button.cp-close { width: 34px; padding: 0; border-radius: 50%; font-size: 15px; }
-.chapter-prompt button.cp-write { background: #3b7ddd; border-color: #3b7ddd; color: #fff; font-size: 13px; }
+.chapter-prompt button.cp-write { background: var(--action); border-color: var(--action); color: #fff; font-size: 13px; }
 .chapter-prompt button:active { transform: scale(0.94); }
 
 /* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
@@ -483,8 +510,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  background: rgba(18, 22, 27, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--overlay-dark);
+  border: 1px solid var(--overlay-dark-line);
   border-radius: 14px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
@@ -492,7 +519,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .ink-btn {
   border: none;
   background: transparent;
-  color: #e8edf2;
+  color: var(--on-dark);
   font-size: 14px;
   font-family: inherit;
   padding: 8px 12px;
@@ -502,7 +529,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .ink-btn:active { background: rgba(255, 255, 255, 0.12); }
 .ink-btn.active {
-  background: var(--accent, #e03131);
+  background: var(--accent, var(--ink-red));
   color: #fff;
 }
 .ink-btn + .ink-btn { margin-left: 2px; }
@@ -533,8 +560,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: rgba(18, 22, 27, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--overlay-dark);
+  border: 1px solid var(--overlay-dark-line);
   border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
@@ -560,7 +587,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   cursor: pointer;
 }
 .ink-width.on { border-color: #fff; background: rgba(255, 255, 255, 0.12); }
-.ink-width i { display: block; width: 22px; background: #e8edf2; border-radius: 3px; }
+.ink-width i { display: block; width: 22px; background: var(--on-dark); border-radius: 3px; }
 /* 橡皮尺寸档：圆点（vs 笔粗细的横条），宽高由内联样式按档给出 */
 .ink-width .ink-erase-dot { border-radius: 50%; }
 
@@ -649,7 +676,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   -webkit-tap-highlight-color: transparent;
 }
 .doc-info-ico:active { transform: scale(0.92); }
-.doc-info-del { color: #d64545; }
+.doc-info-del { color: var(--danger-flat); }
 
 /* ---------- 阅读工具簇（tools.js；设计书 docs/TOOLS-CLUSTER-DESIGN.md） ----------
    标注/笔记/链接收进一条三条杠圆钮，点开向下展开三个纯图标圆钮。
