@@ -5,6 +5,9 @@
 import { askConfirm } from '../dialog.js'
 import './ink.js'
 import './link.js'
+import './tools.js'
+import './chapter-prompt.js'
+import './doc-info.js'
 
 const $ = (sel) => document.querySelector(sel)
 

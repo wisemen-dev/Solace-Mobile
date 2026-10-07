@@ -22,10 +22,19 @@ export function createLinks ({ fs }) {
     return name
   }
 
+  function validateSummary (s) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('非法章锚点')
+    if (!Number.isInteger(s.page) || s.page < 1) throw new Error('非法章锚点页码')
+    if (typeof s.chapter !== 'string' || !s.chapter.trim()) throw new Error('非法章名')
+  }
+
   function validateEntry (file, entry) {
     checkFile(file)
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('非法锚点条目')
-    if (!Array.isArray(entry.excerpts) || !entry.excerpts.length) throw new Error('锚点条目需至少一处摘录')
+    if (!Array.isArray(entry.excerpts)) throw new Error('非法摘录表')
+    // 章节总结条目（v2，READING-RECORDS-DESIGN §7.2）：零摘录 + 章锚点合法
+    if (entry.summary != null) validateSummary(entry.summary)
+    if (!entry.excerpts.length && !entry.summary) throw new Error('锚点条目需至少一处摘录或章锚点')
     for (const e of entry.excerpts) {
       if (!e || typeof e !== 'object') throw new Error('非法摘录')
       if (!Number.isInteger(e.page) || e.page < 1) throw new Error('非法摘录页码')
@@ -35,16 +44,22 @@ export function createLinks ({ fs }) {
         throw new Error('非法定位提示')
       }
     }
+    // body0：记录正文首行的显示快照（列表行内容优先用，免逐文件 IO）。
+    // 是侧车对 .md 的镜像冗余，桌面手改正文后会陈旧——下次平板保存即刷新
+    if (entry.body0 != null && (typeof entry.body0 !== 'string' || entry.body0.length > 80)) {
+      throw new Error('非法正文快照')
+    }
   }
 
   function validate (data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('非法链接数据')
-    if (data.version !== 1) throw new Error('不支持的链接数据版本')
+    // v1（仅摘录）照读兼容；写侧统一产 v2
+    if (data.version !== 1 && data.version !== 2) throw new Error('不支持的链接数据版本')
     if (!data.records || typeof data.records !== 'object' || Array.isArray(data.records)) throw new Error('非法记录表')
     for (const [file, entry] of Object.entries(data.records)) validateEntry(file, entry)
   }
 
-  const emptyData = () => ({ version: 1, records: {} })
+  const emptyData = () => ({ version: 2, records: {} })
 
   // 读+校验（损坏 → 留档 + 空回退 + notice，共用实现见 sidecar-json）
   function loadValidated (docId) {
@@ -97,8 +112,9 @@ export function createLinks ({ fs }) {
   async function writeLocked (docId, data) {
     const p = docFile(docId)
     const records = {}
+    // 摘录条目须有摘录；总结条目（零摘录 + 章锚点）保留（v2 §7.2）
     for (const [file, entry] of Object.entries(data.records)) {
-      if (entry.excerpts.length) records[file] = entry
+      if (entry.excerpts.length || entry.summary) records[file] = entry
     }
     if (!Object.keys(records).length) {
       // 空表删文件而非留空壳（与「不存在 = 没有摘录」语义对齐）。删除失败必须
@@ -109,7 +125,7 @@ export function createLinks ({ fs }) {
       return true
     }
     await fs.mkdirp('links')
-    await fs.writeFileAtomicText(p, JSON.stringify({ version: 1, records }))
+    await fs.writeFileAtomicText(p, JSON.stringify({ version: 2, records }))
     return true
   }
 

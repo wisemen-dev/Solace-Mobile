@@ -106,9 +106,32 @@ patch('index.html', [
   // 桥（经典脚本，同步执行，先于一切模块）+ 移动端适配模块 + 原有 app.js
   ['  <script type="module" src="js/app.js"></script>',
    '  <script src="vendor/solace-bridge.js"></script>\n  <script type="module" src="js/mobile/mobile.js"></script>\n  <script type="module" src="js/app.js"></script>'],
-  // 手写标注入口按钮（预览顶栏；ink.js 由 mobile.js 静态 import 挂载）
-  ['        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>',
-   '        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>\n        <button id="btnInk" class="btn-ghost" title="手写标注">✏️ 标注</button>\n        <button id="btnLink" class="btn-ghost" title="摘录链接">🔗 链接</button>'],
+  // 阅读工具簇（v0.5.2，设计书 docs/TOOLS-CLUSTER-DESIGN.md）：桌面端
+  // #btnNotes 行整替为「三条杠圆钮 + 展开菜单」。三功能钮 ID 不变
+  // （#btnInk/#btnLink/#btnNotes 移入簇内），preview.js/ink.js/link.js 的
+  // 绑定照旧生效；开合状态在 tools.js、样式与动效在 mobile.css 的 .tools-*。
+  // 菜单在触发器之前（z 低于触发器）：长出/没入都从触发器身后走
+  [`        <button id="btnNotes" class="btn-ghost" title="本书的阅读笔记">笔记</button>`,
+   `        <div id="toolsCluster" class="tools-cluster">
+          <div id="toolsMenu" class="tools-menu" role="menu" aria-label="阅读工具">
+            <div class="tools-slot" style="--tools-i: 0">
+              <button id="btnInk" class="tools-circle" role="menuitem" title="手写标注" aria-label="标注">
+                <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.2 3.4l3.4 3.4L7.4 16H4v-3.4z"/><path d="M11.4 5.2l3.4 3.4"/></svg>
+              </button>
+            </div>
+            <div class="tools-slot" style="--tools-i: 1">
+              <button id="btnLink" class="tools-circle" role="menuitem" title="摘录链接" aria-label="链接">
+                <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 7l1.4-1.4a2.1 2.1 0 0 1 3 3L13 10"/><path d="M10 13l-1.4 1.4a2.1 2.1 0 0 1-3-3L7 10"/><path d="M8.6 11.4l2.8-2.8"/></svg>
+              </button>
+            </div>
+            <div class="tools-slot" style="--tools-i: 2">
+              <button id="btnNotes" class="tools-circle" role="menuitem" title="本书的阅读笔记" aria-label="笔记">
+                <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5H6A1.5 1.5 0 0 0 4.5 4v12A1.5 1.5 0 0 0 6 17.5h8a1.5 1.5 0 0 0 1.5-1.5V6.5z"/><path d="M11.5 2.5v4h4"/><path d="M7.5 10.5h5M7.5 13.5h5"/></svg>
+              </button>
+            </div>
+          </div>
+          <button id="btnTools" class="tools-trigger" title="标注 / 笔记 / 链接" aria-label="阅读工具" aria-haspopup="true" aria-expanded="false" aria-controls="toolsMenu"><span class="tools-bar"></span><span class="tools-bar"></span><span class="tools-bar"></span></button>
+        </div>`],
   // 监视文件夹输入框：平板端只读（目录经 SAF 授权选择，不能手输 URI）
   ['<input id="setWatchFolder" class="field-input" type="text" placeholder="D:\\Downloads\\books" />',
    '<input id="setWatchFolder" class="field-input" type="text" readonly placeholder="点「浏览…」选择 Olib 的保存目录" />'],
@@ -175,7 +198,14 @@ patch('js/preview.js', [
   resetDocument()`,
    `  window.dispatchEvent(new CustomEvent('solace-ink-close'))
   const flushed = flushProgress()
-  resetDocument()`]
+  resetDocument()`],
+  // 章节总结（READING-RECORDS-DESIGN §8）：目录构建完成即派发大纲
+  // （全层级，chapter-prompt.mjs 自取 depth 0 为章）；无大纲不派发
+  [`  if (!flat.length) return
+  tocBtn.hidden = false`,
+   `  if (!flat.length) return
+  tocBtn.hidden = false
+  window.dispatchEvent(new CustomEvent('solace-outline', { detail: { items: flat.map(({ title, page, depth }) => ({ title, page, depth })) } }))`]
 ])
 
 patch('js/covers.js', [
@@ -361,16 +391,27 @@ patch('js/notespanel.js', [
 })
 
 btnNew.addEventListener('click', async () => {`],
-  // 摘录链接：记录行徽标 + 片段（link.js 挂在 window 上的钩子；无钩子/无锚点时为空）
+  // 记录行内容优先（READING-RECORDS-DESIGN §6）：__linkNoteMain 对摘录/总结
+  // 记录返回「主行=正文首行 + 次行=类型·章/页·时间」两行 HTML，普通笔记
+  // 返回 null 走桌面默认行。行必须在 .note-main（纵向列容器）内部——
+  // li 本身是横向 flex，插成兄弟节点会把 note-main 挤到 0 宽（真机实测）
   [`        <div class="note-main">
           <span class="note-name">\${esc(displayName(n.file))}</span>
           <span class="note-when">\${esc(fmtRel(n.mtime))}修改</span>
         </div>`,
    `        <div class="note-main">
-          <span class="note-name">\${esc(displayName(n.file))}</span>
-          <span class="note-when">\${esc(fmtRel(n.mtime))}修改</span>
-        </div>
-        <div class="note-link-row">\${window.__linkNoteRowExtra?.(n.file) || ''}</div>`],
+          \${window.__linkNoteMain?.(n.file, esc(fmtRel(n.mtime))) ||
+            \`<span class="note-name">\${esc(displayName(n.file))}</span>
+          <span class="note-when">\${esc(fmtRel(n.mtime))}修改</span>\`}
+        </div>`],
+  // 记录列表页序排序（§6）：锚点页升序（总结章起页/摘录首条页），自由
+  // 笔记尾部按时间；钩子缺席（缓存未就绪）原样返回
+  [`    const { notes } = await window.solace.listNotes(session.id, session.sessionId)
+    if (!isCurrentSession(session) || seq !== loadSeq) return
+    render(notes)`,
+   `    const { notes } = await window.solace.listNotes(session.id, session.sessionId)
+    if (!isCurrentSession(session) || seq !== loadSeq) return
+    render(window.__linkNoteSort?.(notes) || notes)`],
   // 摘录链接：「＋新建」改走选词模式（入口替换；旧笔记仍可读可改）
   [`btnNew.addEventListener('click', async () => {
   const session = captureSession()
@@ -400,7 +441,7 @@ btnNew.addEventListener('click', async () => {`],
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×10, pdfjs.js×4, preview.js×3, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×7（共38）')
+console.log('补丁：index.html×10, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×5, settings.js×5, notespanel.js×8（共40）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

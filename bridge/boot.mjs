@@ -322,6 +322,11 @@ App.addListener('backButton', () => {
     lastBackAt = 0
     return
   }
+  // 阅读工具簇展开：先收簇，不关预览（TOOLS-CLUSTER-DESIGN §6 路径 6）
+  if (window.__toolsClose?.()) {
+    lastBackAt = 0
+    return
+  }
   // 摘录链接选词模式：返回键 = 取消选词（清空选集退出）
   if (window.linkSelecting) {
     window.dispatchEvent(new CustomEvent('solace-link-cancel-request'))

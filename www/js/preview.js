@@ -294,6 +294,7 @@ async function loadOutline (pdfDoc, token) {
   }
   if (!flat.length) return
   tocBtn.hidden = false
+  window.dispatchEvent(new CustomEvent('solace-outline', { detail: { items: flat.map(({ title, page, depth }) => ({ title, page, depth })) } }))
   tocList.innerHTML = flat.map(it => `
     <li style="--d:${it.depth}">
       ${it.page

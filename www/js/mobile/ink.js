@@ -214,6 +214,7 @@ function setActive (on) {
   ensureDom()
   if (!layer) return
   active = on
+  document.body.classList.toggle('ink-active', on) // 工具簇光环的观察源（tools.js）
   toolbar.hidden = !on
   if (on) {
     if (lastLayout) {
@@ -252,6 +253,7 @@ window.addEventListener('solace-ink-layout', (e) => {
 window.addEventListener('solace-ink-close', async () => {
   if (!layer) return
   active = false
+  document.body.classList.remove('ink-active') // setActive 之外的直排复位，光环类不能漏同步
   layer.hidden = true
   layer.classList.remove('ink-passive')
   toolbar.hidden = true

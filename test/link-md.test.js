@@ -1,8 +1,8 @@
 // 记录 md 生成/解析（mobile-web/js/mobile/link-md.mjs）单测：往返一致、
-// 降级（普通笔记/被手改）、空摘录、摘录文本归一化
+// 降级（普通笔记/被手改）、空摘录、摘录文本归一化、章总结【总结】头（v2）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { generateRecordMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
+import { generateRecordMd, generateSummaryMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
 
 test('generate→parse 往返：摘录与正文逐字一致', () => {
   const excerpts = [
@@ -60,4 +60,43 @@ test('parse：CRLF 行尾（桌面 Typora 保存）不误判降级', () => {
   const r = parseRecordMd(md)
   assert.equal(r.ok, true)
   assert.equal(r.body, '正文第一行\r\n')
+})
+
+/* ---- 章总结（READING-RECORDS-DESIGN §7.1）---- */
+
+test('总结 generate→parse 往返：kind=summary 且正文逐字一致', () => {
+  const md = generateSummaryMd({ page: 45, chapter: '第 3 章 · 检索增强生成' }, '本章的主线是……\n\n第二段')
+  assert.equal(md, '> 【总结】第 45 页\n> 第 3 章 · 检索增强生成\n\n本章的主线是……\n\n第二段')
+  const r = parseRecordMd(md)
+  assert.equal(r.ok, true)
+  assert.equal(r.kind, 'summary')
+  assert.equal(r.body, '本章的主线是……\n\n第二段')
+})
+
+test('总结 generate：章名空白归一化、超长截 60、页码下取整兜底', () => {
+  const md = generateSummaryMd({ page: '45.7', chapter: '  两\n行  章 名 ' + '长'.repeat(80) }, '正文')
+  assert.ok(md.startsWith('> 【总结】第 45 页\n> 两 行 章 名 '))
+  assert.ok(md.split('\n')[1].length <= 62) // 「> 」+ 章名 60
+  assert.equal(parseRecordMd(generateSummaryMd({ page: 1, chapter: 'x' }, '')).kind, 'summary')
+})
+
+test('总结 parse：CRLF 行尾不误判降级', () => {
+  const md = '> 【总结】第 3 页\r\n> 第 3 章\r\n\r\n总结正文\r\n'
+  const r = parseRecordMd(md)
+  assert.equal(r.ok, true)
+  assert.equal(r.kind, 'summary')
+  assert.equal(r.body, '总结正文\r\n')
+})
+
+test('parse kind 区分：摘录记录 → excerpt，旧断言（ok/body）不受影响', () => {
+  const r = parseRecordMd(generateRecordMd([{ page: 2, text: '原文' }], '批注'))
+  assert.equal(r.kind, 'excerpt')
+  assert.equal(parseRecordMd('普通笔记').kind, undefined)
+})
+
+test('总结正文含引用行：头区后首个非 > 行起为正文（不吞内部空行）', () => {
+  const md = generateSummaryMd({ page: 9, chapter: '第 9 章' }, '\n> 总结里引用的句子\n收尾')
+  const r = parseRecordMd(md)
+  assert.equal(r.ok, true)
+  assert.equal(r.body, '\n> 总结里引用的句子\n收尾')
 })

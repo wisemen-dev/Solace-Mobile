@@ -9,7 +9,7 @@ import { askConfirm } from '../dialog.js'
 import { esc } from '../util.js'
 import { closeNotes } from '../notespanel.js'
 import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText, makeFreeSelection, stepEndpoint } from './link-text.mjs'
-import { generateRecordMd, parseRecordMd } from './link-md.mjs'
+import { generateRecordMd, generateSummaryMd, parseRecordMd } from './link-md.mjs'
 import { jumpPage } from './page-jump.mjs'
 
 let host = null            // #previewBody（滚动容器，style.css 已 position:relative）
@@ -738,13 +738,16 @@ function ensureViewer () {
   })
 }
 
-// 只读 chips：点按 = 关查看器 + 跳到该条摘录所在页并闪烁（定位语义同列表行）
+// 只读 chips：点按 = 关查看器 + 跳到该条摘录所在页并闪烁（定位语义同列表行）。
+// 章总结记录：唯一 chip = 章锚点，点按跳章首页（无正文标记可闪）
 function renderViewerChips () {
   const docLinks = linksCache.get(viewCtx.docId)
   const rec = docLinks && docLinks.records[viewCtx.file]
   const box = viewDlg.querySelector('#linkViewChips')
-  const chips = ((rec && rec.excerpts) || []).map((x, i) =>
-    `<span class="link-chip link-view-chip" data-k="${i}"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<i class="chip-go">›</i></span>`).join('')
+  const chips = rec && rec.summary
+    ? `<span class="link-chip link-view-chip" data-k="s"><b>第 ${rec.summary.page} 页</b> ${esc(rec.summary.chapter)}<i class="chip-go">›</i></span>`
+    : ((rec && rec.excerpts) || []).map((x, i) =>
+      `<span class="link-chip link-view-chip" data-k="${i}"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<i class="chip-go">›</i></span>`).join('')
   box.innerHTML = (viewCtx.degraded
     ? '<span class="link-chip-degraded">正文格式已被外部修改；编辑将按原样保存，追加仅入锚点</span>'
     : '') + chips
@@ -752,7 +755,9 @@ function renderViewerChips () {
     el.addEventListener('click', () => {
       if (!viewCtx) return
       const { docId, file } = viewCtx
+      const r = linksCache.get(docId) && linksCache.get(docId).records[file]
       viewDlg.close()
+      if (r && r.summary) { closeNotes(); jumpPage(r.summary.page); return }
       jumpToExcerpt(docId, file, Number(el.dataset.k))
     }))
 }
@@ -764,15 +769,19 @@ async function openViewer (docId, file) {
     ensureViewer()
     if (!linksCache.has(docId)) await loadLinks(docId)
     const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
-    if (!rec || !rec.excerpts || !rec.excerpts.length) { window.toast?.('记录已不存在'); return }
+    if (!rec || (!rec.excerpts.length && !rec.summary)) { window.toast?.('记录已不存在'); return }
     let raw = ''
     try {
       raw = await window.solace.readNote(docId, file)
     } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
     const parsed = parseRecordMd(raw)
     viewCtx = { docId, file, degraded: !parsed.ok }
-    viewDlg.querySelector('#linkViewTitle').textContent = `摘录记录 · ${file.replace(/\.md$/i, '')}`
+    viewDlg.querySelector('#linkViewTitle').textContent = rec.summary
+      ? `章节总结 · ${rec.summary.chapter.slice(0, 24)}`
+      : `摘录记录 · ${file.replace(/\.md$/i, '')}`
     viewDlg.querySelector('#linkViewBody').textContent = parsed.ok ? parsed.body : raw
+    // 总结记录无摘录可追加（§5.2），追加钮整条隐藏
+    viewDlg.querySelector('#btnLinkViewAppend').hidden = !!rec.summary
     renderViewerChips()
     viewDlg.showModal()
   } finally {
@@ -825,7 +834,8 @@ async function commitAppend () {
     if (parsed.ok) {
       await window.solace.writeNote(docId, file, generateRecordMd(merged, parsed.body))
     }
-    await window.solace.setNoteLinkEntry(docId, file, { excerpts: merged })
+    // body0 是行显示快照（§7.2），併入只动摘录——原快照必须随行保留
+    await window.solace.setNoteLinkEntry(docId, file, { excerpts: merged, body0: rec.body0 || '' })
     window.toast?.(`已追加 ${fresh.length} 处摘录`)
     closeSelection(true)
     linksCache.delete(docId)
@@ -878,6 +888,11 @@ function ensureEditor () {
 
 function renderChips () {
   const box = edDlg.querySelector('#linkChips')
+  // 章总结：唯一 chip = 章锚点，不可移除（移除即失去记录身份）
+  if (edCtx.summary) {
+    box.innerHTML = `<span class="link-chip"><b>第 ${edCtx.summary.page} 页</b> ${esc(edCtx.summary.chapter)} · 章锚点</span>`
+    return
+  }
   const chips = edCtx.excerpts.map((x, i) =>
     `<span class="link-chip"><b>第 ${x.page} 页</b> ${esc(x.text.slice(0, 40))}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
   // 降级（正文被外部改过）时正文按原样保存、不重建摘录区，但摘录条目仍要
@@ -909,10 +924,30 @@ async function openEditor (opts = {}) {
       } catch (err) { window.toast?.(`读取失败：${err.message || err}`); return }
       if (edSaving) return // 读笔记期间另一条编辑流程可能已经开始保存
       const parsed = parseRecordMd(raw)
-      // 正文被外部改过（无【摘录】头）→ 降级：按普通笔记保存，锚点保留不动
-      edCtx = { mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file, excerpts: rec.excerpts.map(x => ({ ...x })), degraded: !parsed.ok, fromViewer: !!opts.fromViewer }
+      // 正文被外部改过（无【摘录】/【总结】头）→ 降级：按普通笔记保存，锚点保留不动
+      edCtx = {
+        mode: 'edit', flow: 'edit', docId: opts.docId, file: opts.file,
+        excerpts: rec.excerpts.map(x => ({ ...x })),
+        summary: rec.summary ? { ...rec.summary } : null,
+        degraded: !parsed.ok, fromViewer: !!opts.fromViewer
+      }
       edDlg.querySelector('#linkRecordText').value = parsed.body
-      edDlg.querySelector('#linkRecordTitle').textContent = '摘录记录'
+      edDlg.querySelector('#linkRecordTitle').textContent = rec.summary ? '章节总结' : '摘录记录'
+    } else if (opts.mode === 'summary') {
+      // 新建章总结（§5.2）：来自跨章小条或面板 📝 钮；同章已有记录的路径
+      // 在 __linkOpenSummary 里已分流到 edit，到这里一定是新建
+      edCtx = {
+        mode: 'create',
+        flow: 'summary', // 建文件后 mode 转 edit，flow 保持标记总结流
+        docId: opts.docId,
+        title: opts.chapter.title,
+        total: Number((document.getElementById('pageTotal') || {}).textContent) || 0,
+        excerpts: [],
+        summary: { page: opts.chapter.page, chapter: opts.chapter.title },
+        degraded: false
+      }
+      edDlg.querySelector('#linkRecordText').value = ''
+      edDlg.querySelector('#linkRecordTitle').textContent = `写总结 · ${opts.chapter.title.slice(0, 20)}`
     } else {
       edCtx = {
         mode: 'create',
@@ -961,17 +996,27 @@ async function saveEditor () {
   edDlg.querySelectorAll('textarea, button').forEach(el => { el.disabled = true })
   try {
     if (edCtx.mode === 'create') {
-      const { file } = await window.solace.createNote(edCtx.docId, { title: edCtx.title, page: edCtx.excerpts[0]?.page || 1, total: edCtx.total })
+      // 总结流建文件落在章起页；摘录流落在首条摘录页
+      const page = edCtx.summary ? edCtx.summary.page : (edCtx.excerpts[0]?.page || 1)
+      const { file } = await window.solace.createNote(edCtx.docId, { title: edCtx.title, page, total: edCtx.total })
       edCtx.file = file
       edCtx.mode = 'edit' // 失败重试时不再重复建文件（幂等）
     }
     const body = edDlg.querySelector('#linkRecordText').value
-    const content = edCtx.degraded ? body : generateRecordMd(edCtx.excerpts, body)
+    // body0：正文首个非空行快照（列表行内容优先显示用；§7.2 侧车镜像字段）
+    const body0 = (body.split('\n').map(s => s.trim()).find(Boolean) || '').slice(0, 40)
+    const content = edCtx.summary
+      ? (edCtx.degraded ? body : generateSummaryMd(edCtx.summary, body))
+      : (edCtx.degraded ? body : generateRecordMd(edCtx.excerpts, body))
     await window.solace.writeNote(edCtx.docId, edCtx.file, content)
     // 摘录全移除 → entry 传 null 即删条目（.md 退化成普通笔记/外改格式原样）；
-    // 降级时仅在摘录被改动过才写侧车（未动则承诺「锚点保留不动」）
-    if (!edCtx.degraded || edExcerptsTouched) {
-      await window.solace.setNoteLinkEntry(edCtx.docId, edCtx.file, edCtx.excerpts.length ? { excerpts: edCtx.excerpts } : null)
+    // 降级时仅在摘录被改动过才写侧车（未动则承诺「锚点保留不动」）；
+    // 总结流锚点恒在（章锚点即记录身份），总是写
+    if (edCtx.summary || !edCtx.degraded || edExcerptsTouched) {
+      const entry = edCtx.summary
+        ? { excerpts: [], summary: edCtx.summary, body0 }
+        : (edCtx.excerpts.length ? { excerpts: edCtx.excerpts, body0 } : null)
+      await window.solace.setNoteLinkEntry(edCtx.docId, edCtx.file, entry)
     }
     const { docId } = edCtx
     edDirty = false
@@ -984,9 +1029,9 @@ async function saveEditor () {
     // 仅创建流程完成才退出选词：编辑已链接句保存时保留累积选集（§6.3 防误丢）
     if (edCtx.flow === 'create' && window.linkSelecting) closeSelection(true)
     // 来源是查看器的编辑：保存后回看最新内容（§6.7）；摘录被全删则记录已
-    // 退化为普通笔记——无内容可看，说明后不重开
+    // 退化为普通笔记——无内容可看，说明后不重开（总结记录锚点恒在，恒回看）
     if (edCtx.fromViewer) {
-      if (edCtx.excerpts.length) openViewer(edCtx.docId, edCtx.file).catch(() => {})
+      if (edCtx.summary || edCtx.excerpts.length) openViewer(edCtx.docId, edCtx.file).catch(() => {})
       else window.toast?.('摘录已全部移除，记录已退化为普通笔记')
     }
   } catch (err) {
@@ -999,17 +1044,81 @@ async function saveEditor () {
 
 /* ================= 笔记列表整合（记录行 / 新建入口 / 跳回定位） ============ */
 
-function hasRecord (docId, file) {
+// 记录条目（有摘录锚点或章锚点皆算）；普通笔记返回 null
+function recordEntry (docId, file) {
   const rec = docId && linksCache.get(docId) && linksCache.get(docId).records[file]
-  return !!(rec && rec.excerpts && rec.excerpts.length)
+  return (rec && ((rec.excerpts && rec.excerpts.length) || rec.summary)) ? rec : null
 }
 
-// 记录行徽标 + 首条摘录片段（notespanel 补丁在行尾留了 .note-link-row 钩子位）
-window.__linkNoteRowExtra = (file) => {
+// 行内容优先（READING-RECORDS-DESIGN §6）：主行 = 批注正文首行（body0
+// 显示快照，免逐文件 IO）→ 摘录文字 → 章名；次行 = 类型 · 章/页 · 相对
+// 时间。返回 null = 普通笔记，走桌面默认行（时间戳文件名只在默认行出现）
+window.__linkNoteMain = (file, relWhen) => {
   const docId = lastLayout && lastLayout.docId
-  if (!hasRecord(docId, file)) return ''
-  const x = linksCache.get(docId).records[file].excerpts[0]
-  return `<span class="link-badge">🔗</span><span class="link-snip">第 ${x.page} 页 · ${esc(x.text.slice(0, 24))}</span>`
+  const rec = recordEntry(docId, file)
+  if (!rec) return null
+  const when = esc(relWhen || '')
+  if (rec.summary) {
+    const main = (rec.body0 || '').trim() || `《${rec.summary.chapter}》总结`
+    return `<span class="note-name">${esc(main.slice(0, 48))}</span>` +
+      `<span class="note-when">📝 ${esc(rec.summary.chapter.slice(0, 20))} · ${when}</span>`
+  }
+  const x = rec.excerpts[0]
+  const main = (rec.body0 || '').trim() || x.text
+  return `<span class="note-name">${esc(main.slice(0, 48))}</span>` +
+    `<span class="note-when">🔗 第 ${x.page} 页 · ${when}</span>`
+}
+
+// 页序排序（§6）：锚点页升序（总结取章起页、摘录取首条页），同页按修改
+// 时间；自由笔记无锚点排尾部按时间倒序。缓存缺席（读失败等）原样返回
+window.__linkNoteSort = (notes) => {
+  const docId = lastLayout && lastLayout.docId
+  const cache = docId && linksCache.get(docId)
+  if (!cache || !Array.isArray(notes)) return notes
+  const pageOf = (file) => {
+    const r = cache.records[file]
+    if (!r) return null
+    if (r.summary) return r.summary.page
+    return r.excerpts && r.excerpts[0] ? r.excerpts[0].page : null
+  }
+  const anchored = []
+  const plain = []
+  for (const n of notes) {
+    const p = pageOf(n.file)
+    if (p == null) plain.push(n)
+    else anchored.push({ n, p })
+  }
+  anchored.sort((a, b) => a.p - b.p || String(a.n.mtime).localeCompare(String(b.n.mtime)))
+  plain.sort((a, b) => String(b.n.mtime).localeCompare(String(a.n.mtime)))
+  return anchored.map(x => x.n).concat(plain)
+}
+
+// 章总结状态（chapter-prompt 小条用）：known=false 表示缓存未就绪（按未
+// 知处理，小条按未总结展示，点开仍会正确建/续写）
+window.__linkSummaryState = (docId, chapterTitle) => {
+  const cache = docId && linksCache.get(docId)
+  if (!cache) return { known: false, exists: false }
+  for (const r of Object.values(cache.records)) {
+    if (r.summary && r.summary.chapter === chapterTitle) return { known: true, exists: true }
+  }
+  return { known: true, exists: false }
+}
+
+// 打开章总结：该章已有（按章名精确匹配）→ 编辑续写；没有 → 新建（§5.2）
+window.__linkOpenSummary = async (docId, chapter) => {
+  if (!docId || !chapter || !chapter.title) return false
+  if (!linksCache.has(docId)) await loadLinks(docId)
+  const cache = linksCache.get(docId)
+  if (cache) {
+    for (const [f, r] of Object.entries(cache.records)) {
+      if (r.summary && r.summary.chapter === chapter.title) {
+        openEditor({ mode: 'edit', docId, file: f }).catch(() => {})
+        return true
+      }
+    }
+  }
+  openEditor({ mode: 'summary', docId, chapter }).catch(() => {})
+  return true
 }
 
 // 「＋新建」入口替换：在预览里新建笔记 = 从选句开始（返回 true = 已接管）
@@ -1020,9 +1129,15 @@ window.__linkNewOverride = (session) => {
   return true
 }
 
-// 记录行点击：跳回原文定位（返回 true = 已接管，不再打开笔记编辑器）
+// 记录行点击：摘录 → 跳回原文定位；总结 → 打开查看器（章锚点无正文标记
+// 可闪）。返回 true = 已接管，不再打开笔记编辑器
 window.__linkRecordTap = (docId, file) => {
-  if (!hasRecord(docId, file)) return false
+  const rec = recordEntry(docId, file)
+  if (!rec) return false
+  if (rec.summary) {
+    openViewer(docId, file).catch(() => {})
+    return true
+  }
   jumpToExcerpt(docId, file)
   return true
 }

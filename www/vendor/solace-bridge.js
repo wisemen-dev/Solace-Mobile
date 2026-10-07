@@ -2377,10 +2377,17 @@
       }
       return name;
     }
+    function validateSummary(s2) {
+      if (!s2 || typeof s2 !== "object" || Array.isArray(s2)) throw new Error("\u975E\u6CD5\u7AE0\u951A\u70B9");
+      if (!Number.isInteger(s2.page) || s2.page < 1) throw new Error("\u975E\u6CD5\u7AE0\u951A\u70B9\u9875\u7801");
+      if (typeof s2.chapter !== "string" || !s2.chapter.trim()) throw new Error("\u975E\u6CD5\u7AE0\u540D");
+    }
     function validateEntry(file, entry) {
       checkFile(file);
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("\u975E\u6CD5\u951A\u70B9\u6761\u76EE");
-      if (!Array.isArray(entry.excerpts) || !entry.excerpts.length) throw new Error("\u951A\u70B9\u6761\u76EE\u9700\u81F3\u5C11\u4E00\u5904\u6458\u5F55");
+      if (!Array.isArray(entry.excerpts)) throw new Error("\u975E\u6CD5\u6458\u5F55\u8868");
+      if (entry.summary != null) validateSummary(entry.summary);
+      if (!entry.excerpts.length && !entry.summary) throw new Error("\u951A\u70B9\u6761\u76EE\u9700\u81F3\u5C11\u4E00\u5904\u6458\u5F55\u6216\u7AE0\u951A\u70B9");
       for (const e of entry.excerpts) {
         if (!e || typeof e !== "object") throw new Error("\u975E\u6CD5\u6458\u5F55");
         if (!Number.isInteger(e.page) || e.page < 1) throw new Error("\u975E\u6CD5\u6458\u5F55\u9875\u7801");
@@ -2389,14 +2396,17 @@
           throw new Error("\u975E\u6CD5\u5B9A\u4F4D\u63D0\u793A");
         }
       }
+      if (entry.body0 != null && (typeof entry.body0 !== "string" || entry.body0.length > 80)) {
+        throw new Error("\u975E\u6CD5\u6B63\u6587\u5FEB\u7167");
+      }
     }
     function validate(data) {
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("\u975E\u6CD5\u94FE\u63A5\u6570\u636E");
-      if (data.version !== 1) throw new Error("\u4E0D\u652F\u6301\u7684\u94FE\u63A5\u6570\u636E\u7248\u672C");
+      if (data.version !== 1 && data.version !== 2) throw new Error("\u4E0D\u652F\u6301\u7684\u94FE\u63A5\u6570\u636E\u7248\u672C");
       if (!data.records || typeof data.records !== "object" || Array.isArray(data.records)) throw new Error("\u975E\u6CD5\u8BB0\u5F55\u8868");
       for (const [file, entry] of Object.entries(data.records)) validateEntry(file, entry);
     }
-    const emptyData = () => ({ version: 1, records: {} });
+    const emptyData = () => ({ version: 2, records: {} });
     function loadValidated(docId) {
       return readSidecarJson({
         fs: fs2,
@@ -2436,14 +2446,14 @@
       const p = docFile(docId);
       const records = {};
       for (const [file, entry] of Object.entries(data.records)) {
-        if (entry.excerpts.length) records[file] = entry;
+        if (entry.excerpts.length || entry.summary) records[file] = entry;
       }
       if (!Object.keys(records).length) {
         if (!await fs2.rm(p)) throw new Error("\u5220\u9664\u94FE\u63A5\u6587\u4EF6\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u88AB\u5360\u7528\uFF09");
         return true;
       }
       await fs2.mkdirp("links");
-      await fs2.writeFileAtomicText(p, JSON.stringify({ version: 1, records }));
+      await fs2.writeFileAtomicText(p, JSON.stringify({ version: 2, records }));
       return true;
     }
     function mutate(docId, fn) {
@@ -2941,6 +2951,10 @@
       const ev = new CustomEvent("solace-close-request", { cancelable: true });
       dlg.dispatchEvent(ev);
       if (!ev.defaultPrevented) dlg.close();
+      lastBackAt = 0;
+      return;
+    }
+    if (window.__toolsClose?.()) {
       lastBackAt = 0;
       return;
     }

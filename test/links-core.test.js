@@ -55,8 +55,41 @@ test('readPruned 接受 provider：在写队列内取实时集合，不误剪同
 
 test('read：无文件返回空结构，不预建文件', async () => {
   const { fs, links } = harness()
-  assert.deepEqual(await links.read(ID), { version: 1, records: {} })
+  assert.deepEqual(await links.read(ID), { version: 2, records: {} })
   assert.equal(await fs.exists(`links/${ID}.json`), false)
+})
+
+test('v2 章总结条目：零摘录 + 章锚点合法，落盘 version 2 且读回一致', async () => {
+  const { fs, links } = harness()
+  const summary = { excerpts: [], summary: { page: 45, chapter: '第 3 章 · 检索增强生成' }, body0: '本章讲了……' }
+  await links.setEntry(ID, FILE, summary)
+  assert.equal(JSON.parse(await fs.readFileText(`links/${ID}.json`)).version, 2)
+  const data = await links.read(ID)
+  assert.deepEqual(data.records[FILE], summary)
+})
+
+test('v2 校验：零摘录且无章锚点拒绝；章锚点字段非法拒绝', async () => {
+  const { links } = harness()
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [] }), /至少一处摘录或章锚点/)
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [], summary: { page: 0, chapter: '第 1 章' } }), /章锚点页码/)
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [], summary: { page: 9, chapter: '  ' } }), /章名/)
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [], summary: { page: 9, chapter: '第 1 章' }, body0: 123 }), /正文快照/)
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [], summary: { page: 9, chapter: '第 1 章' }, body0: 'x'.repeat(81) }), /正文快照/)
+})
+
+test('v1 旧文件照读（向后兼容），下次写盘升 v2 且总结条目不被丢弃', async () => {
+  const { fs, links } = harness()
+  const v1 = { version: 1, records: { [FILE]: ENTRY } }
+  await fs.mkdirp('links')
+  await fs.writeText(`links/${ID}.json`, JSON.stringify(v1))
+  const data = await links.read(ID)
+  assert.deepEqual(data.records[FILE], ENTRY)
+  // 任何一次写（此处借 removeEntry 触发 writeLocked）后：版本升 2、旧条目保留
+  await links.setEntry(ID, 'sum.md', { excerpts: [], summary: { page: 2, chapter: '第 1 章' } })
+  const after = JSON.parse(await fs.readFileText(`links/${ID}.json`))
+  assert.equal(after.version, 2)
+  assert.ok(after.records[FILE])
+  assert.ok(after.records['sum.md'])
 })
 
 test('setEntry→read 回环：条目逐字段一致', async () => {

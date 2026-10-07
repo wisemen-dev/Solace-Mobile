@@ -333,10 +333,36 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .link-view-dialog:not([open]),
 .link-edit-dialog:not([open]) { transition: none; }
 
-/* 笔记列表的摘录记录行：🔗 徽标 + 首条摘录片段 */
-.note-link-row { display: flex; align-items: center; gap: 6px; padding: 2px 0 0; font-size: 12px; color: #8a94a0; }
-.link-badge { color: #b26a00; }
-.link-snip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 记录列表行：内容优先（READING-RECORDS-DESIGN §6）。主行/次行沿用桌面
+   .note-name（省略号截断）与 .note-when（弱化小字），类型徽标（🔗/📝）
+   与章/页信息在次行内联；时间戳文件名只在普通笔记的默认行出现 */
+
+/* ---------- 章节总结提醒小条（chapter-prompt.js） ----------
+   拖选确认小条（.link-drag-bar）同语言：浅底圆钮胶囊、无文字预览——
+   章名即内容。挂 previewOverlay 上（不随正文滚动），bottom 74px =
+   底栏(58) + 间隙；与选词托盘(86px)不同时出现（模式互斥守卫） */
+.chapter-prompt {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 74px;
+  display: flex; align-items: center; gap: 10px; z-index: 6;
+  padding: 5px 6px 5px 14px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  color: #1f2733; font-size: 13px;
+}
+.chapter-prompt[hidden] { display: none; }
+.chapter-prompt .cp-text { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-prompt button {
+  height: 34px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.16); background: transparent;
+  color: #1f2733; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+.chapter-prompt button.cp-close { width: 34px; padding: 0; border-radius: 50%; font-size: 15px; }
+.chapter-prompt button.cp-write { background: #3b7ddd; border-color: #3b7ddd; color: #fff; font-size: 13px; }
+.chapter-prompt button:active { transform: scale(0.94); }
 
 /* 标注工具栏：浮在预览底栏上方居中。半透明深底不依赖主题变量，
    深浅色主题下都可读 */
@@ -441,3 +467,267 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 
 /* 阅读模式：墨迹常显但手势穿透（滚动/翻页照常走 previewBody） */
 .ink-layer.ink-passive { pointer-events: none; }
+
+/* ---------- 图书简介卡（doc-info.js，设计书 DOC-INFO-DESIGN） ----------
+   点封面 = 先看后开；三个动作收进卡内（打开=大主钮，编辑/删除=图标圆钮
+   ——与摘录查看器同语言）。封面三小钮隐藏：动作全部入卡后封面只留
+   封面图与进度环（覆盖上方 hover:none 的触屏常显规则） */
+.doc-cover-ops { display: none !important; }
+
+.doc-info-dialog {
+  width: min(84vw, 480px);
+  height: fit-content;
+  max-height: min(80vh, 720px);
+  overflow: hidden;
+}
+.doc-info-head { display: flex; align-items: flex-start; gap: 12px; }
+.doc-info-cover {
+  width: 72px; height: 96px; flex-shrink: 0;
+  object-fit: cover; border-radius: 4px;
+  background: var(--card); border: 1px solid var(--line);
+}
+.doc-info-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.doc-info-heading h3 {
+  font-size: 15px; line-height: 1.45; font-weight: 600;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.doc-info-author { font-size: 12.5px; color: var(--muted); min-height: 0; }
+.doc-info-author:not(:empty) { min-height: 17px; }
+.doc-info-base { font-size: 12px; color: var(--muted); }
+.doc-info-meta {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.7;
+}
+.doc-info-meta > div { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.doc-info-chip {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); font-size: 11.5px;
+  white-space: nowrap;
+}
+.doc-info-tag { background: var(--card); color: var(--muted); border: 1px solid var(--line); }
+.doc-info-stats {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.doc-info-num { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+.doc-info-foot { margin-top: 14px; align-items: center; }
+.doc-info-open {
+  flex: 1; height: 44px; font-size: 14.5px; border-radius: 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+.doc-info-open:active { transform: scale(0.98); }
+.doc-info-ico {
+  width: 40px; height: 40px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font-size: 15px; line-height: 1; flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.doc-info-ico:active { transform: scale(0.92); }
+.doc-info-del { color: #d64545; }
+
+/* ---------- 阅读工具簇（tools.js；设计书 docs/TOOLS-CLUSTER-DESIGN.md） ----------
+   标注/笔记/链接收进一条三条杠圆钮，点开向下展开三个纯图标圆钮。
+   过渡的规律：展开态定义去程（expo-out 300ms + 40ms/钮步进，近触发者
+   先出），收起态定义回程（expo-in 200ms + 30ms 反序步进，远端先收）——
+   CSS transition 取「目标状态」的过渡值，两态各写各的即得镜像缓动；
+   类切换天然从当前呈现值起算，半途反点顺滑逆转（§5.5） */
+.tools-cluster { position: relative; display: inline-flex; }
+
+/* 触发器：36px 圆钮三条杠；::after 外扩命中区到 44px */
+.tools-trigger {
+  position: relative;
+  z-index: 8; /* 盖住菜单长出的根部：长出/没入都从触发器身后走 */
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  touch-action: manipulation;
+  transition: color var(--dur-fast) var(--ease-out-expo),
+              border-color var(--dur-fast) var(--ease-out-expo),
+              box-shadow var(--dur-fast) var(--ease-out-expo),
+              transform 100ms var(--ease-out-expo);
+}
+.tools-trigger::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; }
+.tools-trigger:hover,
+.tools-trigger:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
+.tools-trigger:active { transform: scale(0.94); }
+
+/* 三条杠 → ✕：上杠顺旋 45°、中杠缩没、下杠逆旋 45°（杠心距 4.8px =
+   杠高 1.8 + 行距 3），200ms 纯 transform（§5.3；就地小形变双向同曲线） */
+.tools-bar {
+  display: block; width: 12px; height: 1.8px; border-radius: 1px;
+  background: currentColor;
+  transition: transform 200ms var(--ease-out-expo), opacity 150ms var(--ease-out-expo);
+}
+.tools-cluster.open .tools-bar:nth-child(1) { transform: translateY(4.8px) rotate(45deg); }
+.tools-cluster.open .tools-bar:nth-child(2) { transform: scaleX(0.2); opacity: 0; }
+.tools-cluster.open .tools-bar:nth-child(3) { transform: translateY(-4.8px) rotate(-45deg); }
+
+/* 模式光环：标注/选词激活时亮 accent 描边 + 光圈（tools.js 切类，§5.4） */
+.tools-trigger.tools-active {
+  color: var(--text);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 展开菜单：竖列圆钮，右对齐触发器下探。材质与 toc-panel 同语言
+   （panel 底 + line 描边 + 同款阴影）。真机评审三轮「割裂感」修正：
+   ① ::before 锚点小箭指向触发器——菜单是从按钮长出来的气泡，不是
+   另一块漂浮面板；② 下探间距 10→8px、内距/行距收紧（10/10→8/6）；
+   ③ 展开项去描边去底色（见 .tools-circle）——「有边的是把手，无边的是
+   内容」，双层镶边是割裂感的主源。收起态面板没入触发器方向 */
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 7; /* 高于目录/笔记面板(6)；低于触发器(8) */
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translateY(-6px) scale(0.9);
+  transform-origin: 100% 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-in-expo), transform 200ms var(--ease-in-expo);
+}
+/* 气泡锚点：10px 旋转方块从上边探出，指向触发器中心（right 13px =
+ * 触发器宽 36 的一半 18px − 小箭半宽 5px；上左边描边接续菜单描边） */
+.tools-menu::before {
+  content: '';
+  position: absolute;
+  top: -5.5px;
+  right: 13px;
+  width: 10px; height: 10px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  border-top-left-radius: 3px;
+  transform: rotate(45deg);
+}
+.tools-cluster.open .tools-menu {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition: opacity 300ms var(--ease-out-expo), transform 300ms var(--ease-out-expo);
+}
+
+/* 展开项槽位：位移/缩放/透明度全在槽上（钮自身只管按压反馈），
+   origin 顶边 = 向触发器方向生长（§5.1）。--tools-i：0 标注/1 链接/2 笔记 */
+.tools-slot {
+  transform: translateY(-10px) scale(0.4);
+  transform-origin: 50% 0;
+  opacity: 0;
+  pointer-events: none;
+  /* 回程（展开 → 收起）：互逆曲线、更快、远端先收（§5.2） */
+  transition: transform 200ms var(--ease-in-expo), opacity 200ms var(--ease-in-expo);
+  transition-delay: calc((2 - var(--tools-i)) * 30ms);
+}
+.tools-cluster.open .tools-slot {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+  /* 去程（收起 → 展开）：临界阻尼无过冲，近触发者先出（§5.1） */
+  transition: transform 300ms var(--ease-out-expo), opacity 300ms var(--ease-out-expo);
+  transition-delay: calc(var(--tools-i) * 40ms);
+}
+
+/* 展开项：44px 纯图标圆钮（触达标准），图标 currentColor 随主题。
+   无描边无底色——气泡内的内容不加内衬，按压/悬停才浮现底色 */
+.tools-circle {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  touch-action: manipulation;
+  transition: border-color var(--dur-fast) var(--ease-out-expo),
+              color var(--dur-fast) var(--ease-out-expo),
+              background var(--dur-fast) var(--ease-out-expo),
+              transform 100ms var(--ease-out-expo);
+}
+.tools-circle:hover,
+.tools-circle:focus-visible {
+  outline: none;
+  color: var(--accent);
+  background: var(--card-hover);
+}
+.tools-circle:active { transform: scale(0.92); background: var(--card-hover); }
+.tools-circle svg { display: block; pointer-events: none; }
+
+/* 降级（§5.6）：减弱动效下菜单与展开项均只做淡入淡出，去位移/缩放/步进；
+   三杠 → ✕ 保留（12px 图标就地旋转，非前庭类大幅运动） */
+@media (prefers-reduced-motion: reduce) {
+  .tools-menu,
+  .tools-cluster.open .tools-menu {
+    transform: none;
+    transition: opacity 150ms ease;
+  }
+  .tools-slot,
+  .tools-cluster.open .tools-slot {
+    transform: none;
+    transition: opacity 150ms ease;
+    transition-delay: 0ms;
+  }
+}
+
+/* ---------- 阅读顶栏三控件分层（真机评审二轮） ----------
+   原三者色调/形态雷同且过挤。分层原则（apple-design：层级用权重表达，
+   最常用的最显眼）：目录=主操作（accent 色调胶囊，内容导航是阅读高频），
+   工具簇=中性圆钮（多工具入口，静默待命），关闭=弱化纯文字（逃生口，
+   找得到即可）。间距 8→12px。
+   点击高亮方框：WebView 默认 tap highlight 是半透明方块，罩到 ::after
+   外扩命中区后比圆钮大一圈——去除（按压反馈已有 :active 缩放承担） */
+.preview-actions { gap: 12px; }
+#btnToc, #btnTools, #btnPreviewClose, .tools-circle {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 目录 → 色调胶囊 + 书签图标（CSS mask 注入图标，免 DOM 补丁；描边语言
+   留给工具簇圆钮，胶囊用底色区分）。
+   注意 [hidden] 必须显式压回 display:none——id 选择器设置 display 后
+   hidden 的 UA 规则会失效（同 .link-tray 的坑，无大纲的书按钮必须消失） */
+#btnToc {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; border-radius: 999px;
+  padding: 8px 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  transition: background var(--dur-fast) var(--ease-out-expo),
+              color var(--dur-fast) var(--ease-out-expo),
+              transform 100ms var(--ease-out-expo);
+}
+#btnToc[hidden] { display: none; }
+#btnToc::before {
+  content: '';
+  width: 15px; height: 15px; flex-shrink: 0;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M6.8 3.5h6.4A1.8 1.8 0 0 1 15 5.3v11.4a.8.8 0 0 1-1.28.64L10 14.9l-3.72 2.44A.8.8 0 0 1 5 16.7V5.3a1.8 1.8 0 0 1 1.8-1.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M6.8 3.5h6.4A1.8 1.8 0 0 1 15 5.3v11.4a.8.8 0 0 1-1.28.64L10 14.9l-3.72 2.44A.8.8 0 0 1 5 16.7V5.3a1.8 1.8 0 0 1 1.8-1.8z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+#btnToc:hover { color: var(--text); }
+#btnToc:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+#btnToc:active { transform: scale(0.97); }
+
+/* 关闭 → 弱化：去描边纯文字（描边语言专属工具簇圆钮，三形态互不雷同） */
+#btnPreviewClose {
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  padding: 8px 11px;
+}
+#btnPreviewClose:hover { color: var(--text); border-color: transparent; }

@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 38 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 40 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -42,7 +42,7 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 38 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 40 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
 ### index.html（10 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
@@ -56,15 +56,18 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
    合计 1 对）
 8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI）
 9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
-10. 预览顶栏 `#btnNotes` 后加 `#btnInk`「✏️ 标注」按钮（手写标注入口，
-    v0.4.0）
-11. 预览顶栏 `#btnInk` 后加 `#btnLink`「🔗 链接」按钮（摘录链接入口；
-    与第 10 条同一锚点一次替换，合计 1 对）
+10. 预览顶栏 `#btnNotes` 行整替为阅读工具簇 `#toolsCluster`（v0.5.2，设计书
+    `docs/TOOLS-CLUSTER-DESIGN.md`）：标注/链接/笔记三钮收进一条三条杠圆钮，
+    点开向下展开三个纯图标圆钮（统一线宽 SVG 线性图标）。三钮 ID 不变
+    （`#btnInk`/`#btnLink`/`#btnNotes` 移入簇内），preview.js / ink.js /
+    link.js 的绑定零改动；开合状态在 mobile-web 的 tools.js，样式与动效在
+    mobile.css 的 `.tools-*`。历史：v0.4.0/0.5.0 曾分别注入 `#btnInk`/
+    `#btnLink` 两按钮（原第 10/11 条），v0.5.2 合并为本条（仍 1 对替换）
 
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 
-### preview.js（3 处）
+### preview.js（4 处）
 1. 预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
    优先、字节路径回落；会话守卫保留在异步解析之后（v0.3.0）
 2. 页面布局尺寸设定后 dispatch `solace-ink-layout`（detail：docId/页码/
@@ -74,6 +77,9 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
    文本层视口（设备像素尺度会让文字大一倍，见下）（v0.4.0/v0.5.0）
 3. `closePreview()` 开头 dispatch `solace-ink-close`——墨迹层冲刷保存并
    弃内存模型，重开从盘上重读（v0.4.0）
+4. 目录构建完成 dispatch `solace-outline`（detail：items[{title,page,depth}]
+   全层级；无大纲不派发）——章节总结提醒（chapter-prompt）据此取顶级
+   条目为章（READING-RECORDS-DESIGN §8，v0.5.2）
 
 ### covers.js（2 处，v0.3.0）
 1. 封面生成的 PDF 加载同上 URL 直读
@@ -98,17 +104,21 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 4. 监视文件夹输入框 change 短路（只读，用户不会触发）
 5. Olib 包名保存与「检测…」自动发现（多结果走选择框）
 
-### notespanel.js（7 处）
+### notespanel.js（8 处）
 1. `openOne`：桥返回 `{ inApp: true, content }` 时交给内置编辑器
 2. 删除确认文案（回收站 → 直接删除）
 3. `solace-note-saved` 监听：内置编辑器保存后刷新列表（v0.3.1）
-4. 记录行追加 `.note-link-row`（`window.__linkNoteRowExtra` 钩子：摘录链接
-   的 🔗 徽标与首条摘录片段）
-5. 「＋新建」前插 `window.__linkNewOverride` 钩子：预览中新建改走选词模式
+4. 记录行 note-main 内容整替（`window.__linkNoteMain` 钩子，v0.5.2）：
+   摘录/总结记录返回「主行 = 正文首行（侧车 body0 快照）+ 次行 =
+   类型 · 章/页 · 相对时间」，普通笔记返回 null 走桌面默认行——
+   内容优先（READING-RECORDS-DESIGN §6），时间戳文件名只在默认行出现
+5. 列表渲染前过 `window.__linkNoteSort` 钩子（v0.5.2）：记录按锚点页
+   升序混排、自由笔记排尾部按时间；钩子缺席原样返回
+6. 「＋新建」前插 `window.__linkNewOverride` 钩子：预览中新建改走选词模式
    （入口替换，钩子对本书预览无条件接管、返回 false 才走原路；旧笔记仍可读可改）
-6. 单条删除成功后调 `window.__linkNoteDeleted` 钩子：渲染侧清缓存并重绘标记
+7. 单条删除成功后调 `window.__linkNoteDeleted` 钩子：渲染侧清缓存并重绘标记
    （否则正文标记要等下次保存/重开预览才消失）
-7. 批量删除同样逐条调 `window.__linkNoteDeleted`（spec §5.4 明确「含批量
+8. 批量删除同样逐条调 `window.__linkNoteDeleted`（spec §5.4 明确「含批量
    删除路径」；渲染侧对连续回调做了重绘合并）
 
 ## 平台差异与取舍
@@ -125,6 +135,7 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 | relocate | 指针文件 | 固定位置 | 应用专属目录即一切 |
 | Typora/外部程序 | spawn | 内置编辑器 | 沙箱无外部程序 |
 | 手写标注 | ❌ 不渲染（`annotations/` 静默共存） | ✅ 墨迹层（笔/荧光笔/橡皮） | 平板端手写笔场景专有 |
+| 封面交互 | 点封面 = 直接预览；悬停浮现三小钮 | 点封面 = 图书简介卡（先看后开），三动作（打开/编辑/删除）收进卡内、封面三小钮隐藏 | 触屏误触即开书 + 小钮不显眼；简介卡动作程序化点击卡内隐藏原钮复用本文件全部业务流（doc-info.js，零补丁，DOC-INFO-DESIGN） |
 | Ctrl+K | 键盘 | ⌘K 按钮 | 无键盘（按钮本就存在） |
 
 ## 性能架构（0.3.0，重要）

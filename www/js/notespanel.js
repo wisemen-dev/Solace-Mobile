@@ -79,7 +79,7 @@ async function load (session = captureSession()) {
   try {
     const { notes } = await window.solace.listNotes(session.id, session.sessionId)
     if (!isCurrentSession(session) || seq !== loadSeq) return
-    render(notes)
+    render(window.__linkNoteSort?.(notes) || notes)
   } catch (err) {
     if (!isCurrentSession(session) || seq !== loadSeq) return
     list.innerHTML = `<li class="notes-empty">加载失败：${esc(err.message || err)}</li>`
@@ -95,10 +95,10 @@ function render (notes) {
     ? notes.map(n => `
       <li data-file="${esc(n.file)}" class="${noteSel.has(n.file) ? 'sel' : ''}" title="${esc(n.file)}\n创建于 ${esc(n.birth)}\n修改于 ${esc(n.mtime)}\n点击用 Typora 打开">
         <div class="note-main">
-          <span class="note-name">${esc(displayName(n.file))}</span>
-          <span class="note-when">${esc(fmtRel(n.mtime))}修改</span>
+          ${window.__linkNoteMain?.(n.file, esc(fmtRel(n.mtime))) ||
+            `<span class="note-name">${esc(displayName(n.file))}</span>
+          <span class="note-when">${esc(fmtRel(n.mtime))}修改</span>`}
         </div>
-        <div class="note-link-row">${window.__linkNoteRowExtra?.(n.file) || ''}</div>
         <button class="note-del" title="删除（移入回收站）">✕</button>
       </li>`).join('')
     : '<li class="notes-empty">还没有笔记<br>点上方「＋ 新建」开始记录</li>'
