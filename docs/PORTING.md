@@ -218,8 +218,10 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 
 - **时长三档**：微 ~100ms（按压反馈、scale 微缩）｜标准 160–200ms
   （过渡、淡入、对话框进出 180/120）｜场景 ~300ms（编排：工具簇生长、
-  开场 rise-in）。不出现 400ms 以上的单元素动画（开场编排的 stagger
-  总时长除外）。
+  开场 rise-in）。不出现 400ms 以上的**交互响应**动画；两类豁免：
+  开场编排的 stagger 总时长、**氛围性宣告动画**（呼吸光 ink-breathe
+  600ms——一次性、非交互阻塞、终态透明）与存量闪烁 lnk-flash
+  0.45s×2（摘录跳回定位，既有行为）。
 - **缓动**：进场一律 `--ease-out-expo`（快速起步、丝滑收尾），收场
   `--ease-in-expo`；不用 linear 与弹性 overshoot。
 - **错峰步进**：列表/卡片入场编排 35ms/项（card-in 已有），工具簇

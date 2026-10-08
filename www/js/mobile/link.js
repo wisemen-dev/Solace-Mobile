@@ -232,9 +232,9 @@ function renderBands (bandSel, bandDrag, bandLnk) {
   if (!layerRect.width && !layerRect.height) return
   // 琥珀带带 lnk class + dataset.file：pointerup 的 closest('.lnk') 直接命中，
   // 点击开查看器零新增监听（容器 pointer-events:none，琥珀带在 CSS 单独放开）。
-  // 琥珀按 file 分组独立画带：一行内多条摘录时各自成带，点击归属与 span 同义
+  // bandLnk 是 Set<{file, map}>：每条摘录独立一组，组内独立行聚类
   const groups = []
-  if (bandLnk) for (const [file, m] of bandLnk) groups.push({ map: m, cls: 'lnk-band-lnk', file })
+  if (bandLnk) for (const seg of bandLnk) groups.push({ map: seg.map, cls: 'lnk-band-lnk', file: seg.file })
   groups.push({ map: bandDrag, cls: 'lnk-band-drag' })
   groups.push({ map: bandSel, cls: 'lnk-band-sel' })
   for (const { map, cls, file } of groups) {
@@ -283,8 +283,11 @@ function renderMarkers (d) {
   const entry = textCache.get(`${d.docId}:${d.page}`)
   if (!entry) return
   const byItem = new Map()
-  // 琥珀带按 file 分组（renderBands 约定）：span 锚与带视觉同源同区间
-  const bandLnk = new Map()
+  // 琥珀带按 file 分组（renderBands 约定）：span 锚与带视觉同源同区间。
+  // 每条摘录（ex）独立成组——同记录同页多条摘录时各自聚类画带，中间
+  // 未摘录的空档不被跨接（审查修复 2026-10-08：行聚类的 x 取组内 min→max，
+  // 同组合并会把空档一并染色，旧 span 内联渲染无此问题）
+  const bandLnk = new Set()
   const docLinks = linksCache.get(d.docId)
   for (const [file, rec] of Object.entries((docLinks && docLinks.records) || {})) {
     for (const ex of (rec && rec.excerpts) || []) {
@@ -295,8 +298,9 @@ function renderMarkers (d) {
       const r = findRangeByText(entry.pageText, ex.text, hint)
       if (r) {
         rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
-        if (!bandLnk.has(file)) bandLnk.set(file, new Map())
-        rangesToItems(entry, r.start, r.end, null, null, bandLnk.get(file))
+        const seg = { file, map: new Map() }
+        bandLnk.add(seg)
+        rangesToItems(entry, r.start, r.end, null, null, seg.map)
       }
     }
   }
@@ -1255,8 +1259,8 @@ function tryFlashNow () {
   if (!pendingFlash || !lastLayout || !layer) return false
   if (pendingFlash.docId !== lastLayout.docId) return false
   if (String(pendingFlash.page) !== String(lastLayout.page)) return false
-  // 优先闪带（span 背景已移交带，闪 span 不可见）；带缺位（极端：几何全部
-  // 落空）退回 span 兜底，滚动定位行为一致
+  // 优先闪带；带缺位（极端：几何全部落空）退回 span 兜底——span 背景
+  // 已透明化，兜底分支只保证滚动定位，闪烁视觉需带存在（审查修正注释）
   const t = layer.querySelector(`.lnk-band-lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
     || layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
   pendingFlash = null
