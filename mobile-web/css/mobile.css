@@ -104,6 +104,14 @@ button,
   padding-top: 10px;
   padding-bottom: 10px;
 }
+/* [hidden] 修复（2026-10-08）：下方宽屏触控规则给 .topbar .btn-ghost 设了
+   display:inline-flex (0,2,0)，压过浏览器对 [hidden] 的默认 display:none
+   (0,1,0)——「← 书架」#btnBackShelf 与「🌙」#btnDormant 明明设了 hidden
+   却照常渲染（书架视角下「← 书架」不该出现即此根因；同型 bug 曾在抽屉
+   把手 ☰ 上发生过，见下方重复类名注释）。属性选择器抬到 (0,3,0) 压回，
+   与桌面 .topbar-more-trigger[hidden] 同款写法；不锁断点，任何宽度都成立 */
+.topbar .btn-ghost[hidden] { display: none; }
+
 @media (min-width: 900px) {
   /* 顶栏按钮：只抬高度到 44，不设 min-width。
      真机实测教训：给 .btn-ghost 加 min-width:44px 会把「足迹」「设置」
@@ -174,11 +182,16 @@ body,
    悬停可达性规则一律**无条件**生效，不再依赖媒体查询 */
 /* 封面操作条常显（桌面端悬停浮现；简介卡上线后已被 display:none 压制，留作防御） */
 .doc-cover-ops { opacity: 1; }
-/* 侧栏条目的 ＋/✎/✕ 小按钮常显（分类/标签/收藏夹三列表同规则联动）。
+/* 侧栏条目的 ＋/✎/✕ 小按钮：仅当前选中行常显（拍板 2026-10-08）。
+   上一轮无条件常显后 240px 侧栏里三钮占约 100px、名称被挤到 70px；
+   改为 li.active 限定——书架视角下 active 行是「全部」（无 ops），
+   侧栏零按钮、名称完整；进入分类后仅当前分类行显示三钮，其余行名称
+   完整恢复；标签/收藏夹同规则联动。操作其他分类需先点它选中
+  （「先选中后操作」的触屏语义；桌面端照旧 hover 浮现不受影响）。
    触达加大：字号 11→13、min-width 32、满行高（行 min-height 44 已有）；
    gap 2→4 缓解 ✎/✕ 相邻误触（删除另有确认框兜底）。
-   宽度预算：240px 侧栏内三钮约 100px，名称区剩 ~70px（5-6 字+省略号） */
-.side-list .ops { display: inline-flex; gap: 4px; }
+   特异性 (0,2,1) 压过桌面 .side-list .ops (0,2,0)，源码顺序在其后 */
+.side-list li.active .ops { display: inline-flex; gap: 4px; }
 .side-list .ops button {
   display: inline-flex;
   align-items: center;

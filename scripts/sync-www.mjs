@@ -99,12 +99,15 @@ patch('index.html', [
   // 抽屉开关（窄屏显示，横屏宽屏隐藏）
   ['  <header class="topbar">',
    '  <header class="topbar">\n        <button id="btnDrawer" class="btn-ghost btn-drawer" title="分类与筛选">☰</button>'],
-  // 抽屉背板（锚定侧栏收尾行而非裸 </aside>：split/join 是全量替换，
+  // 抽屉背板（锚定侧栏收尾结构而非裸 </aside>：split/join 是全量替换，
   // 上游若新增第二个 aside 会把背板静默插成两份——锚到唯一文本上，
-  // 漂移只会显式报错）
-  [`      <div class="side-foot">本地资料库 · 数据不出你的电脑</div>
+  // 漂移只会显式报错。2026-10-08 上游删除 side-foot 尾注后改锚 shelfList
+  // 收尾，id 唯一性不变）
+  [`        <ul id="shelfList" class="side-list"></ul>
+      </nav>
     </aside>`,
-   `      <div class="side-foot">本地资料库 · 数据不出你的电脑</div>
+   `        <ul id="shelfList" class="side-list"></ul>
+      </nav>
     </aside>
 
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>`],
