@@ -21,9 +21,19 @@ await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no })
 
 let seq = 0
 const pending = new Map()
-const send = (method, params = {}) => new Promise(resolve => {
+// 全量审查 P2-7：每条 CDP 指令 20s 兜底超时——设备断连/应用被注入触摸杀死
+// 时回复永不到来，无超时的进程会永久挂起（曾实际拖垮过 adb 会话）
+const send = (method, params = {}) => new Promise((resolve, reject) => {
   const id = ++seq
   pending.set(id, resolve)
+  const timer = setTimeout(() => {
+    if (pending.has(id)) {
+      pending.delete(id)
+      reject(new Error(`CDP 超时（20s 无回复）：${method}——设备可能已断连`))
+    }
+  }, 20_000)
+  const wrapped = pending.get(id)
+  pending.set(id, (v) => { clearTimeout(timer); wrapped(v) })
   ws.send(JSON.stringify({ id, method, params }))
 })
 ws.onmessage = ev => {
@@ -34,15 +44,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const cmds = JSON.parse(process.argv[2] || '[]')
 const saved = {}
-for (const c of cmds) {
-  if (c.t === 'start' || c.t === 'move' || c.t === 'end') {
-    await send('Input.dispatchTouchEvent', { type: c.t === 'start' ? 'touchStart' : c.t === 'move' ? 'touchMove' : 'touchEnd', touchPoints: (c.t === 'end') ? [] : [{ x: c.x, y: c.y }] })
-  } else if (c.t === 'eval') {
-    const r = await send('Runtime.evaluate', { expression: `(async () => (${c.expr}))()`, awaitPromise: true, returnByValue: true })
-    if (c.save) saved[c.save] = r.result?.value
-    else console.log(JSON.stringify(r.result?.value ?? r, null, 1))
+try {
+  for (const c of cmds) {
+    if (c.t === 'start' || c.t === 'move' || c.t === 'end') {
+      await send('Input.dispatchTouchEvent', { type: c.t === 'start' ? 'touchStart' : c.t === 'move' ? 'touchMove' : 'touchEnd', touchPoints: (c.t === 'end') ? [] : [{ x: c.x, y: c.y }] })
+    } else if (c.t === 'eval') {
+      const r = await send('Runtime.evaluate', { expression: `(async () => (${c.expr}))()`, awaitPromise: true, returnByValue: true })
+      if (c.save) saved[c.save] = r.result?.value
+      else console.log(JSON.stringify(r.result?.value ?? r, null, 1))
+    }
+    if (c.wait) await sleep(c.wait)
   }
-  if (c.wait) await sleep(c.wait)
+} catch (err) {
+  console.error(String(err?.message || err))
+  process.exit(1)
 }
 console.log('__saved__', JSON.stringify(saved))
 ws.close()

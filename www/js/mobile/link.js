@@ -928,13 +928,18 @@ async function commitAppend () {
     const ld = await loadRecordMd(docId, file)
     if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
     const { parsed } = ld
+    // 两段写的顺序（全量审查 P2-5 修正）：先侧车后 md。readNoteLinks 的
+    // 孤儿剪除以「现存 .md」为权威剪侧车——侧车先成功而 md 失败时，多出
+    // 的幽灵摘录下次读取即被自动剪除、回到追加前状态（可自愈）；反向顺序
+    // md 先成功侧车失败则留下剪不掉的头部（md 多头无法被侧车剪除）。md
+    // 本身由 generateRecordMd 整重建，重试幂等不重复
+    // body0 是行显示快照（§7.2），併入只动摘录——原快照必须随行保留
+    await window.solace.setNoteLinkEntry(docId, file, { excerpts: merged, body0: rec.body0 || '' })
     // 降级（正文被外部改过）→ md 原样不动、仅写侧车：与编辑器「降级按原样
     // 保存」语义一致，不重建摘录区
     if (parsed.ok) {
       await window.solace.writeNote(docId, file, generateRecordMd(merged, parsed.body))
     }
-    // body0 是行显示快照（§7.2），併入只动摘录——原快照必须随行保留
-    await window.solace.setNoteLinkEntry(docId, file, { excerpts: merged, body0: rec.body0 || '' })
     window.toast?.(`已追加 ${fresh.length} 处摘录`)
     closeSelection(true)
     linksCache.delete(docId)

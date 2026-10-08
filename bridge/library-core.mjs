@@ -275,6 +275,9 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 复制仍走 base64 写盘——慢路径仅兜底用
   function importFile (file) {
     const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes)
+    // 空内容拒绝（全量审查 P2-3）：bytes 缺失时 new Uint8Array(undefined)
+    // 得空数组，原先 0 字节照常入库——产出打不开的空书条目
+    if (!bytes || !bytes.length) return Promise.reject(new Error('文件内容为空或读取失败，未导入'))
     const name = String(file.fileName || '')
     if (!name.toLowerCase().endsWith('.pdf')) {
       return Promise.reject(new Error('仅支持 PDF 文件'))
@@ -424,9 +427,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     findDoc(id)
     try {
       return base64ToBytes(await fs.readFileB64(`files/${findDoc(id).id}.pdf`))
-    } catch {
-      // 副本可能已被手动清理：给出可读错误（同桌面端文案）
-      throw new Error('库内 PDF 副本已丢失，请删除这本书后重新导入（原文件不受影响）')
+    } catch (err) {
+      // 只有「文件不存在」才判副本丢失（被手动清理等）；I/O、权限、base64
+      // 损坏等故障原样上抛——此前 catch-all 把瞬时磁盘故障也报成
+      // 「请删除重导」，诱导用户删书（全量审查 P2-1）
+      if (isNotFoundError(err)) {
+        throw new Error('库内 PDF 副本已丢失，请删除这本书后重新导入（原文件不受影响）')
+      }
+      throw err
     }
   }
 
@@ -661,9 +669,15 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   async function searchTextIndex (kw) {
     const needle = normalizeKeyword(kw)
     if (!needle) return {}
-    await migrateLegacyTextIndex()
+    // 一次性旧格式迁移须串行（内部有写）；走队列 await 缓存 promise
+    await mutate(() => migrateLegacyTextIndex())
     const live = new Set(data.documents.map(d => d.id))
     const hits = {}
+    // 本函数已出 mutation 队列裸跑（全量审查 P2-2）：大库逐分片读期间，
+    // 翻页进度落盘等短写不再排队等搜索整段跑完（窗口内杀进程会丢进度）。
+    // 自愈路径（分片丢失清 meta 落盘）因此不能在循环内直接写——收集
+    // 后回队执行，文件层安全由 per-path 写串行兜底
+    const stale = []
     const ids = Object.keys(textIndexMeta.entries).filter(id => live.has(id) && !textIndexMeta.entries[id].failed)
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]
@@ -679,10 +693,15 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         }
       } else {
         // 分片丢失/损坏：清掉 meta 让渲染层重新提取，索引自愈
-        delete textIndexMeta.entries[id]
-        await saveTextIndexMeta()
+        stale.push(id)
       }
       if ((i & 15) === 15) await new Promise(r => setTimeout(r, 0))
+    }
+    if (stale.length) {
+      mutate(() => {
+        for (const id of stale) delete textIndexMeta.entries[id]
+        return saveTextIndexMeta()
+      }).catch(() => { /* 自愈失败：下次搜索再试（meta 未提交会回滚） */ })
     }
     return hits
   }
@@ -904,7 +923,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     getCoverDataUrl,
     getTextIndexStatus: mutator(getTextIndexStatus),
     setTextIndex: mutator(setTextIndex),
-    searchTextIndex: mutator(searchTextIndex),
+    searchTextIndex,
     addCategory: mutator(addCategory),
     renameCategory: mutator(renameCategory),
     moveCategory: mutator(moveCategory),

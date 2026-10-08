@@ -130,6 +130,14 @@ async function importDialog () {
 
 /* ---- window.solace（签名与桌面端 preload.js 一一对应） ---- */
 
+// 侧车迟到写防御的查询（用途见 writeNote / setNoteLinkEntry / writeAnnotations
+// 的注释）：书是否仍在库。getData 返回快照克隆；init 前为 null——一律按
+// 不在库拒写（此时也不存在合法写）
+const docAlive = (id) => {
+  const docs = lib.getData()?.documents
+  return Array.isArray(docs) && docs.some(d => d.id === id)
+}
+
 const solace = {
   // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
   isMobile: true,
@@ -252,7 +260,10 @@ const solace = {
   revealNote: gate(async () => true), // 无「在文件夹中查看」，按钮已隐藏
   // 移动端内置编辑器专用：读写笔记正文
   readNote: gate((id, file) => notes.read(id, file)),
-  writeNote: gate((id, file, text) => notes.write(id, file, text)),
+  writeNote: gate(async (id, file, text) => {
+    if (!docAlive(id)) return false
+    return notes.write(id, file, text)
+  }),
 
   // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
   // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
@@ -262,11 +273,22 @@ const solace = {
     // 队列外提前取的过期快照会把并发保存中刚写入的锚点误剪成孤儿
     return links.readPruned(id, async () => (await notes.list(id)).notes.map(f => f.file))
   }),
-  setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
+  // 侧车迟到写防御（全量审查 P2-4）：删书后 UI 层的防抖冲刷/重试队列
+  // 可能仍持有旧书数据（ink.js retryWrites 在下次 flushSave 无条件重写、
+  // links setEntry 排队同理），把刚清掉的 notes/links 侧车复活成永不再
+  // 清理的孤儿。桥侧统一兜底：写前查书仍在库，不在则返回 false 拒绝
+  // ——丢的只是死数据，UI 层按写失败处理即可
+  setNoteLinkEntry: gate(async (id, file, entry) => {
+    if (!docAlive(id)) return false
+    return links.setEntry(id, file, entry)
+  }), // entry=null → 删除
 
   // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
   readAnnotations: gate((id) => annotations.read(id)),
-  writeAnnotations: gate((id, data) => annotations.write(id, data)),
+  writeAnnotations: gate(async (id, data) => {
+    if (!docAlive(id)) return false
+    return annotations.write(id, data)
+  }),
 
   // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
   getStartupNotice: () => lib.getStartupNotice()

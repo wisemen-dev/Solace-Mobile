@@ -21,7 +21,9 @@ if (fwd.status !== 0) {
   process.exit(1)
 }
 
-const list = await (await fetch('http://127.0.0.1:9222/json')).json()
+// fetch 带超时（全量审查 P2-7）：adb forward 口僵死时 fetch 无限挂起，
+// 而尾部的 20s 兜底定时器此刻尚未注册（await 在其之前），进程假死
+const list = await (await fetch('http://127.0.0.1:9222/json', { signal: AbortSignal.timeout(10_000) })).json()
 const page = list.find(t => t.type === 'page' && t.url.includes('localhost'))
 if (!page) {
   console.error('没有 WebView 页面目标：', list.map(t => `${t.type}:${t.url}`))

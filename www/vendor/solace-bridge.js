@@ -1583,6 +1583,7 @@
     }
     function importFile(file) {
       const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
+      if (!bytes || !bytes.length) return Promise.reject(new Error("\u6587\u4EF6\u5185\u5BB9\u4E3A\u7A7A\u6216\u8BFB\u53D6\u5931\u8D25\uFF0C\u672A\u5BFC\u5165"));
       const name = String(file.fileName || "");
       if (!name.toLowerCase().endsWith(".pdf")) {
         return Promise.reject(new Error("\u4EC5\u652F\u6301 PDF \u6587\u4EF6"));
@@ -1718,8 +1719,11 @@
       findDoc(id);
       try {
         return base64ToBytes(await fs2.readFileB64(`files/${findDoc(id).id}.pdf`));
-      } catch {
-        throw new Error("\u5E93\u5185 PDF \u526F\u672C\u5DF2\u4E22\u5931\uFF0C\u8BF7\u5220\u9664\u8FD9\u672C\u4E66\u540E\u91CD\u65B0\u5BFC\u5165\uFF08\u539F\u6587\u4EF6\u4E0D\u53D7\u5F71\u54CD\uFF09");
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          throw new Error("\u5E93\u5185 PDF \u526F\u672C\u5DF2\u4E22\u5931\uFF0C\u8BF7\u5220\u9664\u8FD9\u672C\u4E66\u540E\u91CD\u65B0\u5BFC\u5165\uFF08\u539F\u6587\u4EF6\u4E0D\u53D7\u5F71\u54CD\uFF09");
+        }
+        throw err;
       }
     }
     async function markOpened(id, type = "open") {
@@ -1928,9 +1932,10 @@
     async function searchTextIndex(kw) {
       const needle = normalizeKeyword(kw);
       if (!needle) return {};
-      await migrateLegacyTextIndex();
+      await mutate(() => migrateLegacyTextIndex());
       const live = new Set(data.documents.map((d) => d.id));
       const hits = {};
+      const stale = [];
       const ids = Object.keys(textIndexMeta.entries).filter((id) => live.has(id) && !textIndexMeta.entries[id].failed);
       for (let i = 0; i < ids.length; i++) {
         const id = ids[i];
@@ -1948,10 +1953,16 @@
             }
           }
         } else {
-          delete textIndexMeta.entries[id];
-          await saveTextIndexMeta();
+          stale.push(id);
         }
         if ((i & 15) === 15) await new Promise((r) => setTimeout(r, 0));
+      }
+      if (stale.length) {
+        mutate(() => {
+          for (const id of stale) delete textIndexMeta.entries[id];
+          return saveTextIndexMeta();
+        }).catch(() => {
+        });
       }
       return hits;
     }
@@ -2165,7 +2176,7 @@
       getCoverDataUrl,
       getTextIndexStatus: mutator(getTextIndexStatus),
       setTextIndex: mutator(setTextIndex),
-      searchTextIndex: mutator(searchTextIndex),
+      searchTextIndex,
       addCategory: mutator(addCategory),
       renameCategory: mutator(renameCategory),
       moveCategory: mutator(moveCategory),
@@ -2783,6 +2794,10 @@
     }
     return { imported, errors, duplicates };
   }
+  var docAlive = (id) => {
+    const docs = lib.getData()?.documents;
+    return Array.isArray(docs) && docs.some((d) => d.id === id);
+  };
   var solace = {
     // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
     isMobile: true,
@@ -2903,18 +2918,32 @@
     // 无「在文件夹中查看」，按钮已隐藏
     // 移动端内置编辑器专用：读写笔记正文
     readNote: gate((id, file) => notes.read(id, file)),
-    writeNote: gate((id, file, text) => notes.write(id, file, text)),
+    writeNote: gate(async (id, file, text) => {
+      if (!docAlive(id)) return false;
+      return notes.write(id, file, text);
+    }),
     // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
     // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
     // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
     readNoteLinks: gate(async (id) => {
       return links.readPruned(id, async () => (await notes.list(id)).notes.map((f2) => f2.file));
     }),
-    setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
+    // 侧车迟到写防御（全量审查 P2-4）：删书后 UI 层的防抖冲刷/重试队列
+    // 可能仍持有旧书数据（ink.js retryWrites 在下次 flushSave 无条件重写、
+    // links setEntry 排队同理），把刚清掉的 notes/links 侧车复活成永不再
+    // 清理的孤儿。桥侧统一兜底：写前查书仍在库，不在则返回 false 拒绝
+    // ——丢的只是死数据，UI 层按写失败处理即可
+    setNoteLinkEntry: gate(async (id, file, entry) => {
+      if (!docAlive(id)) return false;
+      return links.setEntry(id, file, entry);
+    }),
     // entry=null → 删除
     // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
     readAnnotations: gate((id) => annotations.read(id)),
-    writeAnnotations: gate((id, data) => annotations.write(id, data)),
+    writeAnnotations: gate(async (id, data) => {
+      if (!docAlive(id)) return false;
+      return annotations.write(id, data);
+    }),
     // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
     getStartupNotice: () => lib.getStartupNotice()
   };
