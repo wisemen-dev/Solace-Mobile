@@ -49,8 +49,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
 4. 顶栏加 `#btnDrawer`（抽屉开关，窄屏显示）
-5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 side-foot 收尾行防上游新增
-   aside 时静默重复插入）
+5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 shelfList 收尾结构防上游新增
+   aside 时静默重复插入。2026-10-08 前锚 side-foot 收尾行，上游删除该尾注
+   后改锚——含唯一 id 的 ul 整体串匹配，唯一性不变）
 6. 底部加 `vendor/solace-bridge.js`（经典脚本，先于模块执行）
 7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js；与第 6 条同一锚点一次替换，
    合计 1 对）

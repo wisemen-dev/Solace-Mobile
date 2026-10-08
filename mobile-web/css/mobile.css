@@ -104,6 +104,11 @@ button,
   padding-top: 10px;
   padding-bottom: 10px;
 }
+/* 顶栏右推弹性由搜索框 flex:1 主管（宽屏 .search { flex: 1 1 320px }），
+   桌面为右组贴右引入的 .topbar-spacer 在移动端不参与分配——否则剩余
+   空间被两者平分、搜索框缩水且「批量」前出现空隙 */
+.topbar-spacer { display: none; }
+
 /* [hidden] 修复（2026-10-08）：下方宽屏触控规则给 .topbar .btn-ghost 设了
    display:inline-flex (0,2,0)，压过浏览器对 [hidden] 的默认 display:none
    (0,1,0)——「← 书架」#btnBackShelf 与「🌙」#btnDormant 明明设了 hidden
@@ -281,7 +286,6 @@ body,
   }
   .search { flex: 1 1 160px; min-width: 140px; }
   .topbar .btn-ghost { padding: 7px 12px; font-size: 13px; }
-  .count { margin-left: 0; width: 100%; order: 9; }
 
   .doc-grid { padding: 14px; }
 
