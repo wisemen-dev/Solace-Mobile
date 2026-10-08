@@ -212,6 +212,29 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
   求值（Runtime.evaluate 不支持顶层 await，表达式要自带 async IIFE）。
   配合 `adb shell uiautomator dump` 驱动原生 UI（SAF 选择器）。
 
+## 动效规范（2026-10-08 成文，A5）
+
+事实标准自现有实现归纳；新增动效一律按此对齐，防止散化。
+
+- **时长三档**：微 ~100ms（按压反馈、scale 微缩）｜标准 160–200ms
+  （过渡、淡入、对话框进出 180/120）｜场景 ~300ms（编排：工具簇生长、
+  开场 rise-in）。不出现 400ms 以上的单元素动画（开场编排的 stagger
+  总时长除外）。
+- **缓动**：进场一律 `--ease-out-expo`（快速起步、丝滑收尾），收场
+  `--ease-in-expo`；不用 linear 与弹性 overshoot。
+- **错峰步进**：列表/卡片入场编排 35ms/项（card-in 已有），工具簇
+  40ms/钮——同屏不超过 13 项步进（card-in 已 `min(--i, 12)` 封顶）。
+- **进出对称**：对话框进场 180ms scale 0.96→1 + 淡入，退场 120ms
+  反向（dialog-motion.js 包装 close() 挂类）；主题切换走
+  `startViewTransition` 整页交叉淡入（theme.js 已有）。
+- **reduced-motion 全覆盖**：每个新动效必须进 mobile.css 的
+  `@media (prefers-reduced-motion: reduce)` 跳过块；JS 侧
+  （dialog-motion）安装前检测。降级保留布局性 transform（如工具簇
+  菜单的 translateY(-40%) 是定位不是动画）。
+- **一次性宣告动画**（模式切换等）：类挂上自动播、keyframes 终态
+  forwards 透明停留、类摘除即消失——参考标注呼吸光
+  （`body.ink-active #previewOverlay::after`）。
+
 ## 手势实现要点（曾踩的坑）
 
 - **滑动翻页**：监听挂 `#previewBody`（`overflow:auto` 滚动容器）。

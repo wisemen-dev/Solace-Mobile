@@ -212,9 +212,13 @@ function locateOffsets (el, from, to) {
 
 // 按行统一带渲染（拍板 2026-10-07）：拖选（蓝）/入选（紫）不再做内联背景，
 // 而是层内 .lnk-bands 容器上的等高带 div——容器插在层首，与文本项同为绝对
-// 定位按 DOM 序绘制，天然垫在琥珀标记之下（链接态优先保持）。
+// 定位按 DOM 序绘制。2026-10-08 持久琥珀标记同样移交带渲染（用户实测：
+// 保存后标记按文本项内联背景宽度不一、中英文项间露出断隔——拖选时等高带
+// 正常、落盘标记回退旧内联即此根因）；span 仅保留为点击锚（dataset.file +
+// 文字盒命中），带补上项间隙的全宽命中。带列表序即 z 序：琥珀垫底，
+// 进行中的拖选/入选蓝紫在上（动态反馈 > 既有状态，半透明叠加仍透出琥珀）。
 // 几何用 DOM Range 的 getClientRects：字符级精确，多行文本项自动逐行分片
-function renderBands (bandSel, bandDrag) {
+function renderBands (bandSel, bandDrag, bandLnk) {
   if (!layer) return
   let box = layer.querySelector(':scope > .lnk-bands')
   if (!box) {
@@ -226,9 +230,16 @@ function renderBands (bandSel, bandDrag) {
   if (typeof document.createRange !== 'function') return // node 桩环境：带渲染跳过（断言不看 DOM）
   const layerRect = layer.getBoundingClientRect()
   if (!layerRect.width && !layerRect.height) return
-  for (const [map, cls] of [[bandDrag, 'lnk-band-drag'], [bandSel, 'lnk-band-sel']]) {
+  // 琥珀带带 lnk class + dataset.file：pointerup 的 closest('.lnk') 直接命中，
+  // 点击开查看器零新增监听（容器 pointer-events:none，琥珀带在 CSS 单独放开）。
+  // 琥珀按 file 分组独立画带：一行内多条摘录时各自成带，点击归属与 span 同义
+  const groups = []
+  if (bandLnk) for (const [file, m] of bandLnk) groups.push({ map: m, cls: 'lnk-band-lnk', file })
+  groups.push({ map: bandDrag, cls: 'lnk-band-drag' })
+  groups.push({ map: bandSel, cls: 'lnk-band-sel' })
+  for (const { map, cls, file } of groups) {
     const rects = []
-    for (const [i, list] of map) {
+    for (const [i, list] of map || new Map()) {
       const el = layer.querySelector(`[data-item="${i}"]`)
       if (!el) continue
       for (const { from, to } of list) {
@@ -253,7 +264,8 @@ function renderBands (bandSel, bandDrag) {
     }
     for (const b of groupRectsToBands(rects)) {
       const div = document.createElement('div')
-      div.className = 'lnk-band ' + cls
+      div.className = 'lnk-band ' + cls + (file ? ' lnk' : '')
+      if (file) div.dataset.file = file
       div.style.left = b.x + 'px'
       div.style.top = b.y + 'px'
       div.style.width = b.w + 'px'
@@ -271,6 +283,8 @@ function renderMarkers (d) {
   const entry = textCache.get(`${d.docId}:${d.page}`)
   if (!entry) return
   const byItem = new Map()
+  // 琥珀带按 file 分组（renderBands 约定）：span 锚与带视觉同源同区间
+  const bandLnk = new Map()
   const docLinks = linksCache.get(d.docId)
   for (const [file, rec] of Object.entries((docLinks && docLinks.records) || {})) {
     for (const ex of (rec && rec.excerpts) || []) {
@@ -279,7 +293,11 @@ function renderMarkers (d) {
         ? entry.spans[ex.hint.item].start + ex.hint.char
         : null
       const r = findRangeByText(entry.pageText, ex.text, hint)
-      if (r) rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
+      if (r) {
+        rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
+        if (!bandLnk.has(file)) bandLnk.set(file, new Map())
+        rangesToItems(entry, r.start, r.end, null, null, bandLnk.get(file))
+      }
     }
   }
   const bandSel = new Map() // item -> [{from, to}]（项内相对偏移）
@@ -308,7 +326,7 @@ function renderMarkers (d) {
     const el = layer.querySelector(`[data-item="${i}"]`)
     if (el) paintItem(el, list)
   }
-  renderBands(bandSel, bandDrag)
+  renderBands(bandSel, bandDrag, bandLnk)
   // 跳回定位：目标页渲染完才闪（一次性消费；同页跳回在 jumpToExcerpt 直接闪）
   if (pendingFlash && pendingFlash.docId === d.docId && String(pendingFlash.page) === String(d.page)) {
     tryFlashNow()
@@ -1237,7 +1255,10 @@ function tryFlashNow () {
   if (!pendingFlash || !lastLayout || !layer) return false
   if (pendingFlash.docId !== lastLayout.docId) return false
   if (String(pendingFlash.page) !== String(lastLayout.page)) return false
-  const t = layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
+  // 优先闪带（span 背景已移交带，闪 span 不可见）；带缺位（极端：几何全部
+  // 落空）退回 span 兜底，滚动定位行为一致
+  const t = layer.querySelector(`.lnk-band-lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
+    || layer.querySelector(`.lnk[data-file="${CSS.escape(pendingFlash.file)}"]`)
   pendingFlash = null
   if (!t) return false
   t.scrollIntoView({ block: 'center' })

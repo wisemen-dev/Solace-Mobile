@@ -9,6 +9,7 @@ import './tools.js'
 import './chapter-prompt.js'
 import './doc-info.js'
 import './spine-group.js'
+import './dialog-motion.js'
 
 const $ = (sel) => document.querySelector(sel)
 
@@ -111,6 +112,26 @@ previewBody.addEventListener('pointercancel', (e) => {
   activePtrs.delete(e.pointerId)
   if (ptr && e.pointerId === ptr.id) ptr = null
 }, { passive: true })
+
+/* ================= 翻页淡入反馈（UI 优化 A2，2026-10-08） =================
+   移动端所有翻页路径（滑动/边缘点按/底栏按钮）都收口在 btnNext/btnPrev
+   的 click——在这两钮叠加监听给页面容器挂 .page-fx，CSS 让页面各层
+   （canvas/墨迹层/文本层，previewBody 直接子元素）同帧淡入，给大脑一个
+   「页已翻过」的确认；此前 canvas 内容瞬间替换无任何过渡。
+   快翻节流 250ms：连续翻页时不重播（反复重启的闪烁比持续静止更晕）。
+   页码跳转/目录跳转不在此路径，跳变本身有明确的落点反馈，不加 */
+let pageFxBusy = false
+function playPageFx () {
+  if (pageFxBusy) return
+  pageFxBusy = true
+  previewBody.classList.add('page-fx')
+  setTimeout(() => {
+    previewBody.classList.remove('page-fx')
+    pageFxBusy = false
+  }, 240)
+}
+btnNext?.addEventListener('click', playPageFx, true)
+btnPrev?.addEventListener('click', playPageFx, true)
 
 /* ================= 内置笔记编辑器（桌面端经 Typora 打开的等价物） ===== */
 

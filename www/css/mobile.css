@@ -401,13 +401,22 @@ body,
   white-space: pre;
   transform-origin: 0% 0%;
 }
+/* 摘录标记（2026-10-08 视觉移交带渲染）：拖选时等高带正常、保存后标记却
+   宽度不一且中英文项间断隔——根因是持久 .lnk span 用内联背景，随 pdf.js
+   文本项（独立字号+transform 缩放）的字体盒高低错落、项间空隙露出底色。
+   span 现仅承担点击锚（文字盒命中 + dataset.file），背景/底边线移交
+   .lnk-band-lnk 等高带（行聚类、跨项连续），flash 动画也随之走带 */
 .ink-text-layer .lnk {
   pointer-events: auto;
   cursor: pointer;
+}
+.lnk-band.lnk-band-lnk {
   background: rgba(245, 159, 0, 0.28);
   border-bottom: 1px solid rgba(245, 159, 0, 0.75);
+  pointer-events: auto; /* 容器 none，琥珀带单独放开：补上项间隙的全宽命中 */
+  cursor: pointer;
 }
-.lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
+.lnk-band-lnk.lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
 @keyframes lnk-flash { 50% { background: rgba(245, 159, 0, 0.75); } }
 
 /* 选词模式：放开文本层指针并取手势主权（§6.6 修订）。touch-action:none 是
@@ -761,7 +770,11 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
    先出），收起态定义回程（expo-in 200ms + 30ms 反序步进，远端先收）——
    CSS transition 取「目标状态」的过渡值，两态各写各的即得镜像缓动；
    类切换天然从当前呈现值起算，半途反点顺滑逆转（§5.5） */
-.tools-cluster { position: relative; display: inline-flex; }
+/* align-items:center（2026-10-08 对齐修复）：preview-actions 是 flex，
+   默认 stretch 会把无固定高的本容器拉伸到行高 44（与目录胶囊/关闭钮
+   等高）——容器内若不居中，36px 触发器顶对齐偏上 4px，三控件中心线
+   不齐（用户实测）。让触发器在容器内垂直居中即与两侧 44px 控件同心 */
+.tools-cluster { position: relative; display: inline-flex; align-items: center; }
 
 /* 触发器：36px 圆钮三条杠；::after 外扩命中区到 44px */
 .tools-trigger {
@@ -916,11 +929,56 @@ body.tools-open #btnToc:not([hidden]) {
 .tools-circle:active { transform: scale(0.92); background: var(--card-hover); }
 .tools-circle svg { display: block; pointer-events: none; }
 
+/* ---------- 对话框进出场过渡（UI 优化 A1，2026-10-08） ----------
+   进场纯 CSS：dialog[open] 的 animation 在 UA 摘挂 open 时自动触发，
+   覆盖全应用 10+ 个对话框，零 JS 零补丁。缩放 0.96 起步——面板从
+   「操作发源地」轻微放大就位（180ms expo-out）；蒙层同步淡入。
+   退场由 dialog-motion.js 包装 close() 挂 .dlg-leave 触发（120ms
+   expo-in 加速收），forwards 定格终态防闪回 */
+dialog[open] { animation: dlg-in 180ms var(--ease-out-expo); }
+dialog[open]::backdrop { animation: dlg-backdrop-in 180ms var(--ease-out-expo); }
+dialog.dlg-leave { animation: dlg-out 120ms var(--ease-in-expo) forwards; }
+dialog.dlg-leave::backdrop { animation: dlg-backdrop-out 120ms var(--ease-in-expo) forwards; }
+@keyframes dlg-in { from { opacity: 0; transform: scale(0.96); } }
+@keyframes dlg-out { to { opacity: 0; transform: scale(0.97); } }
+@keyframes dlg-backdrop-in { from { opacity: 0; } }
+@keyframes dlg-backdrop-out { to { opacity: 0; } }
+
+/* 翻页淡入（A2）：页面各层（previewBody 直接子元素——canvas/墨迹层/
+   文本层）同帧淡入；class 由 mobile.js 翻页收口处挂摘，240ms 自清。
+   子元素统一动效避免单动 canvas 时文本/墨迹层先显的穿帮 */
+#previewBody.page-fx > * { animation: page-fade-in 160ms var(--ease-out-expo); }
+@keyframes page-fade-in { from { opacity: 0; } }
+
+/* 标注模式页面层状态宣告（UI 优化 D2，2026-10-08）：切入标注时页面边缘
+   泛起一次 600ms accent 呼吸光——此前模式反馈只有顶栏远端的光环，页面
+   层无状态宣告，用户第一笔下去才知道在标注模式。body.ink-active 由
+   ink.js 维护，类挂上动画自动播一次、终态透明停留，退出即随类摘除；
+   overlay 是全屏 fixed 容器（不随页面滚动），伪元素盖得住全页、
+   pointer-events:none 不挡第一笔 */
+body.ink-active #previewOverlay::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  animation: ink-breathe 600ms var(--ease-out-expo) forwards;
+}
+@keyframes ink-breathe {
+  0% { box-shadow: inset 0 0 0 3px var(--accent), inset 0 0 64px var(--accent-soft); opacity: 1; }
+  100% { box-shadow: inset 0 0 0 3px transparent, inset 0 0 64px transparent; opacity: 0; }
+}
+
 /* 降级（§5.6）：减弱动效下菜单与展开项只做淡入淡出，去缩放与步进。
    注意菜单的 translateY(-40%) 是**布局语义**（与触发器垂直近居中 + 上缘
    不出屏），不是动画，必须保留——写成 transform:none 会让菜单与触发器
    顶边对齐而错位 */
 @media (prefers-reduced-motion: reduce) {
+  dialog[open],
+  dialog[open]::backdrop,
+  dialog.dlg-leave,
+  dialog.dlg-leave::backdrop,
+  body.ink-active #previewOverlay::after,
+  #previewBody.page-fx > * { animation: none; }
   .tools-menu,
   .tools-cluster.open .tools-menu {
     transform: translateY(-40%);
@@ -1007,14 +1065,17 @@ body.tools-open #btnToc:not([hidden]) {
    display:inline-flex（6bc9674 的 (0,2,0)），无需 !important */
 #btnDormant { display: none; }
 
-/* ---------- 书脊分组头（移动补丁，2026-10-07 拍板）----------
-   轻量文字行：隐去色点、徽标退掉胶囊底（纯次要色文字），无底色无边框
-   ——「无边的是内容」；组头可点（filter-cat 只看该分类），按压才浮现反馈。
-   分组本体（顶级归并/搜索与单组平铺）在 spine-group.mjs，见 app.js 补丁 */
-.spine-mode .spine-group-head .pile-dot { display: none; }
+/* ---------- 书脊分组头（移动补丁，2026-10-07 拍板；2026-10-08 强化）----------
+   原轻量文字行在斑斓书脊旁存在感不足（视觉审查：分区信号弱导致扫视时
+   「一整片书脊」）——色点恢复并改造成左侧 4px 分类色竖条（「分区脊柱」
+   隐喻，与封面墙分类圆点同源同色），名称提亮一档（muted→text）+ 字号
+   13→14；徽标仍退次要。组头可点（filter-cat 只看该分类），按压才浮现反馈 */
+.spine-mode .spine-group-head .pile-dot {
+  width: 4px; height: 16px; border-radius: 2px;
+}
 .spine-mode .spine-group-name {
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--text);
+  font-size: 14px;
   letter-spacing: 0.5px;
 }
 .spine-mode .spine-group-head .pile-badge {
