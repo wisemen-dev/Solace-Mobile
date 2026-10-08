@@ -26,7 +26,12 @@ export function base64ToBytes (b64) {
   let buf = 0
   let bits = 0
   for (let i = 0; i < clean.length; i++) {
-    const v = LOOKUP[clean.charCodeAt(i) & 127]
+    const code = clean.charCodeAt(i)
+    // 非 ASCII 直接拒（全量审查 P3）：&127 掩码会把 0x80-0xFF 的字符
+    // 静默映射进表内（如 é→0x65='e'），损坏输入解出错误字节而不报错——
+    // 索引页文本一旦混入非 ASCII 走到这条解码路径就是静默数据错乱
+    if (code > 127) throw new Error('非法 base64 数据')
+    const v = LOOKUP[code]
     if (v < 0) throw new Error('非法 base64 数据')
     buf = (buf << 6) | v
     bits += 6

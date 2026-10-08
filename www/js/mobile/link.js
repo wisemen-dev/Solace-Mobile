@@ -136,7 +136,9 @@ window.addEventListener('solace-ink-layout', async (e) => {
   ensureLayer()
   lastLayout = d
   applyLayout(d)
-  await buildLayer(d)
+  // catch 掉（全量审查 P3）：预览竞态关闭时 getTextContent 拒绝会成
+  // unhandled rejection（纯噪音）；标记渲染失败下次翻页自然重试
+  await buildLayer(d).catch(() => {})
 })
 
 window.addEventListener('solace-ink-close', () => {
@@ -398,7 +400,10 @@ function closeSelection (clear) {
 }
 
 window.addEventListener('solace-link-cancel-request', () => { if (window.linkSelecting) closeSelection(true) })
-document.getElementById('btnLink')?.addEventListener('click', () => openSelection())
+// catch（全量审查 P3）：openSelection 内 getTextContent 在预览竞态关闭时拒绝，
+// async 监听器的 rejection 无人接就成了 unhandled 噪音（openSelection 内部
+// 已有 toast 提示真实故障，这里只防泄漏）
+document.getElementById('btnLink')?.addEventListener('click', () => openSelection().catch(() => {}))
 
 // 点按分流：记录标记优先（阅读模式也可点开，选中态标记不响应），其余走选词。
 // 选词时命中判据用 [data-item] 反查文本项，再把项内字符偏移换算成页面文本偏移

@@ -1341,7 +1341,9 @@
     let buf = 0;
     let bits = 0;
     for (let i = 0; i < clean.length; i++) {
-      const v = LOOKUP[clean.charCodeAt(i) & 127];
+      const code = clean.charCodeAt(i);
+      if (code > 127) throw new Error("\u975E\u6CD5 base64 \u6570\u636E");
+      const v = LOOKUP[code];
       if (v < 0) throw new Error("\u975E\u6CD5 base64 \u6570\u636E");
       buf = buf << 6 | v;
       bits += 6;
@@ -1849,7 +1851,7 @@
       } catch {
       }
       try {
-        await fs2.rename("textindex/index.json", "textindex/index.json.corrupt");
+        await fs2.rename("textindex/index.json", await nextCorruptName("textindex/index.json"));
       } catch {
       }
       return { version: 1, entries: {} };
@@ -1987,6 +1989,22 @@
     async function sweepOrphans() {
       await fs2.rm("library.json.tmp");
       await fs2.rm("textindex/index.json.tmp");
+      for (const [dir, test] of [
+        ["covers", (n) => n.endsWith(".jpg.tmp")],
+        ["annotations", (n) => n.endsWith(".json.tmp")],
+        ["links", (n) => n.endsWith(".json.tmp")],
+        ["notes", (n) => n.endsWith(".md.tmp")]
+      ]) {
+        let entries;
+        try {
+          entries = await fs2.readdir(dir);
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          if (test(e.name)) await fs2.rm(`${dir}/${e.name}`);
+        }
+      }
       let staged = [];
       try {
         staged = await fs2.readdir("files");
@@ -2128,7 +2146,7 @@
       return true;
     }
     async function updateSettings(patch) {
-      if (!data.settings) data.settings = {};
+      if (typeof data.settings !== "object" || data.settings === null || Array.isArray(data.settings)) data.settings = {};
       const strings = [
         "notesEditorPath",
         "pdfReaderPath",

@@ -27,11 +27,16 @@ export function installDialogMotion () {
     const finish = () => {
       if (done) return
       done = true
+      this.removeEventListener('animationend', onEnd)
       this.classList.remove('dlg-leave')
       delete this.dataset.leaving
       orig.call(this, ...args)
     }
-    this.addEventListener('animationend', finish, { once: true })
+    // 只认 dlg-out（全量审查 P3）：对话框落在 180ms 进场动画内被关闭时，
+    // 进场动画的 animationend 会先到——不校验名字会被它提前 finish、跳过
+    // 退场动画直接消失；子元素动画同理（once 不再适用，手动摘除）
+    const onEnd = (e) => { if (e.target === this && e.animationName === 'dlg-out') finish() }
+    this.addEventListener('animationend', onEnd)
     setTimeout(finish, 160)
   }
   // 具名便于上面的防重复安装判断（minifier 后仍稳定）

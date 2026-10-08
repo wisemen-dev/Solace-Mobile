@@ -582,8 +582,9 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         return { version: 1, entries: obj.entries }
       }
     } catch { /* 按损坏处理 */ }
-    // meta 损坏不值得挡门：索引退回「无」，渲染层按需重建
-    try { await fs.rename('textindex/index.json', 'textindex/index.json.corrupt') } catch { /* 继续 */ }
+    // meta 损坏不值得挡门：索引退回「无」，渲染层按需重建。备份用顺延
+    // 编号（全量审查 P3：与 nextCorruptName 同策略，二次损坏不覆盖上一份）
+    try { await fs.rename('textindex/index.json', await nextCorruptName('textindex/index.json')) } catch { /* 继续 */ }
     return { version: 1, entries: {} }
   }
 
@@ -736,6 +737,22 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   async function sweepOrphans () {
     await fs.rm('library.json.tmp')
     await fs.rm('textindex/index.json.tmp')
+    // 崩溃残留清扫补全（全量审查 P3）：侧车与封面的 tmp 同样可能残留——
+    // covers/<id>.jpg.tmp（封面写）、annotations/links 的 .json.tmp、
+    // notes 的 .md.tmp（各自写队列的原子写中间态）。逐目录枚举 + 严格
+    // 后缀匹配，绝不动正常数据
+    for (const [dir, test] of [
+      ['covers', n => n.endsWith('.jpg.tmp')],
+      ['annotations', n => n.endsWith('.json.tmp')],
+      ['links', n => n.endsWith('.json.tmp')],
+      ['notes', n => n.endsWith('.md.tmp')]
+    ]) {
+      let entries
+      try { entries = await fs.readdir(dir) } catch { continue }
+      for (const e of entries) {
+        if (test(e.name)) await fs.rm(`${dir}/${e.name}`)
+      }
+    }
     let staged = []
     try { staged = await fs.readdir('files') } catch { /* 目录尚未建立 */ }
     for (const e of staged) {
@@ -882,7 +899,10 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // externalToolPackage（Olib 包名）——桌面端 save() 全量回写 settings，
   // 未知键不会丢，两端互搬安全
   async function updateSettings (patch) {
-    if (!data.settings) data.settings = {}
+    // settings 被污染成原始类型时（互传/手改 library.json），严格模式下
+    // `data.settings[key]=` 抛 TypeError、设置功能全瘫（全量审查 P3）——
+    // 就地自愈为空对象，本次 patch 正常落
+    if (typeof data.settings !== 'object' || data.settings === null || Array.isArray(data.settings)) data.settings = {}
     const strings = ['notesEditorPath', 'pdfReaderPath', 'externalToolPath', 'watchFolder', 'watchCategory',
       'watchTreeUri', 'watchFolderName', 'externalToolPackage']
     const booleans = ['resumeReading', 'confetti', 'openingAnimation', 'watchEnabled']

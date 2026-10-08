@@ -50,22 +50,31 @@ public class SolaceNativePlugin extends Plugin {
         // 全量枚举 + 逐个 loadLabel 都是重活（Olib 检测还会按多关键字连查），
         // 必须让出主线程，否则设置面板「检测…」期间界面冻结
         io.execute(() -> {
-            String kw = keyword == null ? "" : keyword.toLowerCase();
-            Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
-            List<ResolveInfo> apps = getContext().getPackageManager().queryIntentActivities(main, 0);
-            JSArray out = new JSArray();
-            for (ResolveInfo app : apps) {
-                String pkg = app.activityInfo.packageName;
-                String label = String.valueOf(app.loadLabel(getContext().getPackageManager()));
-                if (!kw.isEmpty() && !pkg.toLowerCase().contains(kw) && !label.toLowerCase().contains(kw)) continue;
-                JSObject o = new JSObject();
-                o.put("package", pkg);
-                o.put("label", label);
-                out.put(o);
+            // 兜底 catch（全量审查 P3）：意外 RuntimeException 时 promise 落定
+            // 空表（与「无匹配」同形），不悬挂调用方——native.mjs 旧版曾吞
+            // error 字段，宁可空表也不给 UI 留悬挂 promise
+            try {
+                String kw = keyword == null ? "" : keyword.toLowerCase();
+                Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+                List<ResolveInfo> apps = getContext().getPackageManager().queryIntentActivities(main, 0);
+                JSArray out = new JSArray();
+                for (ResolveInfo app : apps) {
+                    String pkg = app.activityInfo.packageName;
+                    String label = String.valueOf(app.loadLabel(getContext().getPackageManager()));
+                    if (!kw.isEmpty() && !pkg.toLowerCase().contains(kw) && !label.toLowerCase().contains(kw)) continue;
+                    JSObject o = new JSObject();
+                    o.put("package", pkg);
+                    o.put("label", label);
+                    out.put(o);
+                }
+                JSObject res = new JSObject();
+                res.put("apps", out);
+                call.resolve(res);
+            } catch (Exception e) {
+                JSObject res = new JSObject();
+                try { res.put("apps", new JSArray()); res.put("error", String.valueOf(e)); } catch (Exception ignored) {}
+                call.resolve(res);
             }
-            JSObject res = new JSObject();
-            res.put("apps", out);
-            call.resolve(res);
         });
     }
 
@@ -122,23 +131,32 @@ public class SolaceNativePlugin extends Plugin {
         // 持久化授权与目录名查询都是磁盘 IO，统一挪到 io 线程
         io.execute(() -> {
             JSObject res = new JSObject();
+            // take 是否成功决定后续策略（全量审查 P3）：失败时**不释放**旧授权
+            // ——否则「新授权没拿到、旧授权又被放」，下次会话补扫必失败且用户
+            // 无从恢复；此时旧授权保留、本次会话仍可用新 URI 读
+            boolean persisted = false;
             try {
                 getContext().getContentResolver().takePersistableUriPermission(uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                persisted = true;
             } catch (SecurityException ignored) {
                 // 部分 ROM 不支持持久化：本次会话仍可读，下次需重选
             }
             // 系统持久化授权有上限（旧 Android 128 个）：反复换监视目录会积累
-            // 旧授权，逼近上限后新授权静默失败——只保留本次的，其余释放
-            for (UriPermission p : getContext().getContentResolver().getPersistedUriPermissions()) {
-                if (p.getUri().equals(uri)) continue;
-                try {
-                    getContext().getContentResolver().releasePersistableUriPermission(p.getUri(),
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Exception ignored) {
+            // 旧授权，逼近上限后新授权静默失败——仅在本次持久化**成功**后
+            // 释放其余（含上次失败残留的旧授权，腾出配额）
+            if (persisted) {
+                for (UriPermission p : getContext().getContentResolver().getPersistedUriPermissions()) {
+                    if (p.getUri().equals(uri)) continue;
+                    try {
+                        getContext().getContentResolver().releasePersistableUriPermission(p.getUri(),
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    } catch (Exception ignored) {
+                    }
                 }
             }
             res.put("canceled", false);
+            res.put("persisted", persisted);
             res.put("uri", uri.toString());
             res.put("name", queryDisplayName(uri));
             call.resolve(res);

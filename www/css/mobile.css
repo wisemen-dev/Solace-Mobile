@@ -193,8 +193,9 @@ body,
    ——主指针为笔时上报 hover: hover，查询不命中、「常显」失效（用户实测
    侧栏三操作不可见即此根因）。本层是平板适配层、本就不跑桌面浏览器，
    悬停可达性规则一律**无条件**生效，不再依赖媒体查询 */
-/* 封面操作条常显（桌面端悬停浮现；简介卡上线后已被 display:none 压制，留作防御） */
-.doc-cover-ops { opacity: 1; }
+/* （原「封面操作条常显」防御规则已删——全量审查 P3 确认死规则：简介卡
+   上线后 .doc-cover-ops 被 display:none !important 压制（下方 685 行附近），
+   opacity 永远不可见；mobile.css 头部的 [hidden] 全局收口进一步兜住 */
 /* 侧栏条目的 ＋/✎/✕ 小按钮：仅当前选中行常显（拍板 2026-10-08）。
    上一轮无条件常显后 240px 侧栏里三钮占约 100px、名称被挤到 70px；
    改为 li.active 限定——书架视角下 active 行是「全部」（无 ops），
@@ -987,6 +988,9 @@ body.ink-active #previewOverlay::after {
   dialog.dlg-leave::backdrop,
   body.ink-active #previewOverlay::after,
   #previewBody.page-fx > * { animation: none; }
+  /* 按压缩放同属动效（全量审查 P3 补漏）：减弱动效下只留颜色反馈 */
+  .tools-trigger:active,
+  .tools-circle:active { transform: none; }
   .tools-menu,
   .tools-cluster.open .tools-menu {
     transform: translateY(-40%);
