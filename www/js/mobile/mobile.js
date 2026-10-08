@@ -95,6 +95,11 @@ previewBody.addEventListener('pointerup', (e) => {
   // （收起目录/笔记面板）
   if (dt < 300 && dist < 12) {
     if (window.linkSelecting) return // 选词模式：点按=选句，关边缘点按翻页（滑动翻页保留）
+    // 非选词模式下琥珀标记仍可点（开查看器，link.js onLayerTap 的标记
+    // 分支在 linkSelecting 检查之前）——此处让位，否则标记落在边缘热区
+    // 时「开查看器 + 翻页」双动作（全量审查 P1-5；.lnk span 与琥珀带
+    // 均 pe:auto，target 可能是其一）
+    if (e.target.closest && e.target.closest('.lnk')) return
     const rect = previewBody.getBoundingClientRect()
     const rel = (e.clientX - rect.left) / rect.width
     if (rel < 0.2) btnPrev?.click()
@@ -137,7 +142,7 @@ btnPrev?.addEventListener('click', playPageFx, true)
 
 const editorHost = document.createElement('div')
 editorHost.innerHTML = `
-  <dialog id="noteEditorDialog" class="dialog note-editor-dialog">
+  <dialog id="noteEditorDialog" class="dialog note-editor-dialog" data-cancel-guard>
     <div class="stats-head">
       <h3 id="noteEditorTitle">笔记</h3>
       <button id="btnNoteEdClose" class="btn-ghost" title="关闭">✕</button>

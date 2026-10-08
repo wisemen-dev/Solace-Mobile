@@ -2,6 +2,14 @@
    只做覆盖，不改桌面样式；断点 900px —— 竖屏/分屏走抽屉侧栏，
    横屏平板（≥900px CSS 像素）沿用桌面双栏布局。 */
 
+/* [hidden] 全局收口（全量审查 P1-2，第三例同类 bug 后根治）：本文件与
+   桌面样式里多条 button/子元素规则设 display:flex/inline-flex，特异性
+   压过 UA 对 [hidden] 的 display:none，hidden 形同虚设——已发生三例
+   （☰ 把手、「← 书架」/🌙、章总结查看器「＋追加」钮，后者还连带
+   误触发追加流程）。hidden 的语义就是「不渲染」，任何元素一律压回；
+   需要「隐藏但占位」的场景应使用 visibility/opacity 而非 hidden */
+[hidden] { display: none !important; }
+
 /* 触屏通用：touch-action 消除 300ms 双击缩放延迟；按下反馈沿用 :active。
    tap-highlight 全局透明（真机自查 2026-10-08）：WebView 默认半透明蓝方块
    在主顶栏钮/溢出菜单项上仍是方框高亮，与「按压反馈归 :active」的全局

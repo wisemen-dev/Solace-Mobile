@@ -40,7 +40,15 @@ export function installDialogMotion () {
   // Esc/requestClose 路径：捕获相拦 cancel（不冒泡），交给包装 close 走退场
   document.addEventListener('cancel', (e) => {
     const dlg = e.target
-    if (dlg instanceof HTMLDialogElement) {
+    // data-cancel-guard 例外（全量审查 P1 修复）：自带 cancel 守卫的对话框
+    // （笔记/摘录编辑器的「有未保存修改」确认链）完全放行——捕获相若抢先
+    // preventDefault+close 会绕过确认直接丢内容（本模块曾引入的回归）；
+    // 放行后由元素自身监听器接管，用户确认放弃时它自己调 close()，
+    // 仍会走到本包装、退场动画不缺席
+    // 注意判断的是属性存在而非真值：data-cancel-guard 是无值属性，
+    // dataset 读出的是空串 ''，!'' 为 true——写真值判断会让守卫形同虚设
+    // （真机验收抓到：标记过的编辑器仍被误拦强制关闭）
+    if (dlg instanceof HTMLDialogElement && !('cancelGuard' in dlg.dataset)) {
       e.preventDefault()
       dlg.close()
     }

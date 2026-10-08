@@ -5,7 +5,7 @@
 // 用法：node scripts/sync-www.mjs [--src <桌面仓库路径>]
 //   或设环境变量 SOLACE_DESKTOP
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,41 +31,46 @@ for (const [label, p] of [['渲染层', R], ['node_modules', NM]]) {
 }
 
 const WWW = join(root, 'www')
+// 全量审查 P1-4：先整删 www 再打补丁的旧顺序，在锚点失败时会留下半打补丁且
+// 桥缺失的毒化 www——直接 cap sync 会装出 window.solace 不存在的废包。现全部
+// 构建先落 .www-staging，44 处补丁全部校验通过后才删旧换新；失败时 www 完整
+// 无损，staging 残留由下次运行自清（.gitignore 已忽略）
+const STAGING = join(root, '.www-staging')
 
 /* ---- 1. 全量重建 www/（桥 bundle 由 build-bridge.mjs 生成，同样在 www/） ---- */
-rmSync(WWW, { recursive: true, force: true })
-mkdirSync(join(WWW, 'css'), { recursive: true })
-mkdirSync(join(WWW, 'js'), { recursive: true })
-mkdirSync(join(WWW, 'vendor/pdfjs/build'), { recursive: true })
+rmSync(STAGING, { recursive: true, force: true })
+mkdirSync(join(STAGING, 'css'), { recursive: true })
+mkdirSync(join(STAGING, 'js'), { recursive: true })
+mkdirSync(join(STAGING, 'vendor/pdfjs/build'), { recursive: true })
 
-cpSync(join(R, 'index.html'), join(WWW, 'index.html'))
-cpSync(join(R, 'css', 'style.css'), join(WWW, 'css', 'style.css'))
-cpSync(join(R, 'js'), join(WWW, 'js'), { recursive: true })
+cpSync(join(R, 'index.html'), join(STAGING, 'index.html'))
+cpSync(join(R, 'css', 'style.css'), join(STAGING, 'css', 'style.css'))
+cpSync(join(R, 'js'), join(STAGING, 'js'), { recursive: true })
 
 /* ---- 2. vendor：pdf.js 与霞鹜文楷（从桌面仓库 node_modules 收拢） ---- */
-cpSync(join(NM, 'pdfjs-dist/build/pdf.min.mjs'), join(WWW, 'vendor/pdfjs/build/pdf.min.mjs'))
-cpSync(join(NM, 'pdfjs-dist/build/pdf.worker.min.mjs'), join(WWW, 'vendor/pdfjs/build/pdf.worker.min.mjs'))
-cpSync(join(NM, 'pdfjs-dist/cmaps'), join(WWW, 'vendor/pdfjs/cmaps'), { recursive: true })
-cpSync(join(NM, 'pdfjs-dist/standard_fonts'), join(WWW, 'vendor/pdfjs/standard_fonts'), { recursive: true })
+cpSync(join(NM, 'pdfjs-dist/build/pdf.min.mjs'), join(STAGING, 'vendor/pdfjs/build/pdf.min.mjs'))
+cpSync(join(NM, 'pdfjs-dist/build/pdf.worker.min.mjs'), join(STAGING, 'vendor/pdfjs/build/pdf.worker.min.mjs'))
+cpSync(join(NM, 'pdfjs-dist/cmaps'), join(STAGING, 'vendor/pdfjs/cmaps'), { recursive: true })
+cpSync(join(NM, 'pdfjs-dist/standard_fonts'), join(STAGING, 'vendor/pdfjs/standard_fonts'), { recursive: true })
 
-mkdirSync(join(WWW, 'vendor/lxgw/files'), { recursive: true })
+mkdirSync(join(STAGING, 'vendor/lxgw/files'), { recursive: true })
 for (const css of ['lxgwwenkailite-regular.css', 'lxgwwenkailite-bold.css']) {
-  cpSync(join(NM, 'lxgw-wenkai-lite-webfont', css), join(WWW, 'vendor/lxgw', css))
+  cpSync(join(NM, 'lxgw-wenkai-lite-webfont', css), join(STAGING, 'vendor/lxgw', css))
 }
-cpSync(join(NM, 'lxgw-wenkai-lite-webfont/files'), join(WWW, 'vendor/lxgw/files'), { recursive: true })
+cpSync(join(NM, 'lxgw-wenkai-lite-webfont/files'), join(STAGING, 'vendor/lxgw/files'), { recursive: true })
 // 字体协议随行（OFL）
 for (const lic of ['OFL.txt', 'LICENSE']) {
-  try { cpSync(join(NM, 'lxgw-wenkai-lite-webfont', lic), join(WWW, 'vendor/lxgw', lic)) } catch { /* 可选 */ }
+  try { cpSync(join(NM, 'lxgw-wenkai-lite-webfont', lic), join(STAGING, 'vendor/lxgw', lic)) } catch { /* 可选 */ }
 }
 
 /* ---- 3. 移动端适配层（本仓库自带） ---- */
-cpSync(join(root, 'mobile-web/css'), join(WWW, 'css'), { recursive: true })
-cpSync(join(root, 'mobile-web/js'), join(WWW, 'js'), { recursive: true })
+cpSync(join(root, 'mobile-web/css'), join(STAGING, 'css'), { recursive: true })
+cpSync(join(root, 'mobile-web/js'), join(STAGING, 'js'), { recursive: true })
 
 /* ---- 4. 移动端补丁（锚点缺失即报错，防上游改动后静默漂移） ---- */
 
 function patch (relPath, replacements) {
-  const file = join(WWW, relPath)
+  const file = join(STAGING, relPath)
   const raw = readFileSync(file, 'utf8')
   // 桌面仓库是 CRLF、本脚本锚点是 LF：统一在 LF 空间匹配，写回时还原
   const crlf = raw.includes('\r\n')
@@ -501,6 +506,14 @@ btnNew.addEventListener('click', async () => {`],
   updateNoteBar()
   load(session)`]
 ])
+
+/* ---- 5. 全部补丁成功——staging 原子替换 www/ ----
+   旧序「先删 www 再打补丁」在锚点失败时会留下半打补丁且桥缺失的毒化
+   www（直接 cap sync 装出 window.solace 不存在的废包）。现在构建全程落
+   staging，44 处补丁全部校验通过才走到这里删旧换新；任何失败路径
+   www 完整无损，staging 残留由下次运行自清 */
+rmSync(WWW, { recursive: true, force: true })
+renameSync(STAGING, WWW)
 
 console.log(`www/ 同步完成（源：${SRC}）`)
 console.log('补丁：index.html×11, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×7, theme.js×1, settings.js×5, notespanel.js×8（共44）')

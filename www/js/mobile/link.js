@@ -964,7 +964,7 @@ function ensureEditor () {
   if (edDlg) return
   const wrap = document.createElement('div')
   wrap.innerHTML = `
-    <dialog id="linkRecordDialog" class="dialog note-editor-dialog link-edit-dialog">
+    <dialog id="linkRecordDialog" class="dialog note-editor-dialog link-edit-dialog" data-cancel-guard>
       <div class="stats-head"><h3 id="linkRecordTitle">摘录记录</h3>
         <button id="btnLinkEdClose" class="btn-ghost" title="关闭">✕</button></div>
       <div id="linkChips" class="link-chips"></div>
