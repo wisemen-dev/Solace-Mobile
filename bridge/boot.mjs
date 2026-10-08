@@ -322,6 +322,20 @@ App.addListener('backButton', () => {
     lastBackAt = 0
     return
   }
+  // 顶栏溢出菜单（⋯）：先收菜单，不落穿到「再按一次退出」——菜单开着连按
+  // 两次返回会把应用关掉（真机自查 2026-10-08）。app.js 的 closeTopbarMore
+  // 未导出，这里复刻其三个动作（与下方关预览的 DOM 直操作同款纪律）
+  const topbarMore = document.getElementById('topbarMore')
+  if (topbarMore && topbarMore.classList.contains('open')) {
+    topbarMore.classList.remove('open')
+    const moreTrigger = document.getElementById('btnTopbarMore')
+    if (moreTrigger) {
+      moreTrigger.classList.remove('on')
+      moreTrigger.setAttribute('aria-expanded', 'false')
+    }
+    lastBackAt = 0
+    return
+  }
   // 阅读工具簇展开：先收簇，不关预览（TOOLS-CLUSTER-DESIGN §6 路径 6）
   if (window.__toolsClose?.()) {
     lastBackAt = 0

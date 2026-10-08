@@ -2,7 +2,10 @@
    只做覆盖，不改桌面样式；断点 900px —— 竖屏/分屏走抽屉侧栏，
    横屏平板（≥900px CSS 像素）沿用桌面双栏布局。 */
 
-/* 触屏通用：touch-action 消除 300ms 双击缩放延迟；按下反馈沿用 :active */
+/* 触屏通用：touch-action 消除 300ms 双击缩放延迟；按下反馈沿用 :active。
+   tap-highlight 全局透明（真机自查 2026-10-08）：WebView 默认半透明蓝方块
+   在主顶栏钮/溢出菜单项上仍是方框高亮，与「按压反馈归 :active」的全局
+   语言相悖——此前逐组件加 transparent 屡有漏网，改为一次收口 */
 button,
 .side-list li,
 .doc-card,
@@ -11,6 +14,15 @@ button,
 .notes-list li,
 .stats-list li {
   touch-action: manipulation;
+}
+button,
+[data-action],
+.side-list li,
+.palette-list li,
+.toc-list button,
+.notes-list li,
+.stats-list li {
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ---------- 文字对比度（平板评审修复）----------
@@ -741,6 +753,24 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 展开态描边（真机自查 2026-10-08）：开簇本身此前无任何触发器反馈（实测
+   开合前后类名与视觉零变化，对照溢出菜单触发器的 .on 态缺一档）——开簇
+   亮 accent 描边（不含光环 box-shadow，那是「创作模式激活」的更强层级，
+   描边+光圈两档与「开簇/激活」两级状态一一对应）；与 ⋯ 触发器 .on 同语言 */
+.tools-cluster.open .tools-trigger {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* 目录胶囊让位（真机自查 2026-10-08）：水平菜单向左生长会罩住同排的目录
+   胶囊（实测重叠 ~75px）——「互斥让位」家族：簇展开期间胶囊淡出（tools.js
+   维护 body.tools-open）。:not([hidden]) 守卫无大纲书的按钮，[hidden] 的
+   display:none 不受此规则影响、也不会被「取消隐藏」 */
+body.tools-open #btnToc:not([hidden]) {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* 展开菜单：**沿顶栏水平向左长出的一排**（平板评审 2.3 重做）。
    原实现是竖列圆钮从触发器向下探 + 一个气泡小箭，实测观感是「一块漂在
    PDF 页面上的面板」，与触发器的从属关系弱——菜单与触发器只有 8px 的
@@ -750,13 +780,15 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
    全是空白，横向有充裕空间。
    材质仍与 toc-panel 同语言（panel 底 + line 描边 + 同款阴影）。
    小箭去掉：水平同轴排列不再需要「从按钮长出」的气泡隐喻——两者本来
-   就在同一条线上。垂直居中（top:50% + translateY(-50%)）保证与触发器
-   同轴，不因菜单高度变化而偏移 */
+   就在同一条线上。垂直近居中（top:50% + translateY(-40%)）：真机实测
+   -50% 严格居中会把菜单上缘顶出屏幕顶（y=-4、贴住系统状态栏），预览
+   头部本就贴屏顶，「只向下让」是自然约束——-40% 使上缘落回屏内，
+   与触发器中心仅偏 6px（36px 圆钮上不可感） */
 .tools-menu {
   position: absolute;
   top: 50%;
   right: calc(100% + 6px);
-  transform: translateY(-50%) scale(0.96);
+  transform: translateY(-40%) scale(0.96);
   transform-origin: 100% 50%;
   z-index: 7; /* 高于目录/笔记面板(6)；低于触发器(8) */
   display: flex; flex-direction: row; align-items: center; gap: 6px;
@@ -773,7 +805,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   opacity: 1;
   /* 只有缩放、不含位移：菜单始终与触发器同轴，展开时贴着触发器的右端
      向右「展开」，不上下浮动 */
-  transform: translateY(-50%);
+  transform: translateY(-40%);
   pointer-events: auto;
   transition: opacity 300ms var(--ease-out-expo), transform 300ms var(--ease-out-expo);
 }
@@ -829,12 +861,13 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .tools-circle svg { display: block; pointer-events: none; }
 
 /* 降级（§5.6）：减弱动效下菜单与展开项只做淡入淡出，去缩放与步进。
-   注意菜单的 translateY(-50%) 是**布局语义**（与触发器垂直同轴），不是动画，
-   必须保留——写成 transform:none 会让菜单与触发器顶边对齐而错位 */
+   注意菜单的 translateY(-40%) 是**布局语义**（与触发器垂直近居中 + 上缘
+   不出屏），不是动画，必须保留——写成 transform:none 会让菜单与触发器
+   顶边对齐而错位 */
 @media (prefers-reduced-motion: reduce) {
   .tools-menu,
   .tools-cluster.open .tools-menu {
-    transform: translateY(-50%);
+    transform: translateY(-40%);
     transition: opacity 150ms ease;
   }
   .tools-slot,
@@ -864,13 +897,14 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 #btnToc {
   display: inline-flex; align-items: center; gap: 6px;
   border: none; border-radius: 999px;
-  padding: 8px 14px;
+  padding: 10px 14px; /* 高度补到 44（真机自查：原 40px 低于触达标准） */
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 13px;
   transition: background var(--dur-fast) var(--ease-out-expo),
               color var(--dur-fast) var(--ease-out-expo),
-              transform 100ms var(--ease-out-expo);
+              transform 100ms var(--ease-out-expo),
+              opacity 150ms var(--ease-out-expo);
 }
 #btnToc[hidden] { display: none; }
 #btnToc::before {
@@ -884,14 +918,38 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 #btnToc:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 #btnToc:active { transform: scale(0.97); }
 
-/* 关闭 → 弱化：去描边纯文字（描边语言专属工具簇圆钮，三形态互不雷同） */
+/* 关闭 → 弱化：去描边纯文字（描边语言专属工具簇圆钮，三形态互不雷同）。
+   高度补到 44（真机自查 2026-10-08：原 8px 内距下仅 37–40px 低于触达标准；
+   工具簇触发器 36px 视觉 + ::after 外扩 4px 命中区已达标、不动） */
 #btnPreviewClose {
   border-color: transparent;
   color: var(--muted);
   font-size: 15px;
   padding: 8px 11px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
 }
 #btnPreviewClose:hover { color: var(--text); border-color: transparent; }
+
+/* 溢出菜单项按压反馈（真机自查 2026-10-08）：全局 .btn-ghost:active 只有
+   1px 下沉近乎无感，hover 的浅底+accent 触屏吃不到——:active 镜像 hover
+   （与 tools-circle 的 :active 同语言：底色浮现 + accent） */
+.topbar-more-menu .btn-ghost:active {
+  background: var(--card-hover);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+/* 侧栏「＋ 导入 PDF」主 CTA 高度 44（真机自查：实测 37px 低于触达标准；
+   侧栏三个 ＋ 钮均已 44，独漏这颗最重要的） */
+#btnImport { min-height: 44px; }
+
+/* 顶栏沉睡徽标（🌙）删除（2026-10-08 用户点名）：它紧邻 ⋯ 且点击打开的
+   正是阅读足迹对话框——与溢出菜单里的「📊 阅读足迹」同功能重复；沉睡明细
+   经菜单足迹入口仍可达。id 特异性 (1,0,0) 直接压过 .topbar .btn-ghost 的
+   display:inline-flex（6bc9674 的 (0,2,0)），无需 !important */
+#btnDormant { display: none; }
 
 /* ---------- 书脊分组头（移动补丁，2026-10-07 拍板）----------
    轻量文字行：隐去色点、徽标退掉胶囊底（纯次要色文字），无底色无边框

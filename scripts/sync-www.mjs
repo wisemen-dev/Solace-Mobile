@@ -85,6 +85,11 @@ patch('index.html', [
   // 视口与安全区：WebView 必需，Electron 不需要
   ['  <meta charset="UTF-8" />',
    '  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />'],
+  // 命令面板入口去键盘语（2026-10-08 用户点名）：平板端无键盘，「⌘K」前缀
+  // 与 Ctrl+K 提示是桌面残留；改为与其余菜单项一致的「emoji + 文字」标签
+  //（面板本体经软键盘输入/点按列表项均可用，功能不动）
+  ['<button id="btnPalette" class="btn-ghost" role="menuitem" title="命令面板（Ctrl+K）">⌘K 命令面板</button>',
+   '<button id="btnPalette" class="btn-ghost" role="menuitem" title="命令面板">🔍 命令面板</button>'],
   // 字体从 node_modules 相对路径改指 vendor/
   ['../../node_modules/lxgw-wenkai-lite-webfont/lxgwwenkailite-regular.css', 'vendor/lxgw/lxgwwenkailite-regular.css'],
   ['../../node_modules/lxgw-wenkai-lite-webfont/lxgwwenkailite-bold.css', 'vendor/lxgw/lxgwwenkailite-bold.css'],
@@ -321,6 +326,18 @@ patch('js/app.js', [
       </div>\`}`]
 ])
 
+patch('js/theme.js', [
+  // 主题钮标签被吃（第四轮真机自查 2026-10-08）：溢出菜单项是「图标 + 文字」
+  // 标签，桌面 paint() 整写 textContent 会把文字吃掉（auto 态变「🌓 🌙」、
+  // 手动态变光杆图标，菜单里唯一没名字的项）。首见时把文字尾缀存进
+  // data-label，之后重写时补回
+  [`  const icon = resolved === 'paper' ? '☀️' : resolved === 'dusk' ? '🌆' : '🌙'
+  btn.textContent = mode === 'auto' ? \`🌓 \${icon}\` : icon`,
+   `  const icon = resolved === 'paper' ? '☀️' : resolved === 'dusk' ? '🌆' : '🌙'
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent.replace(/^[^A-Za-z\\u4e00-\\u9fa5]*/, '').trim()
+  btn.textContent = ((mode === 'auto' ? \`🌓 \${icon}\` : icon) + (btn.dataset.label ? ' ' + btn.dataset.label : ''))`]
+])
+
 patch('js/settings.js', [
   // 监视文件夹显示名：平板端存 SAF 目录名（uri 不可读也不可手输）。
   // 注意用 .value 赋值而非 setAttribute('value')——后者只设默认值，
@@ -483,7 +500,7 @@ btnNew.addEventListener('click', async () => {`],
 ])
 
 console.log(`www/ 同步完成（源：${SRC}）`)
-console.log('补丁：index.html×10, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×7, settings.js×5, notespanel.js×8（共42）')
+console.log('补丁：index.html×11, pdfjs.js×4, preview.js×4, covers.js×2, textindex.js×2, app.js×7, theme.js×1, settings.js×5, notespanel.js×8（共44）')
 
 // 顺手重建桥 bundle：本脚本全量重建 www/ 时会删掉 www/vendor/solace-bridge.js
 // （git 跟踪文件），不重建的话「只跑 www + 直接 cap sync / Android Studio 构建」

@@ -76,7 +76,8 @@ function paint (settings) {
   const btn = document.getElementById('btnTheme')
   if (!btn) return
   const icon = resolved === 'paper' ? '☀️' : resolved === 'dusk' ? '🌆' : '🌙'
-  btn.textContent = mode === 'auto' ? `🌓 ${icon}` : icon
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent.replace(/^[^A-Za-z\u4e00-\u9fa5]*/, '').trim()
+  btn.textContent = ((mode === 'auto' ? `🌓 ${icon}` : icon) + (btn.dataset.label ? ' ' + btn.dataset.label : ''))
   btn.title = `主题：${MODE_LABEL[mode]}（点击切换）`
 }
 

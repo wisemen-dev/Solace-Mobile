@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 42 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 44 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -42,9 +42,9 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 42 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+共 44 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
 
-### index.html（10 处）
+### index.html（11 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`
@@ -64,6 +64,8 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
     mobile.css 的 `.tools-*`。历史：v0.4.0/0.5.0 曾分别注入 `#btnInk`/
     `#btnLink` 两按钮（原第 10/11 条），v0.5.2 合并为本条（仍 1 对替换）
 
+11. 命令面板入口去键盘语（v0.6.0）：「⌘K 命令面板（Ctrl+K）」→「🔍 命令面板」——
+    平板无键盘，快捷键提示是桌面残留（面板经软键盘/点按可用，功能不动）
 ### pdfjs.js（4 处）
 pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
 
@@ -102,6 +104,11 @@ pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
    退化为空陈列显式暴露问题
 7. 书脊组头模板加 `filter-cat`（可点只看该分类）与 `spine.flat` 条件
    （平铺时整段组头不渲染），同上决策
+
+### theme.js（1 处）
+1. 主题钮标签保留（v0.6.0）：桌面 `paint()` 整写 `textContent` 会吃掉溢出菜单项
+   的「主题」文字（菜单里唯一没名字的项）——首见时把文字尾缀存 `data-label`，
+   重写时补回
 
 ### settings.js（5 处）
 1. 监视文件夹显示名：平板端显示 SAF 目录名（watchFolderName）

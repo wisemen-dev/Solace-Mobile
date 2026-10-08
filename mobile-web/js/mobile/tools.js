@@ -13,11 +13,16 @@ function isOpen () { return !!(cluster && cluster.classList.contains('open')) }
 function openCluster () {
   cluster.classList.add('open')
   trigger.setAttribute('aria-expanded', 'true')
+  // 展开时目录胶囊让位（真机自查 2026-10-08）：水平菜单自触发器向左生长
+  // 会罩住同排的目录胶囊（实测重叠 848–1010 vs 928–1003）——「互斥让位」
+  // 家族：菜单存续期间胶囊淡出（[hidden] 的无大纲钮不受影响，CSS 有 :not 守卫）
+  document.body.classList.add('tools-open')
 }
 
 function closeCluster () {
   cluster.classList.remove('open')
   trigger.setAttribute('aria-expanded', 'false')
+  document.body.classList.remove('tools-open')
 }
 
 // 返回键链（boot.mjs）：簇展开时返回键先收簇、不关预览（§6 路径 6）

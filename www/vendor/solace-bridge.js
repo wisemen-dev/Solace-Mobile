@@ -2954,6 +2954,17 @@
       lastBackAt = 0;
       return;
     }
+    const topbarMore = document.getElementById("topbarMore");
+    if (topbarMore && topbarMore.classList.contains("open")) {
+      topbarMore.classList.remove("open");
+      const moreTrigger = document.getElementById("btnTopbarMore");
+      if (moreTrigger) {
+        moreTrigger.classList.remove("on");
+        moreTrigger.setAttribute("aria-expanded", "false");
+      }
+      lastBackAt = 0;
+      return;
+    }
     if (window.__toolsClose?.()) {
       lastBackAt = 0;
       return;
