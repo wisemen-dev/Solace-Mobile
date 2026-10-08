@@ -167,14 +167,53 @@ body,
   height: 100dvh;
 }
 
-/* ---------- 悬停依赖 → 点按可达（无悬停能力的设备） ---------- */
-@media (hover: none) {
-  /* 封面操作条常显（桌面端悬停浮现） */
-  .doc-cover-ops { opacity: 1; }
-  /* 侧栏条目的 ＋/✎/✕ 小按钮常显 */
-  .side-list .ops { display: inline-flex; }
-  /* 笔记条目的删除按钮常显 */
-  .notes-list li .note-del { visibility: visible; }
+/* ---------- 悬停依赖 → 点按可达 ----------
+   ⚠ 2026-10-08 真机教训：@media (hover: none) 在带手写笔的平板上不可靠
+   ——主指针为笔时上报 hover: hover，查询不命中、「常显」失效（用户实测
+   侧栏三操作不可见即此根因）。本层是平板适配层、本就不跑桌面浏览器，
+   悬停可达性规则一律**无条件**生效，不再依赖媒体查询 */
+/* 封面操作条常显（桌面端悬停浮现；简介卡上线后已被 display:none 压制，留作防御） */
+.doc-cover-ops { opacity: 1; }
+/* 侧栏条目的 ＋/✎/✕ 小按钮常显（分类/标签/收藏夹三列表同规则联动）。
+   触达加大：字号 11→13、min-width 32、满行高（行 min-height 44 已有）；
+   gap 2→4 缓解 ✎/✕ 相邻误触（删除另有确认框兜底）。
+   宽度预算：240px 侧栏内三钮约 100px，名称区剩 ~70px（5-6 字+省略号） */
+.side-list .ops { display: inline-flex; gap: 4px; }
+.side-list .ops button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 6px 8px;
+  min-width: 32px;
+}
+/* 笔记条目的删除按钮常显（同根因：原也在 hover:none 查询内） */
+.notes-list li .note-del { visibility: visible; }
+
+/* ---------- 顶栏开放式（拍板 2026-10-08）：除搜索框外全部按钮去框 ----------
+   边框透明而非 border:none（保留 1px 占位，避免去框前后行高/布局微动）。
+   反馈语言：hover 只提字色（#btnPreviewClose 同款先例）、按压底色浮现
+   （溢出菜单项同款）；⋯ 触发器展开态用 accent 底色浮现（拍板：无框原则
+   纯粹，不为展开态破例亮描边）。两档断点通用；抽屉把手 ☰ 一并覆盖。
+   特异性：.topbar .btn-ghost (0,2,0) 压过桌面 .btn-ghost (0,1,0)，hover
+   (0,3,0) 压过桌面 (0,2,0)——全部无需 !important */
+.topbar .btn-ghost {
+  border-color: transparent;
+}
+.topbar .btn-ghost:hover,
+.topbar .btn-ghost:focus-visible {
+  border-color: transparent;
+  color: var(--text);
+}
+.topbar .btn-ghost:active {
+  background: var(--card-hover);
+  color: var(--accent);
+  border-color: transparent;
+}
+.topbar .topbar-more-trigger.on {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* ---------- 桌面端专属入口隐藏 ---------- */
