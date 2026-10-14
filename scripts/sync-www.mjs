@@ -67,6 +67,17 @@ for (const lic of ['OFL.txt', 'LICENSE']) {
 cpSync(join(root, 'mobile-web/css'), join(STAGING, 'css'), { recursive: true })
 cpSync(join(root, 'mobile-web/js'), join(STAGING, 'js'), { recursive: true })
 
+/* ---- 3.5 共享纯函数层（复用优化 C3）：从桌面仓库搬运 library-shared.cjs
+   到 bridge/（git 跟踪的源码树，非 www 产物）。桌面是唯一事实源：
+   两端行为一致靠这一份文件，改共享逻辑只在桌面改、sync 搬运。
+   缺文件显式报错（桌面仓库结构变化时提示），不用锚点（整文件覆盖） ---- */
+if (!existsSync(join(SRC, 'src/main/library-shared.cjs'))) {
+  console.error(`桌面仓库缺 src/main/library-shared.cjs（共享纯函数层）——请检查 ${SRC}`)
+  process.exit(1)
+}
+cpSync(join(SRC, 'src/main/library-shared.cjs'), join(root, 'bridge/library-shared.cjs'))
+console.log('共享层：bridge/library-shared.cjs ← 桌面 src/main/library-shared.cjs')
+
 /* ---- 4. 移动端补丁（锚点缺失即报错，防上游改动后静默漂移） ---- */
 
 function patch (relPath, replacements) {

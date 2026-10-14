@@ -1,13 +1,36 @@
 (() => {
+  var __create = Object.create;
   var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __esm = (fn, res) => function __init() {
     return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  };
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   };
   var __export = (target, all) => {
     for (var name in all)
       __defProp(target, name, { get: all[name], enumerable: true });
   };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
 
   // node_modules/@capacitor/core/dist/index.js
   var ExceptionCode, CapacitorException, getPlatformId, createCapacitor, initCapacitorGlobal, Capacitor, registerPlugin, WebPlugin, encode, decode, CapacitorCookiesPluginWeb, CapacitorCookies, readBlobAsBase64, normalizeHttpHeaders, buildUrlParams, buildRequestInit, CapacitorHttpPluginWeb, CapacitorHttp;
@@ -1088,6 +1111,127 @@
     }
   });
 
+  // bridge/library-shared.cjs
+  var require_library_shared = __commonJS({
+    "bridge/library-shared.cjs"(exports, module) {
+      "use strict";
+      function normalizeKeyword(s2) {
+        return String(s2 || "").toLowerCase().replace(/\s+/g, "");
+      }
+      var OPEN_DAYS_KEEP = 400;
+      function dayKey(d) {
+        const p = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+      }
+      function countOpenDay(at, data) {
+        if (!data.openDays || typeof data.openDays !== "object") data.openDays = {};
+        const k = dayKey(new Date(at));
+        data.openDays[k] = (data.openDays[k] || 0) + 1;
+        const keys = Object.keys(data.openDays);
+        if (keys.length > OPEN_DAYS_KEEP) {
+          keys.sort();
+          for (const old of keys.slice(0, keys.length - OPEN_DAYS_KEEP)) delete data.openDays[old];
+        }
+      }
+      function getOpenStats(openDays, now) {
+        const days = openDays || {};
+        const d = now;
+        let opens7d = 0;
+        let opens30d = 0;
+        for (let i = 0; i < 30; i++) {
+          const n = days[dayKey(d)] || 0;
+          if (i < 7) opens7d += n;
+          opens30d += n;
+          d.setDate(d.getDate() - 1);
+        }
+        return { opens7d, opens30d };
+      }
+      var APP_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(pdf|jpg)$/i;
+      var APP_TMP_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.tmp$/i;
+      var SETTINGS_STRINGS = [
+        "notesEditorPath",
+        "pdfReaderPath",
+        "externalToolPath",
+        "watchFolder",
+        "watchCategory",
+        "watchTreeUri",
+        "watchFolderName",
+        "externalToolPackage"
+      ];
+      var SETTINGS_BOOLEANS = ["resumeReading", "confetti", "openingAnimation", "watchEnabled"];
+      var SETTINGS_NUMBERS = { dormantDays: 1, indexPageLimit: 1 };
+      var SETTINGS_ENUMS = {
+        coverSize: ["small", "medium", "large"],
+        theme: ["auto", "ink", "paper", "dusk"],
+        viewMode: ["grid", "spine", "shelf"]
+      };
+      function applySettingsPatch(settings, patch) {
+        let changed = false;
+        for (const key of SETTINGS_STRINGS) {
+          if (key in patch && settings[key] !== String(patch[key])) {
+            settings[key] = String(patch[key]);
+            changed = true;
+          }
+        }
+        for (const key of SETTINGS_BOOLEANS) {
+          const v = patch[key] === true;
+          if (key in patch && settings[key] !== v) {
+            settings[key] = v;
+            changed = true;
+          }
+        }
+        for (const key of Object.keys(SETTINGS_NUMBERS)) {
+          if (!(key in patch)) continue;
+          const n = Math.floor(Number(patch[key]));
+          if (Number.isFinite(n) && n >= SETTINGS_NUMBERS[key] && settings[key] !== n) {
+            settings[key] = n;
+            changed = true;
+          }
+        }
+        for (const key of Object.keys(SETTINGS_ENUMS)) {
+          if (key in patch && SETTINGS_ENUMS[key].includes(patch[key]) && settings[key] !== patch[key]) {
+            settings[key] = patch[key];
+            changed = true;
+          }
+        }
+        return changed;
+      }
+      function assertMoveCategory(categories, id, parentId) {
+        const cat = categories.find((c) => c.id === id);
+        if (!cat) throw new Error(`\u5206\u7C7B\u4E0D\u5B58\u5728: ${id}`);
+        const target = parentId || null;
+        if (target === id) throw new Error("\u4E0D\u80FD\u79FB\u52A8\u5230\u81EA\u8EAB");
+        if (target != null) {
+          let cursor = categories.find((c) => c.id === target);
+          if (!cursor) throw new Error("\u76EE\u6807\u5206\u7C7B\u4E0D\u5B58\u5728");
+          const seen = /* @__PURE__ */ new Set();
+          while (cursor) {
+            if (cursor.id === id) throw new Error("\u4E0D\u80FD\u79FB\u52A8\u5230\u81EA\u5DF1\u7684\u5B50\u5206\u7C7B\u4E0B");
+            if (seen.has(cursor.id)) throw new Error("\u5206\u7C7B\u5C42\u7EA7\u6570\u636E\u5F02\u5E38\uFF08parentId \u6210\u73AF\uFF09\uFF0C\u8BF7\u5148\u4FEE\u590D library.json");
+            seen.add(cursor.id);
+            cursor = categories.find((c) => c.id === cursor.parentId) || null;
+          }
+        }
+        return { cat, target };
+      }
+      module.exports = {
+        normalizeKeyword,
+        OPEN_DAYS_KEEP,
+        dayKey,
+        countOpenDay,
+        getOpenStats,
+        APP_FILE_RE,
+        APP_TMP_RE,
+        SETTINGS_STRINGS,
+        SETTINGS_BOOLEANS,
+        SETTINGS_NUMBERS,
+        SETTINGS_ENUMS,
+        applySettingsPatch,
+        assertMoveCategory
+      };
+    }
+  });
+
   // node_modules/@capacitor/app/dist/esm/web.js
   var web_exports2 = {};
   __export(web_exports2, {
@@ -1375,6 +1519,7 @@
   }
 
   // bridge/library-core.mjs
+  var import_library_shared = __toESM(require_library_shared(), 1);
   function createLibrary({ fs: fs2, sha256, randomUUID: randomUUID2, hashStorageFile, now = () => /* @__PURE__ */ new Date() }) {
     let data = null;
     let committedData = null;
@@ -1737,33 +1882,12 @@
       countOpenDay(doc.openedAt);
       await save();
     }
-    const OPEN_DAYS_KEEP = 400;
-    const dayKey = (d) => {
-      const p = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    };
+    const dayKey = import_library_shared.default.dayKey;
     function countOpenDay(at) {
-      if (!data.openDays || typeof data.openDays !== "object") data.openDays = {};
-      const k = dayKey(new Date(at));
-      data.openDays[k] = (data.openDays[k] || 0) + 1;
-      const keys = Object.keys(data.openDays);
-      if (keys.length > OPEN_DAYS_KEEP) {
-        keys.sort();
-        for (const old of keys.slice(0, keys.length - OPEN_DAYS_KEEP)) delete data.openDays[old];
-      }
+      import_library_shared.default.countOpenDay(at, data);
     }
     function getOpenStats() {
-      const days = (committedData || data).openDays || {};
-      const d = now();
-      let opens7d = 0;
-      let opens30d = 0;
-      for (let i = 0; i < 30; i++) {
-        const n = days[dayKey(d)] || 0;
-        if (i < 7) opens7d += n;
-        opens30d += n;
-        d.setDate(d.getDate() - 1);
-      }
-      return { opens7d, opens30d };
+      return import_library_shared.default.getOpenStats((committedData || data).openDays, now());
     }
     function normalizeOpenDays() {
       if (data.openDays && typeof data.openDays === "object") return;
@@ -1799,7 +1923,7 @@
       if (!await fs2.exists(`covers/${id}.jpg`)) return null;
       return `data:image/jpeg;base64,${await fs2.readFileB64(`covers/${id}.jpg`)}`;
     }
-    const normalizeKeyword = (s2) => String(s2 || "").toLowerCase().replace(/\s+/g, "");
+    const normalizeKeyword = import_library_shared.default.normalizeKeyword;
     const shardCache = /* @__PURE__ */ new Map();
     let shardCacheChars = 0;
     const SHARD_CACHE_MAX_CHARS = 32 * 1024 * 1024;
@@ -1983,8 +2107,8 @@
       dropShardCache(id);
       return true;
     }
-    const APP_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(pdf|jpg)$/i;
-    const APP_TMP_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.tmp$/i;
+    const APP_FILE_RE = import_library_shared.default.APP_FILE_RE;
+    const APP_TMP_RE = import_library_shared.default.APP_TMP_RE;
     const APP_STAGING_RE = /^\.incoming-[0-9a-f-]{36}\.pdf$/i;
     async function sweepOrphans() {
       await fs2.rm("library.json.tmp");
@@ -2048,21 +2172,7 @@
       return cat;
     }
     async function moveCategory(id, parentId) {
-      const cat = data.categories.find((c) => c.id === id);
-      if (!cat) throw new Error(`\u5206\u7C7B\u4E0D\u5B58\u5728: ${id}`);
-      const target = parentId || null;
-      if (target === id) throw new Error("\u4E0D\u80FD\u79FB\u52A8\u5230\u81EA\u8EAB");
-      if (target != null) {
-        let cursor = data.categories.find((c) => c.id === target);
-        if (!cursor) throw new Error("\u76EE\u6807\u5206\u7C7B\u4E0D\u5B58\u5728");
-        const seen = /* @__PURE__ */ new Set();
-        while (cursor) {
-          if (cursor.id === id) throw new Error("\u4E0D\u80FD\u79FB\u52A8\u5230\u81EA\u5DF1\u7684\u5B50\u5206\u7C7B\u4E0B");
-          if (seen.has(cursor.id)) throw new Error("\u5206\u7C7B\u5C42\u7EA7\u6570\u636E\u5F02\u5E38\uFF08parentId \u6210\u73AF\uFF09\uFF0C\u8BF7\u5148\u4FEE\u590D library.json");
-          seen.add(cursor.id);
-          cursor = data.categories.find((c) => c.id === cursor.parentId) || null;
-        }
-      }
+      const { cat, target } = import_library_shared.default.assertMoveCategory(data.categories, id, parentId);
       if (cat.parentId === target) return cat;
       cat.parentId = target;
       await save();
@@ -2147,34 +2257,8 @@
     }
     async function updateSettings(patch) {
       if (typeof data.settings !== "object" || data.settings === null || Array.isArray(data.settings)) data.settings = {};
-      const strings = [
-        "notesEditorPath",
-        "pdfReaderPath",
-        "externalToolPath",
-        "watchFolder",
-        "watchCategory",
-        "watchTreeUri",
-        "watchFolderName",
-        "externalToolPackage"
-      ];
-      const booleans = ["resumeReading", "confetti", "openingAnimation", "watchEnabled"];
-      const numbers = { dormantDays: 1, indexPageLimit: 1 };
-      const enums = {
-        coverSize: ["small", "medium", "large"],
-        theme: ["auto", "ink", "paper", "dusk"],
-        viewMode: ["grid", "spine", "shelf"]
-      };
-      for (const key of strings) if (key in patch) data.settings[key] = String(patch[key]);
-      for (const key of booleans) if (key in patch) data.settings[key] = patch[key] === true;
-      for (const key of Object.keys(numbers)) {
-        if (!(key in patch)) continue;
-        const n = Math.floor(Number(patch[key]));
-        if (Number.isFinite(n) && n >= numbers[key]) data.settings[key] = n;
-      }
-      for (const key of Object.keys(enums)) {
-        if (key in patch && enums[key].includes(patch[key])) data.settings[key] = patch[key];
-      }
-      await save();
+      const changed = import_library_shared.default.applySettingsPatch(data.settings, patch || {});
+      if (changed) await save();
       return structuredClone(data.settings);
     }
     return {

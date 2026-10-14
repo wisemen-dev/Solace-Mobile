@@ -17,6 +17,9 @@
 import { bytesToBase64, base64ToBytes } from './base64.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
 import { isNotFoundError } from './file-errors.mjs'
+// 双端共享纯函数（桌面 src/main/library-shared.cjs 经 sync-www 搬运至此；
+// 纪律见文件头。Node ESM import CJS 走默认导出 interop，esbuild 同样支持）
+import shared from './library-shared.cjs'
 
 export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = () => new Date() }) {
   let data = null
@@ -450,35 +453,15 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     await save()
   }
 
-  const OPEN_DAYS_KEEP = 400
-  const dayKey = (d) => {
-    const p = n => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-  }
+  /* ---- 阅读足迹：dayKey 族已上移共享层（library-shared.cjs，双端同源） ---- */
+  const dayKey = shared.dayKey
 
   function countOpenDay (at) {
-    if (!data.openDays || typeof data.openDays !== 'object') data.openDays = {}
-    const k = dayKey(new Date(at))
-    data.openDays[k] = (data.openDays[k] || 0) + 1
-    const keys = Object.keys(data.openDays)
-    if (keys.length > OPEN_DAYS_KEEP) {
-      keys.sort()
-      for (const old of keys.slice(0, keys.length - OPEN_DAYS_KEEP)) delete data.openDays[old]
-    }
+    shared.countOpenDay(at, data)
   }
 
   function getOpenStats () {
-    const days = (committedData || data).openDays || {}
-    const d = now()
-    let opens7d = 0
-    let opens30d = 0
-    for (let i = 0; i < 30; i++) {
-      const n = days[dayKey(d)] || 0
-      if (i < 7) opens7d += n
-      opens30d += n
-      d.setDate(d.getDate() - 1)
-    }
-    return { opens7d, opens30d }
+    return shared.getOpenStats((committedData || data).openDays, now())
   }
 
   function normalizeOpenDays () {
@@ -523,8 +506,9 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   /* ---- 全文索引（分片 + 缓存，同桌面端 v0.15.3 结构） ---- */
 
-  // 搜索关键词归一化：必须与渲染层 util.js 的 normText 一致（兜底）
-  const normalizeKeyword = (s) => String(s || '').toLowerCase().replace(/\s+/g, '')
+  // 搜索关键词归一化：必须与渲染层 util.js 的 normText 一致（兜底）。
+  // 数据层版已上移共享层
+  const normalizeKeyword = shared.normalizeKeyword
 
   const shardCache = new Map()
   let shardCacheChars = 0
@@ -728,10 +712,11 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 库内文件一律以「UUID + 固定扩展名」命名；清扫只认这个形状，其它文件
   // 一律不动（用户自己放进 files/ 的 rust-book.pdf 不是孤儿）。
   // 无主副本只清不在册的；库为空时一律不清（同桌面端的不可逆风险取舍）
-  const APP_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(pdf|jpg)$/i
-  const APP_TMP_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.tmp$/i
+  // 清扫正则上移共享层（口径与桌面端永远一致——清扫误删是最高危操作）
+  const APP_FILE_RE = shared.APP_FILE_RE
+  const APP_TMP_RE = shared.APP_TMP_RE
   // importVia 的暂存副本（带点前缀，用户文件不可能撞上该命名）：崩溃残留，
-  // 与 *.tmp 一样永远可清
+  // 与 *.tmp 一样永远可清。平板专有，不入共享层
   const APP_STAGING_RE = /^\.incoming-[0-9a-f-]{36}\.pdf$/i
 
   async function sweepOrphans () {
@@ -790,24 +775,10 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     return cat
   }
 
-  // 拖拽/换父：沿父链向上检查，禁止移到自己子孙下面成环；visited 防御
-  // 手改 library.json 造成的既有环
+  // 拖拽/换父：禁止移到自己子孙下面成环。校验段上移共享层
+  // （assertMoveCategory，双端同源——环可由互传/手改带入）
   async function moveCategory (id, parentId) {
-    const cat = data.categories.find(c => c.id === id)
-    if (!cat) throw new Error(`分类不存在: ${id}`)
-    const target = parentId || null
-    if (target === id) throw new Error('不能移动到自身')
-    if (target != null) {
-      let cursor = data.categories.find(c => c.id === target)
-      if (!cursor) throw new Error('目标分类不存在')
-      const seen = new Set()
-      while (cursor) {
-        if (cursor.id === id) throw new Error('不能移动到自己的子分类下')
-        if (seen.has(cursor.id)) throw new Error('分类层级数据异常（parentId 成环），请先修复 library.json')
-        seen.add(cursor.id)
-        cursor = data.categories.find(c => c.id === cursor.parentId) || null
-      }
-    }
+    const { cat, target } = shared.assertMoveCategory(data.categories, id, parentId)
     if (cat.parentId === target) return cat
     cat.parentId = target
     await save()
@@ -893,36 +864,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     return true
   }
 
-  // 设置白名单：与桌面端一致的键集合与收敛规则（含平板用不到的
-  // watch/阅读器路径键——留着它们，库在两端互搬时设置不丢）。
-  // 平板端新增：watchTreeUri/watchFolderName（SAF 授权目录）、
-  // externalToolPackage（Olib 包名）——桌面端 save() 全量回写 settings，
-  // 未知键不会丢，两端互搬安全
+  // 设置白名单：键集合与归一规则上移共享层（两端并集——库互搬时设置不丢）
   async function updateSettings (patch) {
     // settings 被污染成原始类型时（互传/手改 library.json），严格模式下
     // `data.settings[key]=` 抛 TypeError、设置功能全瘫（全量审查 P3）——
-    // 就地自愈为空对象，本次 patch 正常落
+    // 就地自愈为空对象，本次 patch 正常落；changed 判定省掉无谓写盘
     if (typeof data.settings !== 'object' || data.settings === null || Array.isArray(data.settings)) data.settings = {}
-    const strings = ['notesEditorPath', 'pdfReaderPath', 'externalToolPath', 'watchFolder', 'watchCategory',
-      'watchTreeUri', 'watchFolderName', 'externalToolPackage']
-    const booleans = ['resumeReading', 'confetti', 'openingAnimation', 'watchEnabled']
-    const numbers = { dormantDays: 1, indexPageLimit: 1 }
-    const enums = {
-      coverSize: ['small', 'medium', 'large'],
-      theme: ['auto', 'ink', 'paper', 'dusk'],
-      viewMode: ['grid', 'spine', 'shelf']
-    }
-    for (const key of strings) if (key in patch) data.settings[key] = String(patch[key])
-    for (const key of booleans) if (key in patch) data.settings[key] = patch[key] === true
-    for (const key of Object.keys(numbers)) {
-      if (!(key in patch)) continue
-      const n = Math.floor(Number(patch[key]))
-      if (Number.isFinite(n) && n >= numbers[key]) data.settings[key] = n
-    }
-    for (const key of Object.keys(enums)) {
-      if (key in patch && enums[key].includes(patch[key])) data.settings[key] = patch[key]
-    }
-    await save()
+    const changed = shared.applySettingsPatch(data.settings, patch || {})
+    if (changed) await save()
     return structuredClone(data.settings)
   }
 

@@ -21,6 +21,26 @@ library.js / notes.js (纯 Node)           bridge/notes-core.mjs
 渲染层的全部能力收敛在 `window.solace.*` 约 35 个 Promise 方法上（桌面端
 preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平台差异。
 
+## 共享纯函数层（library-shared.cjs，2026-10-14 C3）
+
+数据层的「双份维护同源逻辑」是历次 bug 漂移的根因（0 字节入库、损坏备份
+命名、settings 守卫三例均一端修了另一端漏）。共享层把其中**纯函数部分**
+收敛为单实现：桌面 `src/main/library-shared.cjs` 是唯一事实源，sync-www
+搬运到平板 `bridge/library-shared.cjs`（git 跟踪源码，非 www 产物）。
+
+- **首批成员**：normalizeKeyword、dayKey/countOpenDay/getOpenStats
+  （阅读足迹口径）、APP_FILE_RE/APP_TMP_RE（孤儿清扫正则）、
+  applySettingsPatch（设置白名单归一，键集两端并集）、assertMoveCategory
+  （分类移动防环校验）。
+- **提取纪律**（写在文件头，违反即回退）：只收纯函数与常量（时钟注入）；
+  数据经参数传入不捕获外层状态；禁止平台分支；两端实现有差异时取语义
+  更强者统一。
+- **模块格式 CJS**：桌面 require 直用；平板 ESM `import shared from
+  './library-shared.cjs'`（Node 默认导出 interop + esbuild 打包双兼容）。
+- 平台专有逻辑（如 APP_STAGING_RE）不入共享层，留各端本地。
+- 增量搬运：后续发现新的同源纯函数按同纪律上移；桌面是唯一事实源，
+  平板侧不直接改 bridge/library-shared.cjs。
+
 ## 数据兼容（最重要的不变量）
 
 - `library.json` 结构逐字段一致；写入仍是「临时文件 + 原子重命名」
