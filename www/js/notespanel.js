@@ -79,6 +79,8 @@ async function load (session = captureSession()) {
   try {
     const { notes } = await window.solace.listNotes(session.id, session.sessionId)
     if (!isCurrentSession(session) || seq !== loadSeq) return
+    // 排序钩子（补丁上游化）：平板端摘录记录按锚点页升序、自由笔记尾部按
+    // 时间（__linkNoteSort）；桌面无钩子原样渲染
     render(window.__linkNoteSort?.(notes) || notes)
   } catch (err) {
     if (!isCurrentSession(session) || seq !== loadSeq) return
@@ -113,14 +115,14 @@ list.addEventListener('click', async (e) => {
   if (e.target.closest('.note-del')) {
     const res = await askConfirm({
       title: '删除笔记',
-      text: `「${displayName(file)}」将直接删除（平板端无回收站）。`,
+      text: `「${displayName(file)}」${window.solace.isMobile ? '将直接删除（平板端无回收站）。' : '将移入系统回收站。'}`,
       okText: '删除'
     })
     if (res && isCurrentSession(session)) {
       try {
         await window.solace.trashNote(session.id, file, session.sessionId)
         if (!isCurrentSession(session)) return
-        window.__linkNoteDeleted?.(session.id, file)
+        window.__linkNoteDeleted?.(session.id, file) // 平板端清摘录缓存并重绘标记
         load(session)
       } catch (err) {
         if (isCurrentSession(session)) window.toast?.(`删除失败：${err.message || err}`)
@@ -147,7 +149,7 @@ btnDel.addEventListener('click', async () => {
   if (!session || !files.length) return
   const res = await askConfirm({
     title: `删除所选 ${files.length} 条笔记`,
-    text: '将直接删除（平板端无回收站）。',
+    text: window.solace.isMobile ? '将直接删除（平板端无回收站）。' : '将移入系统回收站。',
     okText: '删除'
   })
   if (!res || !isCurrentSession(session)) return
@@ -169,6 +171,7 @@ btnDel.addEventListener('click', async () => {
 })
 
 async function openOne (file, session) {
+  // 平板端内置 Markdown 编辑器接管（补丁上游化；桌面走 Typora 流程）
   if (window.solace.isMobile) {
     try {
       const res = await window.solace.openNote(session.id, file, {}, session.sessionId)
@@ -207,6 +210,7 @@ async function openOne (file, session) {
   }
 }
 
+// 内置编辑器保存后刷新列表的修改时间（补丁上游化；面板开着且同一本书时）
 window.addEventListener('solace-note-saved', (e) => {
   if (panel.hidden || !doc) return
   if (e.detail && e.detail.docId && e.detail.docId !== doc.id) return
@@ -216,7 +220,7 @@ window.addEventListener('solace-note-saved', (e) => {
 btnNew.addEventListener('click', async () => {
   const session = captureSession()
   if (!session) return
-  if (window.__linkNewOverride?.(session)) return
+  if (window.__linkNewOverride?.(session)) return // 平板端「＋新建」改走选词模式
   const ctx = getPageCtx ? getPageCtx() : {}
   try {
     const { file } = await window.solace.createNote(session.id, { title: session.title, page: ctx.page, total: ctx.total }, session.sessionId)

@@ -62,9 +62,44 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
 同步时对拷贝文件施加的补丁。锚点校验失败 = 上游改了代码，需人工对照。
-共 44 处；sync-www.mjs 末尾日志打印每文件计数，增删补丁时同步更新本清单。
+**共 14 处**（2026-10-14 补丁上游化前为 44 处：preview/covers/textindex/
+theme/app/settings/notespanel 七个 JS 文件的全部 30 处补丁已上游化——
+平台差异改为桌面源码内的运行时分支（`window.solace.isMobile` 桌面为
+undefined 走原路径）、可选钩子（`window.__link*` / `__spineGroups` 可选
+调用，无定义短路）与事件派发（`solace-ink-layout` / `solace-ink-close` /
+`solace-outline`，桌面无监听者 no-op——node 测试桩无 CustomEvent 由
+fireWin 守卫）。上游化写法：凡平台差异优先写进桌面源码的分支/钩子，
+sync 补丁仅保留「桌面源码确实无法容纳」的部分——路径差异（vendor/）、
+平板专有 DOM（抽屉/工具簇/Olib 行）、平板专有样式挂载）。
+sync-www.mjs 末尾日志**动态统计**每文件补丁数，增删补丁时同步更新本清单。
 
-### index.html（11 处）
+### index.html（10 处）
+1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）。
+   另：命令面板入口的去键盘语（⌘K → 🔍）已上游化为 app.js 的 isMobile
+   运行时改写，不再占补丁
+2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
+3. 挂载 `css/mobile.css`
+4. 顶栏加 `#btnDrawer`（抽屉开关，窄屏显示）
+5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 shelfList 收尾结构防上游新增
+   aside 时静默重复插入。2026-10-08 前锚 side-foot 收尾行，上游删除该尾注
+   后改锚——含唯一 id 的 ul 整体串匹配，唯一性不变）
+6. 底部加 `vendor/solace-bridge.js`（经典脚本，先于模块执行）
+7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js；与第 6 条同一锚点一次
+   替换，合计 1 对）
+8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI；显示名/
+   启用判据/浏览分支/change 短路均已上游化为 settings.js isMobile 分支）
+9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮（检测逻辑已上游化
+    为 settings.js 可选链绑定——桌面无此 DOM 静默跳过；此处仅注入 DOM）
+10. 预览顶栏 `#btnNotes` 行整替为阅读工具簇 `#toolsCluster`（v0.5.2，设计书
+    `docs/TOOLS-CLUSTER-DESIGN.md`）：标注/链接/笔记三钮收进一条三条杠圆钮，
+    点开向下展开三个纯图标圆钮。三钮 ID 不变，preview.js/ink.js/link.js
+    的绑定照旧生效
+
+### js/pdfjs.js（4 处）
+路径差异（node_modules → vendor/）：pdf.min.mjs / worker / cmaps /
+standard_fonts。
+
+## index.html（11 处）
 1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
 2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
 3. 挂载 `css/mobile.css`

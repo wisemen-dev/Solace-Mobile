@@ -48,8 +48,12 @@ async function fillPanel () {
   $('#setPdfReader').value = s.pdfReaderPath || ''
   $('#setNotesEditor').value = s.notesEditorPath || ''
   $('#setTool').value = s.externalToolPath || ''
+  // 监视文件夹（补丁上游化）：平板端显示 SAF 目录名（uri 不可读不可手输）、
+  // 启用判据看 watchTreeUri（watchFolder 恒不存在）；注意用 .value 赋值而非
+  // setAttribute('value')——后者只设默认值，面板重开会显示脏值。
+  // setOlibPackage 平板专有 DOM，桌面无此元素可选链跳过
   $('#setWatchFolder').value = window.solace.isMobile ? (s.watchFolderName || '') : (s.watchFolder || '')
-  $('#setOlibPackage').value = s.externalToolPackage || ''
+  $('#setOlibPackage') && ($('#setOlibPackage').value = s.externalToolPackage || '')
   $('#setWatchEnabled').checked = (window.solace.isMobile ? !!s.watchTreeUri : !!s.watchFolder) && s.watchEnabled !== false
   // 自动入库分类下拉随当前资料库的分类重建
   $('#setWatchCategory').innerHTML = '<option value="">不归分类</option>' +
@@ -159,11 +163,13 @@ $('#btnBrowseTool').addEventListener('click', async () => {
 
 /* ---- 自动入库（监视文件夹） ---- */
 
+// 平板端输入框只读（补丁上游化），change 不会由用户触发；防御性短路
 $('#setWatchFolder').addEventListener('change', (e) => {
   if (window.solace.isMobile) return
   save({ watchFolder: e.target.value.trim() })
 })
 $('#btnBrowseWatch').addEventListener('click', async () => {
+  // 平板端走 SAF 系统目录选择器，返回 { uri, name }（补丁上游化）
   if (window.solace.isMobile) {
     const r = await window.solace.pickDirectory({ title: '选择自动入库监视文件夹' })
     if (r && r.uri) {
@@ -263,7 +269,8 @@ document.getElementById('btnSettings').addEventListener('click', openSettings)
 document.getElementById('btnSettingsClose').addEventListener('click', () => dlg.close())
 dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close() }) // 点 backdrop 关闭
 
-/* ---- 平板端：下载工具（Olib）包名 ---- */
+/* ---- 平板端：下载工具（Olib）包名（补丁上游化；DOM 为平板 index.html
+   专有，桌面无此元素可选链静默跳过） ---- */
 $('#setOlibPackage')?.addEventListener('change', (e) => save({ externalToolPackage: e.target.value.trim() }))
 $('#btnDetectOlib')?.addEventListener('click', async () => {
   let apps
