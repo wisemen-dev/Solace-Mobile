@@ -79,11 +79,8 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
         return copyFileAndHash(file.uri, staging)
       })
       const catId = getSettings().watchCategory
-      if (catId) {
-        const data = lib.getData()
-        if (data.categories.some(c => c.id === catId)) {
-          try { await lib.updateDoc(doc.id, { categoryId: catId }) } catch { /* 归类失败不影响入库 */ }
-        }
+      if (catId && lib.hasCategory(catId)) {
+        try { await lib.updateDoc(doc.id, { categoryId: catId }) } catch { /* 归类失败不影响入库 */ }
       }
       st[file.uri] = { size: file.size, mtime: file.mtime }
       stateDirty = true

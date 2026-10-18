@@ -123,9 +123,15 @@ export async function rootUri () {
 // 库内文件的直读 URL：走 Capacitor 内置资源服务器（/_capacitor_file_ 前缀
 // 由 WebViewLocalServer 原生拦截、直接 FileInputStream 流式返回）——文件
 // 内容完全不过 JS 桥，无 base64、无主线程解码，大 PDF 的全速路径。
-// pdf.js 以 url 方式加载即用（服务端不支持 Range 时自动整取，仍远快于桥）
+// pdf.js 以 url 方式加载即用（服务端不支持 Range 时自动整取，仍远快于桥）。
+// 资料库根 URI 在应用生命周期内固定：首次解析后缓存前缀，封面/PDF 逐文件
+// 取 URL 时不再每次都走一次 Filesystem.getUri 桥调用。
+let rootFileBase = null
 export async function fileUrl (relPath) {
-  const r = await Filesystem.getUri({ path: abs(relPath), directory: DIR })
-  const p = String(r.uri).replace(/^file:\/\//, '')
-  return `https://localhost/_capacitor_file_${p}`
+  if (!rootFileBase) {
+    const r = await Filesystem.getUri({ path: ROOT, directory: DIR })
+    const p = String(r.uri).replace(/^file:\/\//, '').replace(/\/+$/, '')
+    rootFileBase = `https://localhost/_capacitor_file_${p}`
+  }
+  return `${rootFileBase}/${String(relPath).replace(/^\/+/, '')}`
 }

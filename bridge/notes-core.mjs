@@ -41,15 +41,26 @@ export function createNotes ({ fs, now = () => new Date() }) {
     const notes = []
     for (const ent of entries) {
       if (ent.type === 'directory' || !ent.name.toLowerCase().endsWith('.md')) continue
-      let st = null
-      try {
-        st = await fs.stat(`${dir}/${ent.name}`)
-      } catch { /* stat 失败不得丢条目：漏出会被孤儿剪除误删该条锚点，元数据置空即可 */ }
+      // Capacitor Filesystem 7.1+ 的 readdir 已带 mtime/ctime/size：真机路径
+      // 不再逐文件 stat（一条笔记一次桥往返，50 条就是 50 次）。内存 fs /
+      // 旧版插件没有这些字段时才回退 stat；stat 失败仍保留条目（mtime=null），
+      // 因为漏出条目会被摘录锚点的孤儿剪除误删。
+      let mtime = Number.isFinite(ent.mtime) ? ent.mtime : null
+      let ctime = Number.isFinite(ent.ctime) ? ent.ctime : null
+      let size = Number.isFinite(ent.size) ? ent.size : 0
+      if (mtime == null) {
+        try {
+          const st = await fs.stat(`${dir}/${ent.name}`)
+          mtime = st.mtime
+          ctime = st.ctime ?? st.mtime
+          size = st.size
+        } catch { /* 见上：元数据置空即可 */ }
+      }
       notes.push({
         file: ent.name,
-        mtime: st ? new Date(st.mtime).toISOString() : null,
-        birth: st ? new Date(st.ctime ?? st.mtime).toISOString() : null,
-        size: st ? st.size : 0
+        mtime: mtime != null ? new Date(mtime).toISOString() : null,
+        birth: (ctime ?? mtime) != null ? new Date(ctime ?? mtime).toISOString() : null,
+        size
       })
     }
     notes.sort((a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0)) // 最近修改在上

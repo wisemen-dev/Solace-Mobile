@@ -1455,10 +1455,14 @@
       return null;
     }
   }
+  var rootFileBase = null;
   async function fileUrl(relPath) {
-    const r = await Filesystem.getUri({ path: abs(relPath), directory: DIR });
-    const p = String(r.uri).replace(/^file:\/\//, "");
-    return `https://localhost/_capacitor_file_${p}`;
+    if (!rootFileBase) {
+      const r = await Filesystem.getUri({ path: ROOT, directory: DIR });
+      const p = String(r.uri).replace(/^file:\/\//, "").replace(/\/+$/, "");
+      rootFileBase = `https://localhost/_capacitor_file_${p}`;
+    }
+    return `${rootFileBase}/${String(relPath).replace(/^\/+/, "")}`;
   }
 
   // bridge/base64.mjs
@@ -1526,17 +1530,22 @@
     let startupNotice = null;
     let textIndexMeta = { version: 1, entries: {} };
     let legacyMigration = null;
+    let docsById = /* @__PURE__ */ new Map();
+    function rebuildDocIndex() {
+      docsById = /* @__PURE__ */ new Map();
+      for (const d of data.documents) docsById.set(d.id, d);
+    }
     const mutationQ = createSerialQueue();
     function mutate(fn) {
       return mutationQ.run(async () => {
-        const before = structuredClone(data);
+        const before = committedData ? null : structuredClone(data);
         const beforeMeta = structuredClone(textIndexMeta);
         try {
           const result = await fn();
-          committedData = structuredClone(data);
           return structuredClone(result);
         } catch (err) {
-          data = structuredClone(committedData || before);
+          if (committedData || before) data = structuredClone(committedData || before);
+          rebuildDocIndex();
           textIndexMeta = beforeMeta;
           shardCache.clear();
           shardCacheChars = 0;
@@ -1604,6 +1613,7 @@
       if (!data.settings) data.settings = { theme: "auto", viewMode: "grid" };
       normalizeDocuments();
       normalizeOpenDays();
+      rebuildDocIndex();
       shardCache.clear();
       shardCacheChars = 0;
       legacyMigration = null;
@@ -1613,6 +1623,21 @@
     }
     function getData() {
       return structuredClone(committedData || data);
+    }
+    function hasDocument(id) {
+      return docsById.has(String(id));
+    }
+    function getDocument(id) {
+      const doc = docsById.get(String(id));
+      return doc ? structuredClone(doc) : null;
+    }
+    function getSettings() {
+      const s2 = (committedData || data)?.settings;
+      return s2 && typeof s2 === "object" && !Array.isArray(s2) ? { ...s2 } : {};
+    }
+    function hasCategory(id) {
+      const d = committedData || data;
+      return !!id && Array.isArray(d?.categories) && d.categories.some((c) => c.id === id);
     }
     function getStartupNotice() {
       return startupNotice;
@@ -1649,7 +1674,7 @@
       }
     }
     function findDoc(id) {
-      const doc = data.documents.find((d) => d.id === id);
+      const doc = docsById.get(id) || data.documents.find((d) => d.id === id);
       if (!doc) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
       return doc;
     }
@@ -1716,10 +1741,12 @@
           tagIds: []
         };
         data.documents.push(doc);
+        rebuildDocIndex();
         try {
           await save();
         } catch (err) {
           data.documents = data.documents.filter((d) => d !== doc);
+          rebuildDocIndex();
           throw err;
         }
         committed = true;
@@ -1785,10 +1812,12 @@
           tagIds: []
         };
         data.documents.push(doc);
+        rebuildDocIndex();
         try {
           await save();
         } catch (err) {
           data.documents = data.documents.filter((d) => d !== doc);
+          rebuildDocIndex();
           throw err;
         }
         committed = true;
@@ -1800,8 +1829,7 @@
         }
       }
     }
-    async function updateDoc(id, patch) {
-      const doc = findDoc(id);
+    function applyDocPatch(doc, patch) {
       if ("title" in patch) {
         const t = String(patch.title == null ? "" : patch.title).trim();
         doc.title = t || stemOf(doc.fileName) || "\u672A\u547D\u540D\u6587\u6863";
@@ -1812,23 +1840,34 @@
       if ("tagIds" in patch) {
         doc.tagIds = Array.isArray(patch.tagIds) ? patch.tagIds.map(String) : doc.tagIds;
       }
+    }
+    async function updateDoc(id, patch) {
+      const doc = findDoc(id);
+      applyDocPatch(doc, patch);
       await save();
       return structuredClone(doc);
     }
-    async function removeDoc(id, opts = {}) {
-      const doc = findDoc(id);
-      data.documents = data.documents.filter((d) => d.id !== id);
-      await save();
-      const leftovers = [];
-      if (textIndexMeta.entries[id]) {
-        delete textIndexMeta.entries[id];
-        try {
-          await saveTextIndexMeta();
-        } catch {
-          leftovers.push("textindex/index.json");
+    async function updateDocs(ids, patch) {
+      const updated = [];
+      const skipped = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const rawId of Array.isArray(ids) ? ids : []) {
+        const id = String(rawId);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const doc = docsById.get(id);
+        if (!doc) {
+          skipped.push(id);
+          continue;
         }
-        dropShardCache(id);
+        applyDocPatch(doc, patch || {});
+        updated.push(structuredClone(doc));
       }
+      if (updated.length) await save();
+      return { updated, skipped };
+    }
+    async function cleanupRemovedDoc(doc, opts) {
+      const leftovers = [];
       const base = (p) => p.split("/").pop();
       for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`, `annotations/${doc.id}.json`, `links/${doc.id}.json`]) {
         if (!await fs2.rm(p)) leftovers.push(base(p));
@@ -1860,12 +1899,62 @@
         if (await fs2.rm(notesDir, { recursive: true })) notesPurged = true;
         else leftovers.push(base(notesDir));
       }
-      return { title: doc.title, leftovers, notesKeptTo, notesPurged };
+      return { id: doc.id, title: doc.title, leftovers, notesKeptTo, notesPurged };
+    }
+    async function removeDocsLocked(docs, opts = {}) {
+      if (!docs.length) return [];
+      const ids = new Set(docs.map((d) => d.id));
+      data.documents = data.documents.filter((d) => !ids.has(d.id));
+      rebuildDocIndex();
+      await save();
+      let metaChanged = false;
+      for (const doc of docs) {
+        if (textIndexMeta.entries[doc.id]) {
+          delete textIndexMeta.entries[doc.id];
+          dropShardCache(doc.id);
+          metaChanged = true;
+        }
+      }
+      let metaFailed = false;
+      if (metaChanged) {
+        try {
+          await saveTextIndexMeta();
+        } catch {
+          metaFailed = true;
+        }
+      }
+      const results = [];
+      for (const doc of docs) {
+        const r = await cleanupRemovedDoc(doc, opts);
+        if (metaFailed && results.length === 0) r.leftovers.push("textindex/index.json");
+        results.push(r);
+      }
+      return results;
+    }
+    async function removeDoc(id, opts = {}) {
+      const doc = findDoc(id);
+      const [result] = await removeDocsLocked([doc], opts);
+      return result;
+    }
+    async function removeDocs(ids, opts = {}) {
+      const docs = [];
+      const skipped = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const rawId of Array.isArray(ids) ? ids : []) {
+        const id = String(rawId);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const doc = docsById.get(id);
+        if (doc) docs.push(doc);
+        else skipped.push(id);
+      }
+      const removed = await removeDocsLocked(docs, opts || {});
+      return { removed, skipped };
     }
     async function readFileBuffer(id) {
-      findDoc(id);
+      const doc = findDoc(id);
       try {
-        return base64ToBytes(await fs2.readFileB64(`files/${findDoc(id).id}.pdf`));
+        return base64ToBytes(await fs2.readFileB64(`files/${doc.id}.pdf`));
       } catch (err) {
         if (isNotFoundError(err)) {
           throw new Error("\u5E93\u5185 PDF \u526F\u672C\u5DF2\u4E22\u5931\uFF0C\u8BF7\u5220\u9664\u8FD9\u672C\u4E66\u540E\u91CD\u65B0\u5BFC\u5165\uFF08\u539F\u6587\u4EF6\u4E0D\u53D7\u5F71\u54CD\uFF09");
@@ -1920,8 +2009,12 @@
     }
     async function getCoverDataUrl(id) {
       findDoc(id);
-      if (!await fs2.exists(`covers/${id}.jpg`)) return null;
-      return `data:image/jpeg;base64,${await fs2.readFileB64(`covers/${id}.jpg`)}`;
+      try {
+        return `data:image/jpeg;base64,${await fs2.readFileB64(`covers/${id}.jpg`)}`;
+      } catch (err) {
+        if (isNotFoundError(err)) return null;
+        throw err;
+      }
     }
     const normalizeKeyword = import_library_shared.default.normalizeKeyword;
     const shardCache = /* @__PURE__ */ new Map();
@@ -2055,15 +2148,21 @@
       cacheShard(id, obj.pages);
       return obj.pages;
     }
-    async function searchTextIndex(kw) {
+    let latestSearchToken = 0;
+    async function searchTextIndex(kw, token) {
+      if (token !== void 0) latestSearchToken = Number(token) || 0;
       const needle = normalizeKeyword(kw);
       if (!needle) return {};
-      await mutate(() => migrateLegacyTextIndex());
+      if (legacyMigration) await legacyMigration.catch(() => {
+      });
+      else await mutate(() => migrateLegacyTextIndex());
+      if (token !== void 0 && token !== latestSearchToken) return {};
       const live = new Set(data.documents.map((d) => d.id));
       const hits = {};
       const stale = [];
       const ids = Object.keys(textIndexMeta.entries).filter((id) => live.has(id) && !textIndexMeta.entries[id].failed);
       for (let i = 0; i < ids.length; i++) {
+        if (token !== void 0 && token !== latestSearchToken) return {};
         const id = ids[i];
         let pages;
         try {
@@ -2071,6 +2170,7 @@
         } catch {
           continue;
         }
+        if (token !== void 0 && token !== latestSearchToken) return {};
         if (pages) {
           for (let n = 0; n < pages.length; n++) {
             if (pages[n].includes(needle)) {
@@ -2081,7 +2181,10 @@
         } else {
           stale.push(id);
         }
-        if ((i & 15) === 15) await new Promise((r) => setTimeout(r, 0));
+        if ((i & 15) === 15) {
+          await new Promise((r) => setTimeout(r, 0));
+          if (token !== void 0 && token !== latestSearchToken) return {};
+        }
       }
       if (stale.length) {
         mutate(() => {
@@ -2264,12 +2367,18 @@
     return {
       init,
       getData,
+      hasDocument,
+      getDocument,
+      getSettings,
+      hasCategory,
       getStartupNotice,
       importFile,
       importWith,
       importVia,
       updateDoc: mutator(updateDoc),
+      updateDocs: mutator(updateDocs),
       removeDoc: mutator(removeDoc),
+      removeDocs: mutator(removeDocs),
       readFileBuffer,
       markOpened: mutator(markOpened),
       getOpenStats,
@@ -2323,16 +2432,23 @@
       const notes2 = [];
       for (const ent of entries) {
         if (ent.type === "directory" || !ent.name.toLowerCase().endsWith(".md")) continue;
-        let st = null;
-        try {
-          st = await fs2.stat(`${dir}/${ent.name}`);
-        } catch {
+        let mtime = Number.isFinite(ent.mtime) ? ent.mtime : null;
+        let ctime = Number.isFinite(ent.ctime) ? ent.ctime : null;
+        let size = Number.isFinite(ent.size) ? ent.size : 0;
+        if (mtime == null) {
+          try {
+            const st = await fs2.stat(`${dir}/${ent.name}`);
+            mtime = st.mtime;
+            ctime = st.ctime ?? st.mtime;
+            size = st.size;
+          } catch {
+          }
         }
         notes2.push({
           file: ent.name,
-          mtime: st ? new Date(st.mtime).toISOString() : null,
-          birth: st ? new Date(st.ctime ?? st.mtime).toISOString() : null,
-          size: st ? st.size : 0
+          mtime: mtime != null ? new Date(mtime).toISOString() : null,
+          birth: (ctime ?? mtime) != null ? new Date(ctime ?? mtime).toISOString() : null,
+          size
         });
       }
       notes2.sort((a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0));
@@ -2715,13 +2831,10 @@
           return copyFileAndHash(file.uri, staging);
         });
         const catId = getSettings().watchCategory;
-        if (catId) {
-          const data = lib2.getData();
-          if (data.categories.some((c) => c.id === catId)) {
-            try {
-              await lib2.updateDoc(doc.id, { categoryId: catId });
-            } catch {
-            }
+        if (catId && lib2.hasCategory(catId)) {
+          try {
+            await lib2.updateDoc(doc.id, { categoryId: catId });
+          } catch {
           }
         }
         st[file.uri] = { size: file.size, mtime: file.mtime };
@@ -2822,7 +2935,7 @@
   var notes = createNotes({ fs });
   var annotations = createAnnotations({ fs });
   var links = createLinks({ fs });
-  var watch = createWatch({ lib, fs, getSettings: () => lib.getData().settings || {} });
+  var watch = createWatch({ lib, fs, getSettings: () => lib.getSettings() });
   var ready = lib.init();
   ready.catch((err) => {
     const div = document.createElement("div");
@@ -2896,10 +3009,7 @@
     }
     return { imported, errors, duplicates };
   }
-  var docAlive = (id) => {
-    const docs = lib.getData()?.documents;
-    return Array.isArray(docs) && docs.some((d) => d.id === id);
-  };
+  var docAlive = (id) => lib.hasDocument(id);
   var solace = {
     // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
     isMobile: true,
@@ -2931,7 +3041,10 @@
     pickFile: gate(async () => null),
     // 文档
     updateDoc: gate((id, patch) => lib.updateDoc(id, patch)),
+    // 批量改/删：一次落库（批量归档 50 本不再写 50 次 library.json）
+    updateDocs: gate((ids, patch) => lib.updateDocs(ids, patch)),
     removeDoc: gate((id, opts) => lib.removeDoc(id, opts || {})),
+    removeDocs: gate((ids, opts) => lib.removeDocs(ids, opts || {})),
     openDoc: gate(async () => {
       throw new Error("\u5E73\u677F\u7AEF\u8BF7\u7528\u5185\u7F6E\u9884\u89C8\u9605\u8BFB");
     }),
@@ -2941,18 +3054,25 @@
     // 库内 PDF 的直读 URL：WebView 原生拦截 _capacitor_file_ 流式返回，
     // 内容不过 JS 桥——预览/封面/索引的加载全走这条（性能关键路径）
     getDocUrl: gate(async (id) => {
-      const doc = lib.getData().documents.find((d) => d.id === id);
-      if (!doc) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
-      return fileUrl(`files/${doc.id}.pdf`);
+      if (!lib.hasDocument(id)) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
+      return fileUrl(`files/${id}.pdf`);
     }),
     setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
     // 全文索引
     getTextIndexStatus: gate(() => lib.getTextIndexStatus()),
-    searchTextIndex: gate((kw) => lib.searchTextIndex(kw)),
+    searchTextIndex: gate((kw, token) => lib.searchTextIndex(kw, token)),
     setTextIndex: gate((id, payload) => lib.setTextIndex(id, payload)),
     // 封面
     setCover: gate((id, dataUrl) => lib.setCover(id, dataUrl)),
     getCover: gate((id) => lib.getCoverDataUrl(id)),
+    // 封面直读 URL（与 getDocUrl 同一条 _capacitor_file_ 快路径）：渲染层
+    // <img src> 由 WebView 原生流式加载，不再把 JPEG base64 过 JS 桥。
+    // 文件缺失返回 null，渲染层回落到「重新生成封面」。
+    getCoverUrl: gate(async (id) => {
+      if (!lib.hasDocument(id)) throw new Error(`\u6587\u6863\u4E0D\u5B58\u5728: ${id}`);
+      if (!await fs.exists(`covers/${id}.jpg`)) return null;
+      return fileUrl(`covers/${id}.jpg`);
+    }),
     // 分类
     addCategory: gate((name, parentId) => lib.addCategory(name, parentId)),
     renameCategory: gate((id, name) => lib.renameCategory(id, name)),
@@ -2977,7 +3097,7 @@
     // 外部工具与自动入库（对应桌面端「打开下载器 + 监视文件夹」）
     // 平板端：拉起 Olib（包名可配置，缺省按关键字自动检测）
     launchTool: gate(async () => {
-      const s2 = lib.getData().settings || {};
+      const s2 = lib.getSettings();
       let pkg = s2.externalToolPackage || "";
       if (!pkg) {
         const apps = await findOlibCandidates();
@@ -3002,7 +3122,7 @@
     listNotes: gate((id) => notes.list(id)),
     createNote: gate((id, payload) => notes.create(id, payload)),
     openNote: gate(async (id, file) => {
-      const doc = lib.getData().documents.find((d) => d.id === id);
+      const doc = lib.getDocument(id);
       const content = await notes.read(id, file);
       return { inApp: true, title: doc && doc.title || "\u7B14\u8BB0", content };
     }),

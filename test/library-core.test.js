@@ -555,3 +555,59 @@ test('base64：随机字节往返无损（与 WebView/native 传输链路同构�
     for (let i = 0; i < len; i++) assert.equal(round[i], bytes[i])
   }
 })
+
+/* ---- 批量写与轻量访问器（批量归档/删除的写放大优化） ---- */
+
+test('updateDocs：一次落库、跳过失效 id，并返回逐项结果', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  const b = await lib.importFile({ fileName: 'B.pdf', bytes: new Uint8Array([9]) })
+  let libraryWrites = 0
+  const write = fs.writeFileAtomicText
+  fs.writeFileAtomicText = async (p, text) => {
+    if (p === 'library.json') libraryWrites++
+    return write(p, text)
+  }
+  const out = await lib.updateDocs([a.id, a.id, b.id, 'missing'], { categoryId: 'c1' })
+  assert.equal(out.updated.length, 2)
+  assert.deepEqual(out.skipped, ['missing'])
+  assert.equal(libraryWrites, 1, '批量改必须只写一次 library.json')
+  assert.equal(lib.getDocument(a.id).categoryId, 'c1')
+  assert.equal(lib.getDocument(b.id).categoryId, 'c1')
+})
+
+test('removeDocs：一次落库、批量清理文件并逐项回报', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  const b = await lib.importFile({ fileName: 'B.pdf', bytes: new Uint8Array([9]) })
+  let libraryWrites = 0
+  const write = fs.writeFileAtomicText
+  fs.writeFileAtomicText = async (p, text) => {
+    if (p === 'library.json') libraryWrites++
+    return write(p, text)
+  }
+  const out = await lib.removeDocs([a.id, 'missing'], { keepNotes: false })
+  assert.equal(out.removed.length, 1)
+  assert.deepEqual(out.skipped, ['missing'])
+  assert.equal(out.removed[0].id, a.id)
+  assert.equal(libraryWrites, 1, '批量删必须只写一次 library.json')
+  assert.equal(lib.hasDocument(a.id), false)
+  assert.equal(lib.hasDocument(b.id), true)
+  assert.equal(await fs.exists(`files/${a.id}.pdf`), false)
+})
+
+test('hasDocument/getDocument/getSettings：轻量读取且不暴露内部引用', async () => {
+  const { lib } = createHarness()
+  await lib.init()
+  const a = await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  assert.equal(lib.hasDocument(a.id), true)
+  assert.equal(lib.hasDocument('missing'), false)
+  const doc = lib.getDocument(a.id)
+  doc.title = '外部改名'
+  assert.equal(lib.getDocument(a.id).title, 'A', 'getDocument 必须返回克隆')
+  const settings = lib.getSettings()
+  settings.theme = 'paper'
+  assert.equal(lib.getSettings().theme, 'auto', 'getSettings 必须返回浅拷贝')
+})

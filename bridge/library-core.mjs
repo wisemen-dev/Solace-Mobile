@@ -27,21 +27,33 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   let startupNotice = null
   let textIndexMeta = { version: 1, entries: {} }
   let legacyMigration = null // 旧索引搬迁的 in-flight promise（并发调用等同一轮完成）
+  // 文档 id → 引用索引：避免 findDoc/hasDocument/getDocument 每次都扫全表。
+  // 所有增删路径都必须重建（loadRoot/import/remove）；只读路径直接命中。
+  let docsById = new Map()
+  function rebuildDocIndex () {
+    docsById = new Map()
+    for (const d of data.documents) docsById.set(d.id, d)
+  }
 
   // 原子写只保护文件完整性；整个「改内存 → 写库 → 失败回滚」也必须串行。
   // 所有资料库变更共用此队列，避免设置/进度把失败导入的中间态写回磁盘。
   const mutationQ = createSerialQueue()
   function mutate (fn) {
     return mutationQ.run(async () => {
-      const before = structuredClone(data)
+      // 正常路径只快照索引 meta：资料库主体以 committedData 为回滚源。
+      // 仅 init 前的异常路径（committedData 仍为空）才需要额外快照 data。
+      const before = committedData ? null : structuredClone(data)
       const beforeMeta = structuredClone(textIndexMeta)
       try {
         const result = await fn()
-        committedData = structuredClone(data)
+        // 成功路径不再克隆 committedData：每个会改库的 mutator 都以 save()
+        // 落库，save() 已更新已提交快照；未 save 的中间态本就不该对外可见。
         return structuredClone(result)
       } catch (err) {
-        // 去重回填等步骤可能已经成功提交；失败只回退到最近一次落库状态。
-        data = structuredClone(committedData || before)
+        // 回退到最近一次落库状态；索引 meta 没有独立的 committed 快照，
+        // 仍用 beforeMeta 还原（避免失败后索引清单与磁盘分片错位）
+        if (committedData || before) data = structuredClone(committedData || before)
+        rebuildDocIndex()
         textIndexMeta = beforeMeta
         shardCache.clear()
         shardCacheChars = 0
@@ -115,6 +127,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     if (!data.settings) data.settings = { theme: 'auto', viewMode: 'grid' }
     normalizeDocuments()
     normalizeOpenDays()
+    rebuildDocIndex()
     shardCache.clear()
     shardCacheChars = 0
     legacyMigration = null
@@ -127,6 +140,28 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   // 的就地修改绕过 save() 落库（updateDoc 之外的脏写）
   function getData () {
     return structuredClone(committedData || data)
+  }
+
+  // 轻量访问器：桥接层大量「只判断书在不在 / 只读一个标题 / 只读设置」的
+  // 调用不应为了一个字段深拷贝整个资料库（docAlive/getDocUrl/openNote 等）。
+  // 只读引用不暴露给渲染层；需要完整条目时返回单条克隆。
+  function hasDocument (id) {
+    return docsById.has(String(id))
+  }
+
+  function getDocument (id) {
+    const doc = docsById.get(String(id))
+    return doc ? structuredClone(doc) : null
+  }
+
+  function getSettings () {
+    const s = (committedData || data)?.settings
+    return s && typeof s === 'object' && !Array.isArray(s) ? { ...s } : {}
+  }
+
+  function hasCategory (id) {
+    const d = committedData || data
+    return !!id && Array.isArray(d?.categories) && d.categories.some(c => c.id === id)
   }
 
   function getStartupNotice () {
@@ -179,7 +214,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   }
 
   function findDoc (id) {
-    const doc = data.documents.find(d => d.id === id)
+    const doc = docsById.get(id) || data.documents.find(d => d.id === id)
     if (!doc) throw new Error(`文档不存在: ${id}`)
     return doc
   }
@@ -258,12 +293,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         tagIds: []
       }
       data.documents.push(doc)
+      rebuildDocIndex()
       try {
         await save()
       } catch (err) {
         // 落库失败：撤条目并清掉刚写的副本，别让「文件在、册上无」的半截
         // 状态留给下次启动的孤儿清扫连坐（与桌面 importPdfLocked 同法）
         data.documents = data.documents.filter(d => d !== doc)
+        rebuildDocIndex()
         throw err
       }
       committed = true
@@ -341,10 +378,12 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         tagIds: []
       }
       data.documents.push(doc)
+      rebuildDocIndex()
       try {
         await save()
       } catch (err) {
         data.documents = data.documents.filter(d => d !== doc)
+        rebuildDocIndex()
         throw err
       }
       committed = true
@@ -361,8 +400,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   /* ---- 文档：编辑 / 删除 / 进度 ---- */
 
   // patch 只允许改 title/categoryId/tagIds，写入侧做形状收敛（同桌面端）
-  async function updateDoc (id, patch) {
-    const doc = findDoc(id)
+  function applyDocPatch (doc, patch) {
     if ('title' in patch) {
       const t = String(patch.title == null ? '' : patch.title).trim()
       doc.title = t || stemOf(doc.fileName) || '未命名文档'
@@ -373,23 +411,39 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     if ('tagIds' in patch) {
       doc.tagIds = Array.isArray(patch.tagIds) ? patch.tagIds.map(String) : doc.tagIds
     }
+  }
+
+  async function updateDoc (id, patch) {
+    const doc = findDoc(id)
+    applyDocPatch(doc, patch)
     await save()
     return structuredClone(doc)
+  }
+
+  // 批量改：一次落库、一次深拷贝提交。渲染层批量归档/批量打标签用，
+  // 避免 N 本书触发 N 次整库写入；失效 id 跳过而不是整批失败。
+  async function updateDocs (ids, patch) {
+    const updated = []
+    const skipped = []
+    const seen = new Set()
+    for (const rawId of Array.isArray(ids) ? ids : []) {
+      const id = String(rawId)
+      if (seen.has(id)) continue
+      seen.add(id)
+      const doc = docsById.get(id)
+      if (!doc) { skipped.push(id); continue }
+      applyDocPatch(doc, patch || {})
+      updated.push(structuredClone(doc))
+    }
+    if (updated.length) await save()
+    return { updated, skipped }
   }
 
   // 删除文档：先提交逻辑删除（失败由变更队列回滚），库内文件尽力而为；
   // 删不掉的列入 leftovers 由下次启动的孤儿清理补删（同桌面端）。
   // keepNotes：把 notes/<id>/ 改名为「已删书-书名-时间」保留
-  async function removeDoc (id, opts = {}) {
-    const doc = findDoc(id)
-    data.documents = data.documents.filter(d => d.id !== id)
-    await save() // 唯一提交点；成功之后缓存/文件清理失败不再谎报删除失败
+  async function cleanupRemovedDoc (doc, opts) {
     const leftovers = []
-    if (textIndexMeta.entries[id]) {
-      delete textIndexMeta.entries[id]
-      try { await saveTextIndexMeta() } catch { leftovers.push('textindex/index.json') }
-      dropShardCache(id)
-    }
     const base = (p) => p.split('/').pop()
     for (const p of [`files/${doc.id}.pdf`, `covers/${doc.id}.jpg`, `textindex/${doc.id}.json`, `annotations/${doc.id}.json`, `links/${doc.id}.json`]) {
       if (!await fs.rm(p)) leftovers.push(base(p))
@@ -423,13 +477,68 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       if (await fs.rm(notesDir, { recursive: true })) notesPurged = true
       else leftovers.push(base(notesDir))
     }
-    return { title: doc.title, leftovers, notesKeptTo, notesPurged }
+    return { id: doc.id, title: doc.title, leftovers, notesKeptTo, notesPurged }
+  }
+
+  // 批量删除的内核：先一次性提交逻辑删除（唯一一次 library.json 写入），
+  // 再逐本做文件清理。文件清理失败不回滚已提交的删除（与单本语义一致）。
+  async function removeDocsLocked (docs, opts = {}) {
+    if (!docs.length) return []
+    const ids = new Set(docs.map(d => d.id))
+    data.documents = data.documents.filter(d => !ids.has(d.id))
+    rebuildDocIndex()
+    await save() // 唯一提交点；成功之后缓存/文件清理失败不再谎报删除失败
+
+    let metaChanged = false
+    for (const doc of docs) {
+      if (textIndexMeta.entries[doc.id]) {
+        delete textIndexMeta.entries[doc.id]
+        dropShardCache(doc.id)
+        metaChanged = true
+      }
+    }
+    let metaFailed = false
+    if (metaChanged) {
+      try { await saveTextIndexMeta() } catch { metaFailed = true }
+    }
+
+    const results = []
+    for (const doc of docs) {
+      const r = await cleanupRemovedDoc(doc, opts)
+      // 索引清单一次写失败：附着到首项，界面仍能提示「重启后自动清理」
+      if (metaFailed && results.length === 0) r.leftovers.push('textindex/index.json')
+      results.push(r)
+    }
+    return results
+  }
+
+  async function removeDoc (id, opts = {}) {
+    const doc = findDoc(id)
+    const [result] = await removeDocsLocked([doc], opts)
+    return result
+  }
+
+  // 批量删除：失效 id 跳过而不是整批失败；返回逐项删除结果供 toast 汇总。
+  async function removeDocs (ids, opts = {}) {
+    const docs = []
+    const skipped = []
+    const seen = new Set()
+    for (const rawId of Array.isArray(ids) ? ids : []) {
+      const id = String(rawId)
+      if (seen.has(id)) continue
+      seen.add(id)
+      const doc = docsById.get(id)
+      if (doc) docs.push(doc)
+      else skipped.push(id)
+    }
+    const removed = await removeDocsLocked(docs, opts || {})
+    return { removed, skipped }
   }
 
   async function readFileBuffer (id) {
-    findDoc(id)
+    const doc = findDoc(id)
     try {
-      return base64ToBytes(await fs.readFileB64(`files/${findDoc(id).id}.pdf`))
+      return base64ToBytes(await fs.readFileB64(`files/${doc.id}.pdf`))
     } catch (err) {
       // 只有「文件不存在」才判副本丢失（被手动清理等）；I/O、权限、base64
       // 损坏等故障原样上抛——此前 catch-all 把瞬时磁盘故障也报成
@@ -500,8 +609,14 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   async function getCoverDataUrl (id) {
     findDoc(id)
-    if (!await fs.exists(`covers/${id}.jpg`)) return null
-    return `data:image/jpeg;base64,${await fs.readFileB64(`covers/${id}.jpg`)}`
+    try {
+      // 直接读：命中时只有一次桥往返。以前先 exists 再 read，每张封面多一次
+      // stat；文件不存在按「无封面」返回 null（与 exists 分支同语义）。
+      return `data:image/jpeg;base64,${await fs.readFileB64(`covers/${id}.jpg`)}`
+    } catch (err) {
+      if (isNotFoundError(err)) return null
+      throw err
+    }
   }
 
   /* ---- 全文索引（分片 + 缓存，同桌面端 v0.15.3 结构） ---- */
@@ -650,12 +765,23 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   }
 
   // 只回传 { docId: 首个命中页码 }；逐本 await + 周期让出，不长时间霸住
-  // WebView 主线程（搜索期间界面仍可响应输入）
-  async function searchTextIndex (kw) {
+  // WebView 主线程（搜索期间界面仍可响应输入）。
+  // token 由渲染层递增传入：新搜索一发起，旧搜索在下一个检查点直接退出，
+  // 不再出现「结果已丢弃、分片还在整库扫」的浪费。
+  let latestSearchToken = 0
+  async function searchTextIndex (kw, token) {
+    // 同一 JS 上下文里的调用按发起顺序到达：直接采用最新 token 即可。
+    // 不能用 max 累加——渲染层重载后 token 会从 1 重新开始，旧 max 会把
+    // 新搜索误判成过期。
+    if (token !== undefined) latestSearchToken = Number(token) || 0
     const needle = normalizeKeyword(kw)
     if (!needle) return {}
-    // 一次性旧格式迁移须串行（内部有写）；走队列 await 缓存 promise
-    await mutate(() => migrateLegacyTextIndex())
+    // 一次性旧格式迁移须串行（内部有写）；迁移完成后不再每次搜索都进队列，
+    // 否则搜索会排在导入/进度落盘后面（legacyMigration 缓存的就是完成态）。
+    // 迁移在途时等它结算，避免读到半成品 meta。
+    if (legacyMigration) await legacyMigration.catch(() => {})
+    else await mutate(() => migrateLegacyTextIndex())
+    if (token !== undefined && token !== latestSearchToken) return {}
     const live = new Set(data.documents.map(d => d.id))
     const hits = {}
     // 本函数已出 mutation 队列裸跑（全量审查 P2-2）：大库逐分片读期间，
@@ -665,6 +791,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
     const stale = []
     const ids = Object.keys(textIndexMeta.entries).filter(id => live.has(id) && !textIndexMeta.entries[id].failed)
     for (let i = 0; i < ids.length; i++) {
+      if (token !== undefined && token !== latestSearchToken) return {}
       const id = ids[i]
       let pages
       try {
@@ -672,6 +799,7 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
       } catch {
         continue // 读故障：跳过本书，不动 meta（故障不该当损坏删条目）
       }
+      if (token !== undefined && token !== latestSearchToken) return {}
       if (pages) {
         for (let n = 0; n < pages.length; n++) {
           if (pages[n].includes(needle)) { hits[id] = n + 1; break }
@@ -680,7 +808,10 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
         // 分片丢失/损坏：清掉 meta 让渲染层重新提取，索引自愈
         stale.push(id)
       }
-      if ((i & 15) === 15) await new Promise(r => setTimeout(r, 0))
+      if ((i & 15) === 15) {
+        await new Promise(r => setTimeout(r, 0))
+        if (token !== undefined && token !== latestSearchToken) return {}
+      }
     }
     if (stale.length) {
       mutate(() => {
@@ -878,12 +1009,18 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
   return {
     init,
     getData,
+    hasDocument,
+    getDocument,
+    getSettings,
+    hasCategory,
     getStartupNotice,
     importFile,
     importWith,
     importVia,
     updateDoc: mutator(updateDoc),
+    updateDocs: mutator(updateDocs),
     removeDoc: mutator(removeDoc),
+    removeDocs: mutator(removeDocs),
     readFileBuffer,
     markOpened: mutator(markOpened),
     getOpenStats,

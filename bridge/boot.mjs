@@ -34,7 +34,7 @@ const annotations = createAnnotations({ fs })
 const links = createLinks({ fs })
 
 // 自动入库（Olib 下载目录补扫）：settings 随取随读，配置变更即时生效
-const watch = createWatch({ lib, fs, getSettings: () => (lib.getData().settings || {}) })
+const watch = createWatch({ lib, fs, getSettings: () => lib.getSettings() })
 
 // 资料库初始化是异步的（读 library.json）；app.js 的 refresh() 可能在它
 // 完成前就发起 getLibrary——每个方法先 await ready 再干活
@@ -131,12 +131,9 @@ async function importDialog () {
 /* ---- window.solace（签名与桌面端 preload.js 一一对应） ---- */
 
 // 侧车迟到写防御的查询（用途见 writeNote / setNoteLinkEntry / writeAnnotations
-// 的注释）：书是否仍在库。getData 返回快照克隆；init 前为 null——一律按
-// 不在库拒写（此时也不存在合法写）
-const docAlive = (id) => {
-  const docs = lib.getData()?.documents
-  return Array.isArray(docs) && docs.some(d => d.id === id)
-}
+// 的注释）：书是否仍在库。用 hasDocument 的 O(1) 索引查询——这里每次写
+// 都会走，不能为了一个布尔值深拷贝整库。
+const docAlive = (id) => lib.hasDocument(id)
 
 const solace = {
   // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
@@ -167,27 +164,37 @@ const solace = {
 
   // 文档
   updateDoc: gate((id, patch) => lib.updateDoc(id, patch)),
+  // 批量改/删：一次落库（批量归档 50 本不再写 50 次 library.json）
+  updateDocs: gate((ids, patch) => lib.updateDocs(ids, patch)),
   removeDoc: gate((id, opts) => lib.removeDoc(id, opts || {})),
+  removeDocs: gate((ids, opts) => lib.removeDocs(ids, opts || {})),
   openDoc: gate(async () => { throw new Error('平板端请用内置预览阅读') }),
   markRead: gate((id) => lib.markOpened(id, 'read')),
   readPreview: gate((id) => lib.readFileBuffer(id)), // 字节路径（调试/兜底）
   // 库内 PDF 的直读 URL：WebView 原生拦截 _capacitor_file_ 流式返回，
   // 内容不过 JS 桥——预览/封面/索引的加载全走这条（性能关键路径）
   getDocUrl: gate(async (id) => {
-    const doc = lib.getData().documents.find(d => d.id === id)
-    if (!doc) throw new Error(`文档不存在: ${id}`)
-    return fileUrl(`files/${doc.id}.pdf`)
+    if (!lib.hasDocument(id)) throw new Error(`文档不存在: ${id}`)
+    return fileUrl(`files/${id}.pdf`)
   }),
   setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
 
   // 全文索引
   getTextIndexStatus: gate(() => lib.getTextIndexStatus()),
-  searchTextIndex: gate((kw) => lib.searchTextIndex(kw)),
+  searchTextIndex: gate((kw, token) => lib.searchTextIndex(kw, token)),
   setTextIndex: gate((id, payload) => lib.setTextIndex(id, payload)),
 
   // 封面
   setCover: gate((id, dataUrl) => lib.setCover(id, dataUrl)),
   getCover: gate((id) => lib.getCoverDataUrl(id)),
+  // 封面直读 URL（与 getDocUrl 同一条 _capacitor_file_ 快路径）：渲染层
+  // <img src> 由 WebView 原生流式加载，不再把 JPEG base64 过 JS 桥。
+  // 文件缺失返回 null，渲染层回落到「重新生成封面」。
+  getCoverUrl: gate(async (id) => {
+    if (!lib.hasDocument(id)) throw new Error(`文档不存在: ${id}`)
+    if (!await fs.exists(`covers/${id}.jpg`)) return null
+    return fileUrl(`covers/${id}.jpg`)
+  }),
 
   // 分类
   addCategory: gate((name, parentId) => lib.addCategory(name, parentId)),
@@ -218,7 +225,7 @@ const solace = {
   // 外部工具与自动入库（对应桌面端「打开下载器 + 监视文件夹」）
   // 平板端：拉起 Olib（包名可配置，缺省按关键字自动检测）
   launchTool: gate(async () => {
-    const s = lib.getData().settings || {}
+    const s = lib.getSettings()
     let pkg = s.externalToolPackage || ''
     if (!pkg) {
       const apps = await findOlibCandidates()
@@ -244,7 +251,7 @@ const solace = {
   listNotes: gate((id) => notes.list(id)),
   createNote: gate((id, payload) => notes.create(id, payload)),
   openNote: gate(async (id, file) => {
-    const doc = lib.getData().documents.find(d => d.id === id)
+    const doc = lib.getDocument(id)
     const content = await notes.read(id, file)
     return { inApp: true, title: (doc && doc.title) || '笔记', content }
   }),

@@ -243,7 +243,8 @@ function setActive (on) {
       applyLayout(lastLayout)
       syncBookToDoc(lastLayout.docId)
     }
-    // applyLayout 重设 canvas 尺寸必清空位图（即使尺寸未变），必须重画
+    // applyLayout 在尺寸变化时会清空位图；统一重画一次（syncBookToDoc
+    // 同书路径不再自行重绘）
     redrawStatic()
   } else {
     flushSave() // 退出标注立即冲刷（不等 1.5s 防抖）
@@ -266,8 +267,10 @@ window.addEventListener('solace-ink-layout', (e) => {
   ensureDom()
   if (!layer) return
   lastLayout = d
-  syncBookToDoc(d.docId) // 阅读模式也要加载墨迹数据（换书才真正读盘）
+  // 先按新尺寸铺画布，再归位书模型；同书路径由这里唯一一次 redraw 收尾
+  // （syncBookToDoc 不再自行重绘，避免旧尺寸上多画一遍）
   applyLayout(d)
+  syncBookToDoc(d.docId)
   redrawStatic()
   updateLayerVisibility()
 })
@@ -324,7 +327,10 @@ function updateLayerVisibility () {
 function syncBookToDoc (docId) {
   if (loadedDoc === docId) {
     if (loadState === 'error') startLoad(docId)
-    redrawStatic(); updateLayerVisibility(); return
+    // 重绘由调用方统一做（layout handler / setActive）：这里再画一次会与
+    // 随后的 applyLayout/redraw 重复，且在 applyLayout 之前画布还是旧尺寸。
+    updateLayerVisibility()
+    return
   }
   clearHistory() // 会话边界：操作栈不跨书（条目只对当前书的页数组有效）
   if (loadedDoc && (dirty || pendingWrite)) {
@@ -768,7 +774,18 @@ function commitStroke () {
   const stroke = { tool: d.tool, color: d.color, width: d.width, pressure: uniform ? 0 : 1, pts: flat }
   pageObj.strokes.push(stroke)
   pushOp({ type: 'add', page: key, index: pageObj.strokes.length - 1, stroke })
-  redrawStatic()
+  // 笔迹增量落 canvas：页内无荧光笔时静态层就是普通叠加，直接把新笔迹
+  // 补画上去即可，不必重绘整页。有荧光笔（multiply 合成层）或橡皮/撤销
+  // 路径仍走全量重绘，保证叠色与层级正确。
+  const hasHl = pageObj.strokes.some(s => s.tool === 'hl')
+  if (d.tool === 'pen' && !hasHl && staticCv && staticCv.width && staticCv.height) {
+    const ctx = staticCv.getContext('2d')
+    const k = pageKx()
+    ctx.setTransform(k, 0, 0, k, 0, 0)
+    paintStroke(ctx, stroke, false)
+  } else {
+    redrawStatic()
+  }
   scheduleSave()
 }
 
@@ -785,8 +802,10 @@ function applyLayout (d) {
   layer.style.width = d.cssW + 'px'
   layer.style.height = d.cssH + 'px'
   for (const cv of [staticCv, liveCv]) {
-    cv.width = d.w
-    cv.height = d.h
+    // 只有尺寸真的变了才重设 canvas：设 width/height 会清空位图，同页
+    // 重复 layout（滚动/同一页重派发）不应无条件擦掉已画内容
+    if (cv.width !== d.w) cv.width = d.w
+    if (cv.height !== d.h) cv.height = d.h
     cv.style.width = d.cssW + 'px'
     cv.style.height = d.cssH + 'px'
   }
@@ -817,17 +836,53 @@ function strokeOpts (s, live) {
   }
 }
 
-function paintStroke (ctx, s, live) {
-  const pts = live ? s.pts : decodePts(s)
-  if (!pts.length) return
-  const poly = getStroke(pts, strokeOpts(s, live))
-  if (!poly.length) return
-  ctx.fillStyle = s.color
+// 笔画轮廓缓存：perfect-freehand 的 getStroke 是重绘热路径里最贵的一步。
+// 笔画对象在擦除/撤销中是不可变的（切割产生新对象），以对象为 WeakMap
+// 键缓存 Path2D 即可跨重绘/缩放复用；页面坐标系与缩放无关，无需失效。
+// Node 测试桩没有 Path2D 时退回数组多边形（仍缓存 getStroke 结果）。
+const outlineCache = new WeakMap()
+function strokeOutline (s) {
+  if (outlineCache.has(s)) return outlineCache.get(s)
+  const pts = decodePts(s)
+  const poly = pts.length ? getStroke(pts, strokeOpts(s, false)) : []
+  let outline = null
+  if (poly.length) {
+    if (typeof Path2D === 'function') {
+      outline = new Path2D()
+      outline.moveTo(poly[0][0], poly[0][1])
+      for (let i = 1; i < poly.length; i++) outline.lineTo(poly[i][0], poly[i][1])
+      outline.closePath()
+    } else {
+      outline = poly
+    }
+  }
+  outlineCache.set(s, outline)
+  return outline
+}
+
+function fillPoly (ctx, poly) {
   ctx.beginPath()
   ctx.moveTo(poly[0][0], poly[0][1])
   for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1])
   ctx.closePath()
   ctx.fill()
+}
+
+function paintStroke (ctx, s, live) {
+  if (live) {
+    // 活动笔画每帧都在变，不能缓存
+    if (!s.pts.length) return
+    const poly = getStroke(s.pts, strokeOpts(s, true))
+    if (!poly.length) return
+    ctx.fillStyle = s.color
+    fillPoly(ctx, poly)
+    return
+  }
+  const outline = strokeOutline(s)
+  if (!outline) return
+  ctx.fillStyle = s.color
+  if (Array.isArray(outline)) fillPoly(ctx, outline)
+  else ctx.fill(outline)
 }
 
 // 画布复位：清位图并归还单位变换（页面坐标变换由调用方再设）

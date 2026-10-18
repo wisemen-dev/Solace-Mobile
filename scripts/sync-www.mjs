@@ -6,7 +6,7 @@
 //   或设环境变量 SOLACE_DESKTOP
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -57,7 +57,17 @@ mkdirSync(join(STAGING, 'vendor/lxgw/files'), { recursive: true })
 for (const css of ['lxgwwenkailite-regular.css', 'lxgwwenkailite-bold.css']) {
   cpSync(join(NM, 'lxgw-wenkai-lite-webfont', css), join(STAGING, 'vendor/lxgw', css))
 }
-cpSync(join(NM, 'lxgw-wenkai-lite-webfont/files'), join(STAGING, 'vendor/lxgw/files'), { recursive: true })
+// 只搬实际引用的 regular/bold 两套字形切片：桌面包里的 light/mono 共 388 个
+// woff2（约 17 MB）在本项目 index.html/style.css 中从未被引用，全量拷入
+// 只会让 APK 白胖一圈。新增字体家族时先在这里放行。
+cpSync(join(NM, 'lxgw-wenkai-lite-webfont/files'), join(STAGING, 'vendor/lxgw/files'), {
+  recursive: true,
+  filter: (src) => {
+    const name = basename(src)
+    if (name === 'files') return true
+    return /^lxgwwenkailite-(regular|bold)-subset-\d+\.woff2$/.test(name)
+  }
+})
 // 字体协议随行（OFL）
 for (const lic of ['OFL.txt', 'LICENSE']) {
   try { cpSync(join(NM, 'lxgw-wenkai-lite-webfont', lic), join(STAGING, 'vendor/lxgw', lic)) } catch { /* 可选 */ }
