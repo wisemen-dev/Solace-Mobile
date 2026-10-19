@@ -1,6 +1,7 @@
 # Solace Mobile
 
 [![test](https://github.com/wisemen-dev/Solace-Mobile/actions/workflows/test.yml/badge.svg)](https://github.com/wisemen-dev/Solace-Mobile/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/wisemen-dev/Solace-Mobile)](https://github.com/wisemen-dev/Solace-Mobile/releases)
 
 本地 PDF 私人图书馆 **Solace** 的平板端（Android / Capacitor 移植版）。
 桌面端仓库：[wisemen-dev/Solace](https://github.com/wisemen-dev/Solace)。
