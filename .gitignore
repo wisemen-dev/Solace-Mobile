@@ -17,6 +17,11 @@ dist/
 Thumbs.db
 npm-debug.log*
 
+# 签名材料（绝不入库）
+android/keystore.properties
+*.jks
+*.keystore
+
 # ZCode 会话目录（本机工具产物）
 .zcode/
 .zcodeignore

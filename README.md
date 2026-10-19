@@ -79,6 +79,29 @@ npm run apk          # 同步资源并构建 debug APK
 npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验，见下）
 ```
 
+### 发布签名
+
+release APK 需要自己的 keystore。**keystore 与密码不要提交**：
+`android/keystore.properties`、`*.jks`、`*.keystore` 已在 `.gitignore`。
+
+1. 一次性生成 keystore（按提示设置密码；路径可自选）：
+   ```bash
+   keytool -genkeypair -v -keystore E:/Android/keystores/solace-release.jks \
+     -alias solace -keyalg RSA -keysize 4096 -validity 10000
+   ```
+2. 复制模板并填写路径/密码：
+   ```bash
+   cp android/keystore.properties.example android/keystore.properties
+   ```
+3. 构建并校验签名：
+   ```bash
+   npm run apk -- --release
+   apksigner verify --print-certs android/app/build/outputs/apk/release/app-release.apk
+   ```
+
+keystore 与密码务必离线备份；丢失后将无法覆盖升级。debug 版与 release 版签名不同，
+不能互相覆盖安装（切换前先备份资料库）。
+
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
