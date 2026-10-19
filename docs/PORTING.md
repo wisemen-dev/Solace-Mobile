@@ -180,6 +180,32 @@ notespanel.js 的 30 处补丁已全部写进桌面源码，改由 `isMobile` �
 - **调试基建**：`scripts/cdp-eval.mjs` 连 WebView DevTools 直接在页面里
   求值（Runtime.evaluate 不支持顶层 await，表达式要自带 async IIFE）。
   配合 `adb shell uiautomator dump` 驱动原生 UI（SAF 选择器）。
+  多设备（手机 + 平板同时挂）时必须 `--serial <序列号>` 或设
+  `ANDROID_SERIAL`——原脚本不带序列号，adb 会以「more than one device」
+  失败；`adb forward` 单独走 `stdio:'ignore'` 一支（捕获输出在本机会失败）。
+
+## 三套主题的配色纪律（2026-10-19 重做）
+
+配色的权威定义在**桌面仓库** `src/renderer/css/style.css` 的 `[data-theme]`
+变量块，平板端经 `sync-www` 原样搬运；本仓库只在 `mobile-web/css/mobile.css`
+补「移动层专有」的令牌。改配色的纪律：
+
+- **先定性格，再定颜色**。三套主题的明度阶梯必须彼此不同（旧版 ink 与
+  dusk 的 card/hover 仅差 0.005 L，等于同一套色换色相）：玄墨
+  0.170→0.300、灯下 0.215→0.350、素笺反向浅色阶梯
+- **强调色按色相分家**：石青 242°（玄墨）/ 靛青 250°（素笺）/ 烛光琥珀
+  68°（灯下）。素笺的强调色**不能回退成琥珀**——那样纸张与黄昏同为暖色，
+  切主题只剩明暗变化，且摘录的琥珀高亮会与强调色撞车
+- **对比度按合成背景核算**，不按名义色：`--accent-soft` 等半透明色要先
+  与 `--panel`/`--card` 合成再算（选中项文字压在 accent-soft 上是常见
+  3.x 陷阱）。目标留真机偏差余量（历史实测计算 4.09 → 真机 4.38，约 ±7%）
+- **移动层专有令牌**：`--accent-on-soft`（三套各一支）、`--action`
+  （浮层动作色，白字压底色 ≥4.5）、`--danger-flat`、`--ink-red`、
+  `--muted-soft`、`--overlay-dark` 等，桌面 style.css 中没有对应定义
+- **分类色板随明暗切换**（app.js `paletteFor()`）：深色主题用高饱和亮支，
+  浅色主题用同色相深支。色板只在深色下成立是旧实现的实际状况——亮色压在
+  纸上对比度仅 1.3–2.9:1，色点与书脊色条几乎不可见
+
 
 ## 动效规范（2026-10-08 成文，A5）
 

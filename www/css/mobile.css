@@ -34,25 +34,24 @@ button,
 }
 
 /* ---------- 文字对比度（平板评审修复）----------
-   背景：桌面 style.css 的 --muted（paper 主题 #8b7d64）在暖白底上实测
-   3.18:1（panel #ebe4d4）/ 3.73:1（card #faf6ec），低于 WCAG 2.1 AA
-   正文门槛 4.5:1。纸色模式下这个令牌同时承担「分区标题 / 小字元信息 /
-   提示」等正文角色，用量大且密集，属系统性实害。
-   定值方法：在 HSL 空间保持色相与饱和度不变、只降亮度，二分反解到
-   「刚好达标」的最小改动量（避免凭感觉调色）。
-   ink / dusk 两个主题同法核算本已达标（5.38 / 5.15），故不触碰。
-   只覆盖 paper 主题：另两主题继承桌面原值，桌面端零影响。 */
+   本段最初是为 paper 主题的 --muted 兜底（旧值 #8b7d64 在暖白底上仅
+   3.18:1）。**2026-10-19 三套主题重做后，--muted 与 accent 已在
+   style.css 源头按 WCAG 定值，本段的数值覆盖全部退场**——留下的是
+   「选中态专用加深色」这一条独立规则：选中项文字压在 accent-soft 上，
+   而 accent-soft 把底色压暗、文字却没跟着走，直接复用 --accent 会掉到
+   4.5 以下。故三套主题各给一支 --accent-on-soft（on accent-soft，
+   取选中态最坏背景）。规则本身用 var() 兜底，未定义时退回 --accent。 */
 :root[data-theme='paper'] {
-  /* #8b7d64 → #6c614e。定值以**真机实测的合成背景**反解（panel #ebe4d4 /
-     card #faf6ec / bg #f3eee3 取最坏），目标 4.8 留安全裕度：
-     on panel 4.80:1、on card 5.63:1、on bg 5.25:1。
-     注：首版取 #736750（解析值 panel 4.09）真机实测仅 4.38——朴素叠加假设
-     与实际渲染有偏差，故一律以真机实测为准 */
-  --muted: #6c614e;
-  /* 选中态专用加深色：原 accent #a9682f 直接压在 accent-soft 底上实测
-     仅 3.06:1（accent-soft 把底压暗了，文字却没跟着走）。
-     新值 on accent-soft #e2d4bf = 5.05:1、on panel（hover 底）= 4.62:1 */
-  --accent-on-soft: #7d4c22;
+  /* on accent-soft(#e2e8e9) = 5.78:1、on panel = 5.75:1 */
+  --accent-on-soft: #185a95;
+}
+:root[data-theme='ink'] {
+  /* on accent-soft(#293847) = 5.29:1、on panel = 7.86:1 */
+  --accent-on-soft: #6fb3e5;
+}
+:root[data-theme='dusk'] {
+  /* on accent-soft(#533d28) = 4.97:1、on panel = 7.79:1 */
+  --accent-on-soft: #f0a64e;
 }
 /* 选中项文字加深。只改「选中态」的色值，不动 --accent 本身——后者是
    主按钮底色（.btn-primary / .doc-info-open），改深会把按钮一起变暗 */
@@ -167,10 +166,12 @@ button,
   /* 浅色浮层直接复用主题的 --panel / --line（本身已随主题），
      这里只补「浅底上的深字」与动作色 */
   --on-light: #1f2733;
-  /* 动作蓝：拖选确认条主钮与章节提醒的「写总结」。原为 #3b7ddd，与 paper
-     主题的 accent（#a9682f）不是同一支——浮层压在 PDF 上，沿用主题 accent
-     会在暖色主题下与摘录琥珀混淆，故独立一支冷色 */
-  --action: #3b7ddd;
+  /* 动作蓝：拖选确认条主钮与章节提醒的「写总结」。浮层压在 PDF 页面上，
+     不属于主题色域——在纸色主题下沿用 accent（现已改靛青 #195d9a）会与
+     摘录琥珀混淆，故独立一支冷色，三主题共用。
+     2026-10-19 由 #3b7ddd 调深至 #3073b9：这两颗钮都是**白字压底色**，
+     旧值仅 3.79:1 未达 AA；新值 4.91:1（真机偏差余量约 9%） */
+  --action: #3073b9;
   --danger-flat: #d64545;
   /* 拾色器笔红（墨迹工具）：用户自选颜色，不跟主题 */
   --ink-red: #e03131;
