@@ -96,11 +96,6 @@
 └── notes/         # 每本书的 Markdown 笔记
 ```
 
-## Contributors
-
-- [Molly](https://github.com/wisemen-dev) — 设计、开发与真机验收
-- DeepSeek — AI 编程助手（协助移植、测试与文档；无 GitHub 账号）
-
 ## 许可证
 
 MIT。霞鹜文楷 Lite（OFL）、pdf.js（Apache-2.0）遵循其各自协议，
