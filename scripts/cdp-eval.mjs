@@ -4,26 +4,33 @@
 //   node scripts/cdp-eval.mjs "(async () => 1+1)()"
 // WebView 的 DevTools socket 名带进程号，这里自动探测，避免每次手查。
 import { spawnSync } from 'node:child_process'
+import { ANDROID_PKG } from '../bridge/constants.mjs'
 
 const out = spawnSync('adb', ['shell', 'cat /proc/net/unix'], { encoding: 'utf8' })
 if (out.error || out.status !== 0) {
   console.error(`adb 不可用或执行失败：${out.error ? out.error.message : `exit ${out.status}`}`)
   process.exit(1)
 }
-const sock = String(out.stdout || '').match(/@(webview_devtools_remote_\d+)/)?.[1]
+// 应用重启后旧 WebView 的 devtools socket 仍会残留，且顺序不保证：
+// 优先取与当前应用 PID 匹配的那个，取不到再退到最后一个
+const sockets = [...String(out.stdout || '').matchAll(/@(webview_devtools_remote_(\d+))/g)]
+const pid = String(spawnSync('adb', ['shell', 'pidof', ANDROID_PKG], { encoding: 'utf8' }).stdout || '')
+  .trim().split(/\s+/)[0]
+const sock = (pid && sockets.find(m => m[2] === pid)?.[1]) || sockets.at(-1)?.[1]
 if (!sock) {
   console.error('未找到 WebView devtools socket（adb 不可用，或应用未在前台运行）')
   process.exit(1)
 }
-const fwd = spawnSync('adb', ['forward', 'tcp:9222', `localabstract:${sock}`], { stdio: 'ignore' })
+const PORT = process.env.CDP_PORT || '9222'
+const fwd = spawnSync('adb', ['forward', `tcp:${PORT}`, `localabstract:${sock}`], { stdio: 'ignore' })
 if (fwd.status !== 0) {
-  console.error('adb forward 失败（9222 端口可能被占用）')
+  console.error(`adb forward 失败（${PORT} 端口可能被占用；可用 CDP_PORT 换端口）`)
   process.exit(1)
 }
 
 // fetch 带超时（全量审查 P2-7）：adb forward 口僵死时 fetch 无限挂起，
 // 而尾部的 20s 兜底定时器此刻尚未注册（await 在其之前），进程假死
-const list = await (await fetch('http://127.0.0.1:9222/json', { signal: AbortSignal.timeout(10_000) })).json()
+const list = await (await fetch(`http://127.0.0.1:${PORT}/json`, { signal: AbortSignal.timeout(10_000) })).json()
 const page = list.find(t => t.type === 'page' && t.url.includes('localhost'))
 if (!page) {
   console.error('没有 WebView 页面目标：', list.map(t => `${t.type}:${t.url}`))
