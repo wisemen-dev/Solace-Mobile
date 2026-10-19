@@ -10,6 +10,25 @@
 完全互通，整个 `SolaceLibrary/` 目录可以在桌面与平板之间整库搬运，
 进度、分类、标签、收藏夹、笔记全部保留。
 
+## 截图
+
+| 封面墙 | 书架视图 |
+|---|---|
+| ![封面墙](docs/screenshots/cover-wall.jpg) | ![书架视图](docs/screenshots/shelf.jpg) |
+| **图书简介卡** | **阅读工具簇（标注 / 链接 / 笔记）** |
+| ![图书简介卡](docs/screenshots/doc-info.jpg) | ![阅读工具簇](docs/screenshots/tools.jpg) |
+
+<details>
+<summary>更多截图</summary>
+
+| 书脊视图 | 阅读预览 | 设置 |
+|---|---|---|
+| ![书脊视图](docs/screenshots/spine.jpg) | ![阅读预览](docs/screenshots/preview.jpg) | ![设置](docs/screenshots/settings.jpg) |
+
+</details>
+
+> 截图来自 PA2353 平板（2800×1840，横屏）。
+
 ## 功能与桌面端的对应
 
 | 桌面端 | 平板端 |
@@ -133,7 +152,7 @@ SolaceMobile/
                      #   ANNOTATION-DESIGN（手写标注）、EXCERPT-LINK-{DESIGN,PLAN}（摘录链接）、
                      #   TOOLS-CLUSTER-DESIGN（阅读工具簇）、READING-RECORDS-DESIGN（书内记录）、
                      #   DOC-INFO-DESIGN（图书简介卡）、SPINE-GROUP-DESIGN（书脊分组）、
-                     #   REVIEW-FIXES.md（审查修复记录）
+                     #   REVIEW-FIXES.md（审查修复记录）、screenshots/（README 截图）
 ```
 
 ## 数据存放在哪里
