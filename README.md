@@ -1,6 +1,9 @@
 # Solace Mobile
 
+[![test](https://github.com/wisemen-dev/Solace-Mobile/actions/workflows/test.yml/badge.svg)](https://github.com/wisemen-dev/Solace-Mobile/actions/workflows/test.yml)
+
 本地 PDF 私人图书馆 **Solace** 的平板端（Android / Capacitor 移植版）。
+桌面端仓库：[wisemen-dev/Solace](https://github.com/wisemen-dev/Solace)。
 
 与桌面端（Electron 版）共用同一套资料库数据格式——`library.json`、
 `files/<id>.pdf`、`covers/<id>.jpg`、`textindex/` 分片、`notes/<id>/*.md`
@@ -41,9 +44,12 @@ docs/PORTING.md 性能章节。
 
 ## 开发环境
 
-- Node.js ≥ 20，JDK 21（`E:/Android/Studio/jbr`），Android SDK（`E:/Android/Sdk`）
-- **所有缓存钉在 E 盘**：npm 缓存经项目 `.npmrc` 指向 `E:/Android/npm-cache`，
-  Gradle 经 `scripts/build-apk.mjs` 使用 `E:/Android/GradleHome`——构建链不写 C 盘
+- Node.js ≥ 20，JDK 21，Android SDK
+- `JAVA_HOME` / `ANDROID_HOME` / `GRADLE_USER_HOME` 可用环境变量指定；
+  `scripts/build-apk.mjs` 在未设置时回落到作者本机的 Windows 路径
+  （`E:/Android/Studio/jbr`、`E:/Android/Sdk`、`E:/Android/GradleHome`）
+- npm 缓存：作者本机用**未入库**的 `.npmrc` 指向 `E:/Android/npm-cache`；
+  其他环境无需该文件，`npm install` 用默认缓存即可
 
 ```bash
 npm install          # 安装依赖
@@ -57,7 +63,7 @@ npm run install:device   # adb 安装并启动（vivo 需先关 USB 安装校验
 ### 从桌面仓库同步渲染层
 
 `www/` 里的渲染代码来自桌面仓库 `Solace_Rust/src/renderer/`，由
-`scripts/sync-www.mjs` 搬运并施加 **44 处移动端补丁**（锚点校验：上游改动
+`scripts/sync-www.mjs` 搬运并施加 **14 处移动端补丁**（锚点校验：上游改动
 导致锚点消失会显式报错，防止静默漂移）。桌面端更新后：
 
 ```bash
@@ -92,6 +98,7 @@ adb shell settings put global package_verifier_enable 0
 SolaceMobile/
 ├── bridge/          # window.solace 桥接层源码（esbuild 打包进 www/vendor/）
 │   ├── library-core.mjs   # 桌面端 library.js 的异步移植（数据格式一致）
+│   ├── library-shared.cjs # 双端同源纯函数层（桌面唯一事实源，sync 搬运）
 │   ├── notes-core.mjs     # 笔记数据层移植
 │   ├── annotations-core.mjs # 手写标注数据层（annotations/<id>.json）
 │   ├── links-core.mjs     # 摘录链接锚点数据层（links/<id>.json，与 .md 解耦）
@@ -107,17 +114,21 @@ SolaceMobile/
 │   ├── css/mobile.css     # 抽屉侧栏、触屏控件、悬停改点按、墨迹层、文本层
 │   ├── js/mobile/mobile.js# 手势、内置笔记编辑器、抽屉
 │   ├── js/mobile/ink.js   # 手写标注层：双 canvas 墨迹 + perfect-freehand
+│   ├── js/mobile/ink-erase.mjs  # 橡皮局部切割几何（纯函数，可单测）
 │   ├── js/mobile/link.js  # 摘录链接：文本层 + 选词 + 标记 + 记录编辑器
 │   ├── js/mobile/link-text.mjs / link-md.mjs  # 切分映射 / 记录 md 纯函数（可单测）
+│   ├── js/mobile/bands.mjs # 拖选/入选高亮按视觉行聚类（纯函数，可单测）
 │   ├── js/mobile/tools.js # 预览顶栏阅读工具簇（标注/笔记/链接三钮收拢）
 │   ├── js/mobile/chapter-prompt.{mjs,js}  # 跨章总结提醒（纯函数 + DOM 层）
 │   ├── js/mobile/doc-info.js / doc-info-stats.mjs  # 图书简介卡（拦截 + 统计纯函数）
+│   ├── js/mobile/lru-cache.mjs  # 简介卡作者/统计的通用 LRU 缓存
 │   ├── js/mobile/spine-group.mjs / spine-group.js  # 书脊分组口径（纯函数 + 钩子注册）
+│   ├── js/mobile/dialog-motion.js  # 对话框进出场（包装 close，全局收口）
 │   └── js/mobile/page-jump.mjs  # #pageJump 合成 Enter 助手（ink/link 共用）
 ├── www/             # Capacitor webDir：桌面渲染层 + 补丁 + vendor 资产
 ├── android/         # Capacitor Android 工程（含 SolaceNativePlugin.java）
 ├── test/            # node:test 单测：数据层（内存 fs）+ 界面回归（DOM/原生替身），纯 Node
-├── scripts/         # sync-www / build-bridge / build-apk / install / push-library / cdp-eval
+├── scripts/         # sync-www / build-bridge / build-apk / install / push-library / run-tests / cdp-eval / cdp-touch
 └── docs/            # PORTING.md（移植文档与补丁清单）、各功能设计书：
                      #   ANNOTATION-DESIGN（手写标注）、EXCERPT-LINK-{DESIGN,PLAN}（摘录链接）、
                      #   TOOLS-CLUSTER-DESIGN（阅读工具簇）、READING-RECORDS-DESIGN（书内记录）、

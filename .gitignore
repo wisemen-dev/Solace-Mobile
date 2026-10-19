@@ -7,10 +7,12 @@ android/local.properties
 android/app/src/main/assets/capacitor.config.json
 android/capacitor.settings.gradle
 dist/
+.www-staging/
 *.apk
 *.aab
 
 # 本机环境
+.npmrc
 .DS_Store
 Thumbs.db
 npm-debug.log*

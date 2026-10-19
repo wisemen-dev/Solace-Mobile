@@ -1,0 +1,2 @@
+# 第三方资产不计入 GitHub 语言统计
+www/vendor/** linguist-vendored

@@ -8,20 +8,23 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-const JAVA_HOME = 'E:/Android/Studio/jbr' // Android Studio 自带 JDK 21
-const GRADLE_USER_HOME = 'E:/Android/GradleHome' // 依赖与发行版缓存（E 盘）
+const JAVA_HOME = process.env.JAVA_HOME || 'E:/Android/Studio/jbr' // 默认作者本机 JDK 21
+const GRADLE_USER_HOME = process.env.GRADLE_USER_HOME || 'E:/Android/GradleHome' // 默认 E 盘缓存
 const ANDROID_HOME = process.env.ANDROID_HOME || 'E:/Android/Sdk'
 
 for (const [name, p] of [['JAVA_HOME', JAVA_HOME], ['ANDROID_HOME', ANDROID_HOME]]) {
   if (!existsSync(p)) {
-    console.error(`${name} 不存在：${p}`)
+    console.error(`${name} 不存在：${p}\n请设置同名环境变量指向本机 JDK / Android SDK`)
     process.exit(1)
   }
 }
 
 const task = process.argv.includes('--release') ? 'assembleRelease' : 'assembleDebug'
+const isWin = process.platform === 'win32'
+const cmd = isWin ? 'cmd' : './gradlew'
+const args = isWin ? ['/c', 'gradlew.bat', task, '--stacktrace'] : [task, '--stacktrace']
 
-const r = spawnSync('cmd', ['/c', 'gradlew.bat', task, '--stacktrace'], {
+const r = spawnSync(cmd, args, {
   cwd: join(root, 'android'),
   stdio: 'inherit',
   env: {

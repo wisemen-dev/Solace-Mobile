@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
+> 本版合并原计划的 v0.5.2（阅读工具簇）与 v0.6.0（书脊分组等）两个里程碑；
+> v0.5.2 未单独发布。
+
 ### 变更
 - **补丁上游化（复用优化 C2 拍板实施）：sync 补丁 44 → 14**——preview/covers/textindex/theme/app/settings/notespanel 七个 JS 文件的全部 30 处补丁写进桌面源码，平板差异改为三类运行时机制：① `window.solace.isMobile` 分支（桌面 undefined 走原路径）：打开书走内置预览、drop 拖入短路、回收站文案三元、设置面板的监视目录显示名/启用判据/SAF 浏览分支/change 短路、笔记打开走内置编辑器、⌘K 去键盘语运行时改写；② **可选钩子**（`window.__spineGroups`/`__linkNoteMain`/`__linkNoteSort`/`__linkNewOverride`/`__linkNoteDeleted` 可选调用，无定义短路）：书脊分组口径（桌面口径提为 `spineGroupsByCategory` 函数作 fallback）、笔记列表行内容与排序、新建改走选词、删除通知清缓存；③ **事件派发**（`solace-ink-layout`/`solace-ink-close`/`solace-outline`，桌面无监听者 no-op；preview.js 收敛 fireWin helper，node 测试桩无 CustomEvent 时跳过）；另 getDocUrl URL 直读分支与两处队列让路（`window.currentPreviewId` 桌面同样维护）直接上游。theme 标签保留对桌面是真修复。**收益**：最大最脆的 app.js×7/settings×5/notespanel×8/theme×1 锚点全部消失，锚点漂移报错面减 68%，上游化代码一处修改两端生效。保留 14 处均为「桌面源码无法容纳」：路径差异（vendor/×6）、平板专有 DOM（viewport/mobile.css 挂载/抽屉把手背板/桥与 mobile.js 挂载/工具簇/Olib 行/监视框只读）。sync 统计日志改**动态计数**（原硬编码 44 常陈旧）。PORTING.md 补丁清单章节重写并载明上游化纪律：平台差异优先写桌面源码分支/钩子，补丁仅留路径与专有 DOM。桌面 79+渲染冒烟、平板 159 全绿；真机回归两批全过（⌘K 改写/theme 标签「☀️ 主题」/书脊 5 组头可点/预览 getDocUrl 加载+ink-layout 派发/设置面板 SAF 目录名「Olib」与启用态）
 - **共享纯函数层（复用优化 C3 拍板实施）**：数据层「双份维护同源逻辑」是历次 bug 漂移的根因（0 字节入库/损坏备份命名/settings 守卫三例均为一端修了另一端漏）——桌面仓库新建 `src/main/library-shared.cjs` 作为唯一事实源，sync-www 新增搬运段落至平板 `bridge/library-shared.cjs`（git 跟踪源码）。首批上移 7 组：normalizeKeyword（搜索归一）、dayKey/countOpenDay/getOpenStats（阅读足迹口径，取平板强版语义：committed 快照 + 时钟注入）、APP_FILE_RE/APP_TMP_RE（孤儿清扫正则——清扫误删是最高危操作，口径必须永一致）、applySettingsPatch（设置白名单归一，键集两端**并集**、changed 判定省无谓写盘）、assertMoveCategory（防环校验段）。CJS 格式（桌面 require 直用；平板 ESM 默认导出 interop + esbuild 打包双兼容）；提取纪律入 PORTING.md 新章（纯函数/参数传数据/禁平台分支/取强版统一/平台专有不入层/桌面唯一事实源）。两端本地实现删除、包装函数保留各自的守卫与 save 职责。桌面 79 + 平板 159 全绿；真机五链路冒烟（settings 落盘/足迹统计/防环拦截/搜索 11 命中/27 本书清扫后完好）

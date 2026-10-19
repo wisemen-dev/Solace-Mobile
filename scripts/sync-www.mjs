@@ -33,7 +33,7 @@ for (const [label, p] of [['渲染层', R], ['node_modules', NM]]) {
 const WWW = join(root, 'www')
 // 全量审查 P1-4：先整删 www 再打补丁的旧顺序，在锚点失败时会留下半打补丁且
 // 桥缺失的毒化 www——直接 cap sync 会装出 window.solace 不存在的废包。现全部
-// 构建先落 .www-staging，44 处补丁全部校验通过后才删旧换新；失败时 www 完整
+// 构建先落 .www-staging，全部补丁校验通过后才删旧换新；失败时 www 完整
 // 无损，staging 残留由下次运行自清（.gitignore 已忽略）
 const STAGING = join(root, '.www-staging')
 
@@ -205,7 +205,7 @@ patch('js/pdfjs.js', [
 /* ---- 5. 全部补丁成功——staging 原子替换 www/ ----
    旧序「先删 www 再打补丁」在锚点失败时会留下半打补丁且桥缺失的毒化
    www（直接 cap sync 装出 window.solace 不存在的废包）。现在构建全程落
-   staging，44 处补丁全部校验通过才走到这里删旧换新；任何失败路径
+   staging，全部补丁校验通过才走到这里删旧换新；任何失败路径
    www 完整无损，staging 残留由下次运行自清 */
 rmSync(WWW, { recursive: true, force: true })
 renameSync(STAGING, WWW)

@@ -8,7 +8,7 @@
 ```
 桌面端                                    平板端
 ─────────────────────────                ─────────────────────────
-渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 44 处补丁）
+渲染进程 src/renderer/          ──拷贝──▶  www/（原样 + 14 处补丁）
     │ window.solace.*                      │ window.solace.*
     │ (contextBridge)                      │ (esbuild bundle)
 preload.js                      ──替换──▶  bridge/boot.mjs
@@ -99,97 +99,11 @@ sync-www.mjs 末尾日志**动态统计**每文件补丁数，增删补丁时同
 路径差异（node_modules → vendor/）：pdf.min.mjs / worker / cmaps /
 standard_fonts。
 
-## index.html（11 处）
-1. 加 `<meta name="viewport" ...>`（Electron 不需要，WebView 必须）
-2. 字体 CSS 路径 `../../node_modules/...` → `vendor/lxgw/...`（regular/bold 两处）
-3. 挂载 `css/mobile.css`
-4. 顶栏加 `#btnDrawer`（抽屉开关，窄屏显示）
-5. 侧栏后加 `#drawerBackdrop`（抽屉背板；锚定 shelfList 收尾结构防上游新增
-   aside 时静默重复插入。2026-10-08 前锚 side-foot 收尾行，上游删除该尾注
-   后改锚——含唯一 id 的 ul 整体串匹配，唯一性不变）
-6. 底部加 `vendor/solace-bridge.js`（经典脚本，先于模块执行）
-7. 底部加 `js/mobile/mobile.js`（模块，先于 app.js；与第 6 条同一锚点一次替换，
-   合计 1 对）
-8. `#setWatchFolder` 改只读（目录经 SAF 授权选择，不能手输 URI）
-9. 设置追加「下载工具（Olib）」行：包名手输 + 检测按钮
-10. 预览顶栏 `#btnNotes` 行整替为阅读工具簇 `#toolsCluster`（v0.5.2，设计书
-    `docs/TOOLS-CLUSTER-DESIGN.md`）：标注/链接/笔记三钮收进一条三条杠圆钮，
-    点开向下展开三个纯图标圆钮（统一线宽 SVG 线性图标）。三钮 ID 不变
-    （`#btnInk`/`#btnLink`/`#btnNotes` 移入簇内），preview.js / ink.js /
-    link.js 的绑定零改动；开合状态在 mobile-web 的 tools.js，样式与动效在
-    mobile.css 的 `.tools-*`。历史：v0.4.0/0.5.0 曾分别注入 `#btnInk`/
-    `#btnLink` 两按钮（原第 10/11 条），v0.5.2 合并为本条（仍 1 对替换）
-
-11. 命令面板入口去键盘语（v0.6.0）：「⌘K 命令面板（Ctrl+K）」→「🔍 命令面板」——
-    平板无键盘，快捷键提示是桌面残留（面板经软键盘/点按可用，功能不动）
-### pdfjs.js（4 处）
-pdf.js / worker / cmaps / standard_fonts 路径改指 `www/vendor/pdfjs/`。
-
-### preview.js（4 处）
-1. 预览 PDF 加载改 URL 直读：`getDocUrl`（`_capacitor_file_`，内容不过桥）
-   优先、字节路径回落；会话守卫保留在异步解析之后（v0.3.0）
-2. 页面布局尺寸设定后 dispatch `solace-ink-layout`（detail：docId/页码/
-   设备像素 w·h/显示 cssW·cssH/存储坐标 baseW·baseH/pageObj/viewport）——
-   手写标注层（mobile.js → ink.js）据此对齐墨迹画布并换算坐标，
-   摘录链接层（link.js）另用 pageObj 取文本、用 viewport 的 CSS 尺度重建
-   文本层视口（设备像素尺度会让文字大一倍，见下）（v0.4.0/v0.5.0）
-3. `closePreview()` 开头 dispatch `solace-ink-close`——墨迹层冲刷保存并
-   弃内存模型，重开从盘上重读（v0.4.0）
-4. 目录构建完成 dispatch `solace-outline`（detail：items[{title,page,depth}]
-   全层级；无大纲不派发）——章节总结提醒（chapter-prompt）据此取顶级
-   条目为章（READING-RECORDS-DESIGN §8，v0.5.2）
-
-### covers.js（2 处，v0.3.0）
-1. 封面生成的 PDF 加载同上 URL 直读
-2. 预览打开时封面队列让路（读书优先，400ms 轮询）
-
-### textindex.js（2 处，v0.3.0）
-1. 索引提取的 PDF 加载同上 URL 直读
-2. 预览打开时索引队列让路（同上，500ms 轮询）
-
-### app.js（7 处）
-1. `open-doc` 动作：平板端直接开内置预览（无外部阅读器）
-2. `drop` 导入：平板端直接 return（无拖拽）
-3. 单删笔记确认文案：回收站 → 直接删除
-4. 批删笔记确认文案：同上
-5. 删除结果 toast：回收站字样改为平板端表述
-6. `renderSpineShelves` 分组计算整段换用 `window.__spineGroups` 钩子
-   （mobile-web spine-group.mjs，v0.6.0）：桌面按直接分类分组/搜索仍分组，
-   平板改为顶级归并、搜索与单组平铺、悬空 id 归未分类（四项拍板
-   2026-10-07，设计书 SPINE-GROUP-DESIGN.md）；钩子缺席属异常时序，
-   退化为空陈列显式暴露问题
-7. 书脊组头模板加 `filter-cat`（可点只看该分类）与 `spine.flat` 条件
-   （平铺时整段组头不渲染），同上决策
-
-### theme.js（1 处）
-1. 主题钮标签保留（v0.6.0）：桌面 `paint()` 整写 `textContent` 会吃掉溢出菜单项
-   的「主题」文字（菜单里唯一没名字的项）——首见时把文字尾缀存 `data-label`，
-   重写时补回
-
-### settings.js（5 处）
-1. 监视文件夹显示名：平板端显示 SAF 目录名（watchFolderName）
-2. 启用开关状态判据：平板端看 watchTreeUri（watchFolder 恒不存在，否则
-   勾选框永远显示「关」而自动入库实际在跑，且无法从界面停用）
-3. 「浏览…」走 SAF 目录选择器，返回 { uri, name } 落 watchTreeUri
-4. 监视文件夹输入框 change 短路（只读，用户不会触发）
-5. Olib 包名保存与「检测…」自动发现（多结果走选择框）
-
-### notespanel.js（8 处）
-1. `openOne`：桥返回 `{ inApp: true, content }` 时交给内置编辑器
-2. 删除确认文案（回收站 → 直接删除）
-3. `solace-note-saved` 监听：内置编辑器保存后刷新列表（v0.3.1）
-4. 记录行 note-main 内容整替（`window.__linkNoteMain` 钩子，v0.5.2）：
-   摘录/总结记录返回「主行 = 正文首行（侧车 body0 快照）+ 次行 =
-   类型 · 章/页 · 相对时间」，普通笔记返回 null 走桌面默认行——
-   内容优先（READING-RECORDS-DESIGN §6），时间戳文件名只在默认行出现
-5. 列表渲染前过 `window.__linkNoteSort` 钩子（v0.5.2）：记录按锚点页
-   升序混排、自由笔记排尾部按时间；钩子缺席原样返回
-6. 「＋新建」前插 `window.__linkNewOverride` 钩子：预览中新建改走选词模式
-   （入口替换，钩子对本书预览无条件接管、返回 false 才走原路；旧笔记仍可读可改）
-7. 单条删除成功后调 `window.__linkNoteDeleted` 钩子：渲染侧清缓存并重绘标记
-   （否则正文标记要等下次保存/重开预览才消失）
-8. 批量删除同样逐条调 `window.__linkNoteDeleted`（spec §5.4 明确「含批量
-   删除路径」；渲染侧对连续回调做了重绘合并）
+### 已上游化的历史补丁（2026-10-14 C2）
+preview.js / covers.js / textindex.js / app.js / theme.js / settings.js /
+notespanel.js 的 30 处补丁已全部写进桌面源码，改由 `isMobile` 运行时分支、
+可选钩子（`window.__spineGroups` 等）与事件派发承载，不再是 sync 补丁；
+逐项清单与收益见 CHANGELOG 的 C2 条目。
 
 ## 平台差异与取舍
 
