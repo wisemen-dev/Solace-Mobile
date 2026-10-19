@@ -332,6 +332,32 @@ index.html +1（`#btnLink`「🔗 链接」）、notespanel.js +4（行徽标钩
 - Git Bash 下 adb 的 `/storage/...` 参数会被 MSYS 转成 Windows 路径；
   涉及设备路径的命令需 `MSYS_NO_PATHCONV=1` 且本地路径用 Windows 形式。
 
+## 发布签名（release APK）
+
+release 包使用独立 keystore，签名信息从 `android/keystore.properties` 读取
+（该文件与 `*.jks` / `*.keystore` 均已 gitignore；模板见
+`android/keystore.properties.example`）。文件缺失时 Gradle 仍可构建未签名包。
+
+一次性生成（路径可自选，务必离线备份）：
+
+```bash
+keytool -genkeypair -v -keystore E:/Android/keystores/solace-release.jks \
+  -alias solace -keyalg RSA -keysize 4096 -validity 10000
+cp android/keystore.properties.example android/keystore.properties
+# 编辑 properties：storeFile / storePassword / keyAlias / keyPassword
+```
+
+构建与校验：
+
+```bash
+npm run apk -- --release
+apksigner verify --print-certs android/app/build/outputs/apk/release/app-release.apk
+```
+
+- keystore 与密码丢失后，无法再发布可覆盖升级的版本。
+- debug 与 release 签名不同，不能互相覆盖安装；切换前先备份
+  `SolaceLibrary/`（`annotations/`、`links/` 没有桌面端母本）。
+
 ## 上游同步流程
 
 ```bash
