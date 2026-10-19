@@ -42,16 +42,16 @@ button,
    4.5 以下。故三套主题各给一支 --accent-on-soft（on accent-soft，
    取选中态最坏背景）。规则本身用 var() 兜底，未定义时退回 --accent。 */
 :root[data-theme='paper'] {
-  /* on accent-soft(#e2e8e9) = 5.78:1、on panel = 5.75:1 */
-  --accent-on-soft: #185a95;
+  /* 朱印茜红压在 accent-soft(#efe1dc) = 7.17:1、on panel = 5.81:1 */
+  --accent-on-soft: #8d1a1e;
 }
 :root[data-theme='ink'] {
-  /* on accent-soft(#293847) = 5.29:1、on panel = 7.86:1 */
-  --accent-on-soft: #6fb3e5;
+  /* 雾蓝压在 accent-soft(#263245) = 4.81:1、on panel = 5.64:1 */
+  --accent-on-soft: #869ed0;
 }
 :root[data-theme='dusk'] {
-  /* on accent-soft(#533d28) = 4.97:1、on panel = 7.79:1 */
-  --accent-on-soft: #f0a64e;
+  /* 烛光琥珀压在 accent-soft(#573d21) = 4.89:1、on panel = 5.90:1 */
+  --accent-on-soft: #eea743;
 }
 /* 选中项文字加深。只改「选中态」的色值，不动 --accent 本身——后者是
    主按钮底色（.btn-primary / .doc-info-open），改深会把按钮一起变暗 */
@@ -167,10 +167,12 @@ button,
      这里只补「浅底上的深字」与动作色 */
   --on-light: #1f2733;
   /* 动作蓝：拖选确认条主钮与章节提醒的「写总结」。浮层压在 PDF 页面上，
-     不属于主题色域——在纸色主题下沿用 accent（现已改靛青 #195d9a）会与
-     摘录琥珀混淆，故独立一支冷色，三主题共用。
+     不属于主题色域——若沿用 accent，在素笺主题（朱印茜红 #972527）下会与
+     摘录琥珀混淆，在玄墨主题（雾蓝 #88a1d2）下又与页面本身的蓝调撞车，
+     故独立一支冷色，三主题共用。
      2026-10-19 由 #3b7ddd 调深至 #3073b9：这两颗钮都是**白字压底色**，
-     旧值仅 3.79:1 未达 AA；新值 4.91:1（真机偏差余量约 9%） */
+     旧值仅 3.79:1 未达 AA；新值 4.91:1（真机偏差余量约 9%）。
+     与三套 accent 的 ΔE 分别为 0.17 / 0.27 / 0.38，均在可区分区间 */
   --action: #3073b9;
   --danger-flat: #d64545;
   /* 拾色器笔红（墨迹工具）：用户自选颜色，不跟主题 */
