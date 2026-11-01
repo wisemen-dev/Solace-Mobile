@@ -167,3 +167,9 @@ links/annotations/notes 三源 → 输出 `{ excerpts, summaries, inkPages, note
 | 3 | 大文件 getMetadata 首开耗时 | 行内「…」占位异步填充；getDocument 只解析交叉表区，实测百毫秒级；LRU 12 防内存 |
 | 4 | 批量模式挂载点（.batch-mode 在哪个节点） | 实施时核实并写进代码注释；守卫失效的最坏表现是批量中弹卡，无数据风险 |
 | 5 | 删除确认与简介卡的 dialog 叠放 | 设计已定「先关卡再触发」，无叠放；boot 的 dialog 栈兜底仍在 |
+
+## 修订记（2026-11-01 第四轮审查回填）
+
+- 进度文案已演进为「读到 N/M 页（%）」+「已读完 ✓」态（非「读到 18%」）。
+- 统计源失败 console.warn 留痕（CHANGELOG 0.7.0 有记）。
+- 统计行「📝 总结 N 章」单位已实现（第四轮）。

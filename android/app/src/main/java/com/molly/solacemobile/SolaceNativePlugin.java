@@ -139,8 +139,11 @@ public class SolaceNativePlugin extends Plugin {
                 getContext().getContentResolver().takePersistableUriPermission(uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 persisted = true;
-            } catch (SecurityException ignored) {
-                // 部分 ROM 不支持持久化：本次会话仍可读，下次需重选
+            } catch (Exception e) {
+                // 部分 ROM 不支持持久化（SecurityException）之外，个别 ROM 还会
+                // 抛其他运行时异常——io 线程 lambda 内未捕获会杀死进程（第三轮
+                // 真机 P1 同型，第四轮审查补齐：与 copyAndHash 同的全量兜底纪律）。
+                // 都按「未持久化」处理：本次会话仍可读新 URI，下次需重选
             }
             // 系统持久化授权有上限（旧 Android 128 个）：反复换监视目录会积累
             // 旧授权，逼近上限后新授权静默失败——仅在本次持久化**成功**后

@@ -169,3 +169,11 @@ test('并发 setEntry 串行化：两条都落盘', async () => {
   const r = (await links.read(ID)).records
   assert.deepEqual(Object.keys(r).sort(), ['a.md', 'b.md'])
 })
+
+test('迟到写防御：书已不在库时 setEntry 返回 false，不复活侧车（第四轮审查）', async () => {
+  const fs = createMemFs()
+  const links = createLinks({ fs, isAlive: () => false })
+  assert.equal(await links.setEntry(ID, FILE, ENTRY), false)
+  assert.equal(await fs.exists(`links/${ID}.json`), false)
+  assert.equal(await links.removeEntry(ID, FILE), false)
+})

@@ -172,7 +172,7 @@ async function openInfo (docId, card) {
   const st = docStats(links.value, annos.value, notes.value)
   dlg.querySelector('#docInfoStats').innerHTML =
     `<span class="doc-info-chip doc-info-num">🔗 摘录 ${st.excerpts}</span>` +
-    `<span class="doc-info-chip doc-info-num">📝 总结 ${st.summaries}</span>` +
+    `<span class="doc-info-chip doc-info-num">📝 总结 ${st.summaries} 章</span>` +
     `<span class="doc-info-chip doc-info-num">✎ 批注 ${st.inkPages} 页</span>` +
     `<span class="doc-info-chip doc-info-num">📄 笔记 ${st.notes}</span>`
 

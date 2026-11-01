@@ -7,7 +7,7 @@ import { checkDocId } from './doc-id.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
 import { readSidecarJson } from './sidecar-json.mjs'
 
-export function createAnnotations ({ fs }) {
+export function createAnnotations ({ fs, isAlive }) {
   // docId 是入库时生成的 UUID；白名单校验防路径穿越（共用检查见 doc-id.mjs）
   function docFile (docId) {
     return `annotations/${checkDocId(docId)}.json`
@@ -69,7 +69,12 @@ export function createAnnotations ({ fs }) {
     // 固化快照再入队：调用方（渲染层）持有活引用，排队等待期间对模型的
     // 改动不应混进本次落盘（对齐 links-core setEntry 的深拷贝）
     const snapshot = JSON.parse(JSON.stringify(data))
-    return writeQ.run(() => writeLocked(docId, snapshot))
+    // 迟到写防御（第四轮审查）查活在任务内：删书后仍排队的冲刷/重试返回
+    // false 拒绝，不复活刚清掉的 annotations/<uuid>.json
+    return writeQ.run(async () => {
+      if (isAlive && !isAlive(docId)) return false
+      return writeLocked(docId, snapshot)
+    })
   }
 
   async function writeLocked (docId, data) {

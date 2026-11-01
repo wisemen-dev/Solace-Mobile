@@ -241,3 +241,11 @@ test('读排队于写链：在途写未结算前 read 不返回旧态', async ()
   // 旧实现读不等写：这里会读到「文件不存在」的空态
   assert.deepEqual(await r, payload())
 })
+
+test('迟到写防御：书已不在库时写标注返回 false，不复活文件（第四轮审查）', async () => {
+  const fs = createMemFs()
+  const ann = createAnnotations({ fs, isAlive: () => false })
+  const data = { version: 1, pages: { 1: { w: 100, h: 100, strokes: [{ tool: 'pen', color: '#000', width: 2, pressure: 0, pts: [1, 1] }] } } }
+  assert.equal(await ann.write(ID, data), false)
+  assert.equal(await fs.exists(`annotations/${ID}.json`), false)
+})

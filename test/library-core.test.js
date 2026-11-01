@@ -491,6 +491,50 @@ test('旧版单文件索引搬迁：非法 id 键跳过，不写出库外路径'
   assert.equal([...fs.files.keys()].some(k => k.includes('..')), false, '不得通过 id 写出库外路径')
 })
 
+test('旧索引搬迁：读取 I/O 故障上抛可重试，不得当损坏隔离（第四轮审查）', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  const doc = await lib.importFile({ fileName: '瞬断.pdf', size: PDF_A.length, bytes: PDF_A })
+  await fs.writeText('textindex.json', JSON.stringify({ [doc.id]: { pages: ['老正文'], ver: 1 } }))
+  const read = fs.readFileText
+  fs.readFileText = async (p) => {
+    if (p === 'textindex.json') { const e = new Error('EIO'); e.code = 'EIO'; throw e }
+    return read(p)
+  }
+  const lib2 = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date() })
+  await lib2.init()
+  await assert.rejects(lib2.getTextIndexStatus(), /EIO/)
+  // 隔离改名后 exists 即假、永不重试——I/O 故障绝不允许走 .corrupt 途径
+  assert.ok(await fs.exists('textindex.json'), 'I/O 故障不得隔离改名')
+  fs.readFileText = read
+  const st = await lib2.getTextIndexStatus() // 恢复后重试迁移成功
+  assert.equal(st[doc.id].ver, 1)
+  assert.ok(await fs.exists('textindex.json.migrated'))
+})
+
+test('旧索引搬迁：真损坏（解析失败）才隔离 .corrupt（第四轮审查分流）', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  await lib.importFile({ fileName: '坏索引.pdf', size: PDF_A.length, bytes: PDF_A })
+  await fs.writeText('textindex.json', '{oops')
+  const lib2 = createLibrary({ fs, sha256: realSha, randomUUID: nextUuid, now: () => new Date() })
+  await lib2.init()
+  const st = await lib2.getTextIndexStatus()
+  assert.deepEqual(st, {})
+  assert.ok(await fs.exists('textindex.json.corrupt'))
+  assert.equal(await fs.exists('textindex.json'), false)
+})
+
+test('孤儿清扫：崩溃残留的分片 .tmp 半截文件随 init 清掉（第四轮审查）', async () => {
+  const { fs, lib } = createHarness()
+  await lib.init()
+  await lib.importFile({ fileName: 'A.pdf', bytes: PDF_A })
+  await fs.writeText('textindex/00000000-0000-4000-8000-000000000099.json.tmp', '{"pages":[')
+  const lib2 = createHarness({ fs }).lib
+  await lib2.init()
+  assert.equal(await fs.exists('textindex/00000000-0000-4000-8000-000000000099.json.tmp'), false)
+})
+
 /* ---- 设置白名单 ---- */
 
 test('updateSettings 白名单收敛：非法枚举拒绝、数值下界卡住', async () => {

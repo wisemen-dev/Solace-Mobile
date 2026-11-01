@@ -1,5 +1,6 @@
-/* LRU 缓存（Map 重插实现）——link.js 文本层缓存（24 页）与 doc-info.js
- * 作者缓存（12 条）共用（第四轮审查 Standards-5 去重：两处手写同形驱逐）。
+/* LRU 缓存（Map 重插实现）——link.js 文本层缓存（24 页）、侧车记录缓存
+ * （16 本）与 doc-info.js 作者缓存（12 条）共用（第四轮审查 Standards-5
+ * 去重：两处手写同形驱逐；linksCache 由 Map 换用本件并补 delete）。
  * 约定：get 命中返回缓存值（可为 '' 等假值），未命中返回 undefined——
  * 调用方以 undefined 判 miss，不要用真值判断。
  */
@@ -17,6 +18,7 @@ export function makeLru (cap) {
       while (m.size > cap) m.delete(m.keys().next().value) // 驱逐最旧
     },
     has (key) { return m.has(key) },
+    delete (key) { m.delete(key) },
     get size () { return m.size }
   }
 }

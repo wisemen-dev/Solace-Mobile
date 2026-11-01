@@ -19,13 +19,18 @@ export function createMemFs () {
       if (!e || e.isDir) throw new Error(`ENOENT: ${p}`)
       return bytesToBase64(new Uint8Array(e.data))
     },
+    // 原子写与真实适配器同形：先写 .tmp 再 rename（第四轮审查：B64 原先无
+    // tmp 形态）。成功路径 tmp 即刻消失；「崩溃残留 .tmp」由测试直接 writeText
+    // 注入，供 library-core 的孤儿清扫（APP_TMP_RE）用例断言
     async writeFileAtomicText (p, text) {
       files.set(`${p}.tmp`, { data: Buffer.from(text, 'utf8'), mtime: now() })
+      files.set(p, files.get(`${p}.tmp`))
       files.delete(`${p}.tmp`)
-      files.set(p, { data: Buffer.from(text, 'utf8'), mtime: now() })
     },
     async writeFileAtomicB64 (p, b64) {
-      files.set(p, { data: Buffer.from(base64ToBytes(b64)), mtime: now() })
+      files.set(`${p}.tmp`, { data: Buffer.from(base64ToBytes(b64)), mtime: now() })
+      files.set(p, files.get(`${p}.tmp`))
+      files.delete(`${p}.tmp`)
     },
     async writeText (p, text) {
       files.set(p, { data: Buffer.from(text, 'utf8'), mtime: now() })

@@ -3,7 +3,7 @@
 // bundle 而非裸引 node_modules 的原因：插件的 ESM 构建里是
 // '@capacitor/core' 裸说明符，WebView 的 file 内相对 URL 解析不了。
 import { build } from 'esbuild'
-import { cpSync, mkdirSync, statSync } from 'node:fs'
+import { cpSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,7 +11,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 mkdirSync(join(root, 'www/vendor'), { recursive: true })
 
 // 顺带刷新移动端适配层副本：改 mobile-web 后直接 apk / install:device
-// --rebuild 即拿新 UI，不必先跑依赖桌面仓库的 sync-www
+// --rebuild 即拿新 UI，不必先跑依赖桌面仓库的 sync-www。
+// 先清目标再拷贝（第四轮审查）：cpSync 覆盖不删除目标里源侧已移除的文件，
+// 删过的模块会残留着打进 APK（www/css 不清——那里还有 sync-www 放的桌面
+// style.css）
+rmSync(join(root, 'www/js/mobile'), { recursive: true, force: true })
 cpSync(join(root, 'mobile-web/css'), join(root, 'www/css'), { recursive: true })
 cpSync(join(root, 'mobile-web/js/mobile'), join(root, 'www/js/mobile'), { recursive: true })
 

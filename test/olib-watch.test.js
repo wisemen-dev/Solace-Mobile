@@ -48,3 +48,34 @@ test('已排队的导入在复制开始前再核对停用，不复制且不报�
   assert.equal(copies, 0)
   assert.equal(errors, 0)
 })
+
+test('force 补扫不与在途扫描并发：等它结算后再进（第四轮审查）', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let settings = { watchTreeUri: 'content://tree', watchEnabled: true }
+  let listCalls = 0
+  let inList = 0
+  let maxInList = 0
+  const watch = createWatch({
+    fs: createMemFs(), getSettings: () => settings,
+    listFiles: async () => {
+      listCalls++
+      inList++
+      maxInList = Math.max(maxInList, inList)
+      await settle()
+      inList--
+      return [file]
+    },
+    lib: { importVia: async () => {} }
+  })
+  const first = watch.scan({ force: true })
+  await settle() // 首轮已枚举完，正等 1.5s 稳定窗（在途未结算）
+  assert.equal(listCalls, 1)
+  const second = watch.scan({ force: true }) // 旧实现：force 直接放行，与在途并发
+  await settle()
+  assert.equal(listCalls, 1, 'force 不得在在途扫描结算前进入枚举')
+  t.mock.timers.tick(1500)
+  await settle()
+  await Promise.all([first, second])
+  assert.ok(listCalls >= 2, '结算后第二轮照常执行')
+  assert.ok(maxInList <= 1, `listFiles 不得并发重入（实测峰值 ${maxInList}）——并发会互相 ++scanSeq 作废对方、掐断导入批次`)
+})

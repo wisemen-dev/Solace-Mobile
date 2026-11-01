@@ -74,3 +74,16 @@ test('空书单：平铺且单组为空（renderDocList 对空库走 empty 态�
   assert.equal(flat, true)
   assert.deepEqual(groups[0].docs, [])
 })
+
+test('分类成环（损坏库）：不挂死，撞环视同未分类（第四轮审查）', () => {
+  const cats = [
+    { id: 'ok', name: '正常', parentId: null },
+    { id: 'x', name: '环甲', parentId: 'y' },
+    { id: 'y', name: '环乙', parentId: 'x' }
+  ]
+  // 无 seen 防护时 topOf 的 while 永不退出（渲染挂死）；撞环归「未分类」
+  // 与决策 4（悬空 id 上溯不到顶级）同族
+  const { flat, groups } = groupSpines([doc('d1', 'x'), doc('d2', 'ok')], cats, '')
+  assert.equal(flat, false)
+  assert.deepEqual(groups.map(g => g.name), ['正常', '未分类'])
+})

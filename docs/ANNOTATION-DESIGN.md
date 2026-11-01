@@ -354,3 +354,12 @@ versionCode 400）；⑤ push-library `--wipe` 提示；⑥ 回归：单测 38/3
 抱怨最小档太大（feedback 论坛 #39179956）。真机实测：4 档对 12 单位采样
 间距的细笔线一刀恰好豁掉 1 个采样点（[8,8]），叠加笔宽机制下粗荧光仍整
 段可断。
+
+## 修订记（2026-11-01 第四轮审查回填）
+
+- §6.1「目录/笔记面板打开时自动暂挂绘制、不强制互斥退出」→ 已被工具簇互斥让位推翻：开目录/笔记面板即退出标注（mobile-web/js/mobile/tools.js:43-46）；ink.js 的 suspendDrawing 面板分支仅剩对话框分支生效（CHANGELOG 0.6.0 工具簇条目有记）。
+- 「预览顶栏 #btnNotes 旁新增标注按钮」→ #btnInk 现为工具簇圆钮（index.html 工具簇补丁），不再邻接 #btnNotes；监听器仍挂 #btnInk，入口功能不变。
+- writeAnnotations 语义演进：删书后迟到写返回 false 拒绝（boot.mjs + annotations-core.mjs 的 isAlive 注入，CHANGELOG 0.6.0 全量审查 P2-4 有记）；第四轮把查活下沉进队列任务内，createNote 同守卫。
+- 「preview.js +2 补丁、总数 31→34」→ 已失效：solace-ink-layout/close 派发已上游化进桌面源码（fireWin），sync 补丁现共 14 处（以 PORTING.md 权威清单为准）。
+- 笔工具压感表述补正：荧光笔即使笔输入也恒存 0.5（与 hl 恒宽 thinning=0 自洽）；压力恒 0 的笔被 `||0.5` 折算，不存三元组。
+- 第四轮审查新增：onMove/onUp 增加退出/暂挂复查——退出标注后 pointer capture 事件不再采点/提交；橡皮分支同款。

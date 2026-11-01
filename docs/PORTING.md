@@ -321,9 +321,12 @@ index.html +1（`#btnLink`「🔗 链接」）、notespanel.js +4（行徽标钩
   归一化搜索 + hint（文本项序号 + 项内偏移）就近消歧，未命中跳过该处。
 - **入口替换**：预览中「＋新建」一律改走选词流程（`__linkNewOverride`
   钩子对本书预览无条件接管）；旧自由 .md 照常可读可改、不再新建。
-- **保存管线**：显式动作无防抖；`.md` 先、侧车后（渲染侧组合 `writeNote`
-  + `setNoteLinkEntry`，bridge 无 writeNoteRecord）；任一步失败留在编辑器
-  可重试、幂等。
+- **保存管线**：显式动作无防抖；两段写统一**先侧车后 `.md`**（渲染侧组合
+  `setNoteLinkEntry` + `writeNote`，bridge 无 writeNoteRecord）——侧车先成功
+  而 md 失败时，幽灵锚点由 readNoteLinks 的孤儿剪除自愈回旧态；反向会留下
+  剪不掉的摘录头。md 由 generate* 整重建，重试幂等；任一步失败留在编辑器
+  可重试。（全量审查 P2-5 定向，第四轮审查把编辑器 saveEditor 与併入
+  commitAppend 统一为同序并有测试锁定）
 - **编辑器等待保护**：普通笔记和摘录记录在保存完成前冻结输入、摘录移除和关闭（含返回键/Esc）；失败保留内容并恢复编辑
 - **侧车读取**：`links.read` 保持纯读；桥接 `readNoteLinks` 调用 `readPruned`，一次加载后剪除并返回同份数据，保留损坏告示
 

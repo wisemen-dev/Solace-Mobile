@@ -2099,26 +2099,29 @@
     }
     async function migrateLegacyTextIndexNow() {
       if (!await fs2.exists("textindex.json")) return;
+      let old;
       try {
-        const old = JSON.parse(await fs2.readFileText("textindex.json"));
-        for (const [id, e] of Object.entries(old || {})) {
-          try {
-            assertDocumentId(id);
-          } catch {
-            continue;
-          }
-          if (!e || !Array.isArray(e.pages)) continue;
-          await writeShard(id, e);
-          textIndexMeta.entries[id] = { ver: Number(e.ver) || void 0, failed: !!e.failed, at: e.at };
-        }
-        await saveTextIndexMeta();
-        await fs2.rename("textindex.json", "textindex.json.migrated");
-      } catch {
+        old = JSON.parse(await fs2.readFileText("textindex.json"));
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
         try {
           await fs2.rename("textindex.json", "textindex.json.corrupt");
         } catch {
         }
+        return;
       }
+      for (const [id, e] of Object.entries(old || {})) {
+        try {
+          assertDocumentId(id);
+        } catch {
+          continue;
+        }
+        if (!e || !Array.isArray(e.pages)) continue;
+        await writeShard(id, e);
+        textIndexMeta.entries[id] = { ver: Number(e.ver) || void 0, failed: !!e.failed, at: e.at };
+      }
+      await saveTextIndexMeta();
+      await fs2.rename("textindex.json", "textindex.json.migrated");
     }
     async function getTextIndexStatus() {
       await migrateLegacyTextIndex();
@@ -2409,7 +2412,7 @@
   }
 
   // bridge/notes-core.mjs
-  function createNotes({ fs: fs2, now = () => /* @__PURE__ */ new Date() }) {
+  function createNotes({ fs: fs2, now = () => /* @__PURE__ */ new Date(), isAlive }) {
     function docDir(docId) {
       return `notes/${checkDocId(docId)}`;
     }
@@ -2459,6 +2462,7 @@
       return createQ.run(() => createLocked(docId, payload));
     }
     async function createLocked(docId, payload = {}) {
+      if (isAlive && !isAlive(docId)) return null;
       const dir = docDir(docId);
       await fs2.mkdirp(dir);
       const t = now();
@@ -2487,6 +2491,7 @@
       return fs2.readFileText(p);
     }
     async function write(docId, file, text) {
+      if (isAlive && !isAlive(docId)) return false;
       const p = notePath(docId, file);
       if (!await fs2.exists(p)) throw new Error("\u7B14\u8BB0\u6587\u4EF6\u4E0D\u5B58\u5728");
       await fs2.writeFileAtomicText(p, String(text ?? ""));
@@ -2534,7 +2539,7 @@
   }
 
   // bridge/annotations-core.mjs
-  function createAnnotations({ fs: fs2 }) {
+  function createAnnotations({ fs: fs2, isAlive }) {
     function docFile(docId) {
       return `annotations/${checkDocId(docId)}.json`;
     }
@@ -2575,7 +2580,10 @@
     async function write(docId, data) {
       validate(data);
       const snapshot = JSON.parse(JSON.stringify(data));
-      return writeQ.run(() => writeLocked(docId, snapshot));
+      return writeQ.run(async () => {
+        if (isAlive && !isAlive(docId)) return false;
+        return writeLocked(docId, snapshot);
+      });
     }
     async function writeLocked(docId, data) {
       const p = docFile(docId);
@@ -2595,7 +2603,7 @@
   }
 
   // bridge/links-core.mjs
-  function createLinks({ fs: fs2 }) {
+  function createLinks({ fs: fs2, isAlive }) {
     function docFile(docId) {
       return `links/${checkDocId(docId)}.json`;
     }
@@ -2687,6 +2695,7 @@
     }
     function mutate(docId, fn) {
       return writeQ.run(async () => {
+        if (isAlive && !isAlive(docId)) return false;
         const data = await loadValidated(docId);
         fn(data);
         return writeLocked(docId, data);
@@ -2783,6 +2792,7 @@
     let scanSeq = 0;
     let lastScanAt = 0;
     let scanning = false;
+    let scanningSettled = Promise.resolve();
     let rescanTimer = null;
     const RESCAN_THROTTLE_MS = 3e4;
     const failed = /* @__PURE__ */ new Map();
@@ -2863,16 +2873,32 @@
       }, RESCAN_THROTTLE_MS);
     }
     async function scan(opts = {}) {
-      const s2 = getSettings();
+      let s2 = getSettings();
       if (!s2.watchTreeUri || s2.watchEnabled === false) {
         scanSeq++;
         return;
+      }
+      if (scanning && !opts.force) {
+        scheduleDelayedRescan();
+        return;
+      }
+      if (scanning) {
+        await scanningSettled;
+        s2 = getSettings();
+        if (!s2.watchTreeUri || s2.watchEnabled === false) {
+          scanSeq++;
+          return;
+        }
       }
       if (!opts.force && !shouldRun()) {
         scheduleDelayedRescan();
         return;
       }
       scanning = true;
+      let settleSignal = null;
+      scanningSettled = new Promise((r) => {
+        settleSignal = r;
+      });
       const gen = ++scanSeq;
       const isCurrent = () => {
         const current = getSettings();
@@ -2916,6 +2942,7 @@
       } finally {
         scanning = false;
         lastScanAt = Date.now();
+        settleSignal?.();
       }
     }
     return { init, scan };
@@ -2932,9 +2959,10 @@
     });
   };
   var lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath });
-  var notes = createNotes({ fs });
-  var annotations = createAnnotations({ fs });
-  var links = createLinks({ fs });
+  var docAlive = (id) => lib.hasDocument(id);
+  var notes = createNotes({ fs, isAlive: docAlive });
+  var annotations = createAnnotations({ fs, isAlive: docAlive });
+  var links = createLinks({ fs, isAlive: docAlive });
   var watch = createWatch({ lib, fs, getSettings: () => lib.getSettings() });
   var ready = lib.init();
   ready.catch((err) => {
@@ -3009,7 +3037,6 @@
     }
     return { imported, errors, duplicates };
   }
-  var docAlive = (id) => lib.hasDocument(id);
   var solace = {
     // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
     isMobile: true,
@@ -3060,7 +3087,11 @@
     setProgress: gate((id, page, totalPages) => lib.setProgress(id, page, totalPages)),
     // 全文索引
     getTextIndexStatus: gate(() => lib.getTextIndexStatus()),
-    searchTextIndex: gate((kw, token) => lib.searchTextIndex(kw, token)),
+    // 渲染层实调三参 (kw, sessionId, seq)（textindex.js searchTextIndex）——检查点
+    // 中止认的是每次搜索递增的 seq；sessionId 是库会话号（本端数据层不产出，
+    // 恒 undefined），不能当 token 用（否则两参恒等、旧搜索永不退出，且一旦
+    // 日后补出非数字会话号，Number()||0 与 !== 比对会让全部搜索立即返回空）
+    searchTextIndex: gate((kw, _sessionId, seq) => lib.searchTextIndex(kw, seq)),
     setTextIndex: gate((id, payload) => lib.setTextIndex(id, payload)),
     // 封面
     setCover: gate((id, dataUrl) => lib.setCover(id, dataUrl)),
@@ -3120,7 +3151,13 @@
     },
     // 笔记：列表/新建/删除与桌面端同形；打开改为交内置编辑器（inApp）
     listNotes: gate((id) => notes.list(id)),
-    createNote: gate((id, payload) => notes.create(id, payload)),
+    // 建笔记同样受迟到写防御（见顶部 wiring 注释）：拒绝时数据层任务返回
+    // null，桥侧转译成显式错误——渲染层当保存失败处理，不会拿空 {file} 走两段写
+    createNote: gate(async (id, payload) => {
+      const r = await notes.create(id, payload);
+      if (!r) throw new Error("\u6587\u6863\u5DF2\u4E0D\u5728\u5E93\u4E2D\uFF0C\u7B14\u8BB0\u672A\u521B\u5EFA");
+      return r;
+    }),
     openNote: gate(async (id, file) => {
       const doc = lib.getDocument(id);
       const content = await notes.read(id, file);
@@ -3140,32 +3177,23 @@
     // 无「在文件夹中查看」，按钮已隐藏
     // 移动端内置编辑器专用：读写笔记正文
     readNote: gate((id, file) => notes.read(id, file)),
-    writeNote: gate(async (id, file, text) => {
-      if (!docAlive(id)) return false;
-      return notes.write(id, file, text);
-    }),
+    writeNote: gate((id, file, text) => notes.write(id, file, text)),
+    // 迟到写防御在数据层任务内
     // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
     // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
     // 失败（目录扫描真故障）会向上抛，不会谎报空表导致误剪
     readNoteLinks: gate(async (id) => {
       return links.readPruned(id, async () => (await notes.list(id)).notes.map((f2) => f2.file));
     }),
-    // 侧车迟到写防御（全量审查 P2-4）：删书后 UI 层的防抖冲刷/重试队列
-    // 可能仍持有旧书数据（ink.js retryWrites 在下次 flushSave 无条件重写、
-    // links setEntry 排队同理），把刚清掉的 notes/links 侧车复活成永不再
-    // 清理的孤儿。桥侧统一兜底：写前查书仍在库，不在则返回 false 拒绝
-    // ——丢的只是死数据，UI 层按写失败处理即可
-    setNoteLinkEntry: gate(async (id, file, entry) => {
-      if (!docAlive(id)) return false;
-      return links.setEntry(id, file, entry);
-    }),
+    // 迟到写防御（全量审查 P2-4；第四轮审查查活下沉进 links 队列任务内）：
+    // 删书后 UI 层的防抖冲刷/重试队列可能仍持有旧书数据（ink.js retryWrites、
+    // links setEntry 排队同理），任务执行时查书仍在库，不在则返回 false 拒绝
+    setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)),
     // entry=null → 删除
     // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
     readAnnotations: gate((id) => annotations.read(id)),
-    writeAnnotations: gate(async (id, data) => {
-      if (!docAlive(id)) return false;
-      return annotations.write(id, data);
-    }),
+    writeAnnotations: gate((id, data) => annotations.write(id, data)),
+    // 迟到写防御在数据层任务内
     // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
     getStartupNotice: () => lib.getStartupNotice()
   };

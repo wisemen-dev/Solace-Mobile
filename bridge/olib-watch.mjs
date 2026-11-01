@@ -20,6 +20,7 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
   let scanSeq = 0 // 扫描代数：换目录/停用后，旧扫描在检查点自行退出
   let lastScanAt = 0
   let scanning = false
+  let scanningSettled = Promise.resolve() // 在途扫描的结算信号：force 补扫等它，不再绕过防重入（第四轮审查）
   let rescanTimer = null
   // 回前台补扫的最小间隔：SAF 全量枚举本身有成本（几百文件秒级，虽在
   // io 线程不卡 UI），频繁切换应用时不该每次都扫；但主路径是「去 Olib
@@ -114,10 +115,21 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
   }
 
   async function scan (opts = {}) {
-    const s = getSettings()
+    let s = getSettings()
     if (!s.watchTreeUri || s.watchEnabled === false) { scanSeq++; return }
+    if (scanning && !opts.force) { scheduleDelayedRescan(); return }
+    if (scanning) {
+      // force 也不与在途扫描并发（第四轮审查）：旧实现 force 直接放行，两轮
+      // 扫描互相 ++scanSeq 作废对方、正在导入的批次被掐断。等在途结算后再进
+      //（等待期间设置可能又变，重读一次）
+      await scanningSettled
+      s = getSettings()
+      if (!s.watchTreeUri || s.watchEnabled === false) { scanSeq++; return }
+    }
     if (!opts.force && !shouldRun()) { scheduleDelayedRescan(); return }
     scanning = true
+    let settleSignal = null
+    scanningSettled = new Promise(r => { settleSignal = r })
     const gen = ++scanSeq
     const isCurrent = () => {
       const current = getSettings()
@@ -162,6 +174,7 @@ export function createWatch ({ lib, fs, getSettings, listFiles = listPdfs, copyF
     } finally {
       scanning = false
       lastScanAt = Date.now()
+      settleSignal?.()
     }
   }
 

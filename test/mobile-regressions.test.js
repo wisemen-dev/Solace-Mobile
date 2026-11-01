@@ -591,3 +591,116 @@ test('预览关闭统一收口追加会话：appendTarget 作废、选词退出�
   assert.equal(st.appendTarget, null)       // 旧实现残留：同书重开后新选区併入失效目标
   assert.equal(st.selecting, false)
 })
+
+/* ---- 第四轮审查修复的回归（拖选对账 / 两段写序 / 读失败分流） ---- */
+
+test('编辑器保存两段写：先侧车后 md（与併入同序；第四轮审查统一）', async () => {
+  const toasts = []
+  const order = []
+  let entry = null
+  const h = uiHarness('link', `({
+    setup(d) { lastLayout = d; layer = document.createElement('div') },
+    async create(list) { selections = list; await openEditor({ mode: 'create' }) },
+    async save() { await saveEditor() }
+  })`, {
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => '',
+    createNote: async () => { order.push('createNote'); return { file: 'n.md' } },
+    setNoteLinkEntry: async (_i, _f, e) => { order.push('setNoteLinkEntry'); entry = e },
+    writeNote: async () => { order.push('writeNote') }
+  })
+  h.context.window.toast = m => toasts.push(m)
+  h.api.setup({ docId: 'doc', page: 1 })
+  await h.api.create([{ page: 1, text: '编辑句', hint: { item: 0, char: 0 } }])
+  h.element('linkRecordText').input('批注正文')
+  await h.api.save()
+  await settle()
+  // 先建文件（拿文件名）→ 侧车 → md：侧车先成功而 md 失败时幽灵锚点可被
+  // 孤儿剪除自愈；反向会留下剪不掉的 md 头（全量审查 P2-5 的方向，本处统一）
+  assert.deepEqual(order, ['createNote', 'setNoteLinkEntry', 'writeNote'])
+  assert.equal(entry.excerpts.length, 1)
+  assert.ok(toasts.some(t => t.includes('已保存')))
+})
+
+test('拖选中翻页/换书：旧页 dragSel 作废，move/up 不再产出跨页选区（第四轮审查）', async () => {
+  const h = uiHarness('link', `({
+    setup(d) {
+      lastLayout = d
+      layer = document.createElement('div')
+      window.linkSelecting = true
+      ensureTray(); tray.hidden = false
+    },
+    beginDrag(ptr, page, docId) { dragSel = { ptr, a: 2, b: 8, page: String(page), docId } },
+    sel() { return dragSel },
+    pending() { return dragPending },
+    flip(d) { lastLayout = d },
+    rebuild(d) { return buildLayer(d) }
+  })`, {
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => ''
+  })
+  h.api.setup({ docId: 'doc', page: 1 })
+  // ① buildLayer 对账：翻页触发重建 → 同步前缀即作废旧页拖选
+  h.api.beginDrag(1, 1, 'doc')
+  await h.api.rebuild({ docId: 'doc', page: 2, pageObj: {} }).catch(() => {})
+  assert.equal(h.api.sel(), null, '翻页重建应作废旧页拖选')
+  // ② move 对账：buildLayer 异步窗口内（尚未清）旧指针事件不得把新页偏移混入
+  h.api.beginDrag(2, 1, 'doc')
+  h.api.flip({ docId: 'doc', page: 3, pageObj: {} })
+  h.element('previewBody').dispatchEvent({ type: 'pointermove', pointerId: 2, clientX: 50, clientY: 50 })
+  assert.equal(h.api.sel(), null, '页码不符的 move 应作废拖选')
+  // ③ up 对账：页/书已变则本笔不落 dragPending（不产出跨页混入的选区）
+  h.api.beginDrag(3, 1, 'doc')
+  h.api.flip({ docId: 'other', page: 1, pageObj: {} })
+  h.element('previewBody').dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 50, clientY: 50 })
+  assert.equal(h.api.pending(), null, '换书后的 up 不得产出待确认选区')
+})
+
+test('查看器打开时记录读取失败（IO）：toast 真实原因，不误报「已不存在」（第四轮审查）', async () => {
+  const toasts = []
+  const { api, element } = linkFlowHarness({
+    readNoteLinks: async () => { throw new Error('EIO') },
+    readNote: async () => '',
+    writeNote: async () => {},
+    setNoteLinkEntry: async () => {}
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 })
+  await api.open('r.md')
+  assert.equal(element('linkViewDialog').open, false)
+  assert.ok(toasts.some(t => t.includes('记录读取失败')))
+  assert.ok(!toasts.some(t => t.includes('已不存在')))
+})
+
+test('併入时记录读取失败（IO）：留在选词可重试，不作废选集（第四轮审查）', async () => {
+  const toasts = []
+  const { api } = linkFlowHarness({
+    readNoteLinks: async () => { throw new Error('EIO') },
+    readNote: async () => '',
+    writeNote: async () => {},
+    setNoteLinkEntry: async () => {}
+  }, toasts)
+  api.setup({ docId: 'doc', page: 1 }, 'r.md')
+  api.select([{ page: 1, text: '句', hint: { item: 0, char: 0 } }])
+  await api.run()
+  assert.equal(api.state().appendTarget, 'r.md', '读失败 ≠ 记录不存在，不退出会话')
+  assert.ok(toasts.some(t => t.includes('记录读取失败')))
+})
+
+test('章总结入口：记录读取失败（IO）不得绕过幂等匹配新建重复文件（第四轮审查）', async () => {
+  const toasts = []
+  let created = 0
+  const h = uiHarness('link', `({
+    openSummary(d, c) { return window.__linkOpenSummary(d, c) }
+  })`, {
+    readNoteLinks: async () => { throw new Error('EIO') },
+    readNote: async () => '',
+    createNote: async () => { created++; return { file: 'x.md' } },
+    writeNote: async () => {},
+    setNoteLinkEntry: async () => {}
+  })
+  h.context.window.toast = m => toasts.push(m)
+  const ok = await h.api.openSummary('doc', { title: '第 1 章', page: 1 })
+  assert.equal(ok, false)
+  assert.equal(created, 0, '读失败不得走新建（旧实现会产出同章第二份总结）')
+  assert.ok(toasts.some(t => t.includes('记录读取失败')))
+})

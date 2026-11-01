@@ -74,3 +74,11 @@ test('list：单文件 stat 失败仍进列表（漏出会被孤儿剪除误删�
   assert.equal(flaky.mtime, null)
   assert.equal(flaky.size, 0)
 })
+
+test('迟到写防御：书已不在库时建笔记/写笔记拒绝，不复活孤儿目录（第四轮审查）', async () => {
+  const fs = createMemFs()
+  const notes = createNotes({ fs, isAlive: () => false })
+  assert.equal(await notes.create(ID, {}), null)
+  assert.equal(await notes.write(ID, 'a.md', 'x'), false)
+  assert.equal(await fs.exists(`notes/${ID}`), false)
+})

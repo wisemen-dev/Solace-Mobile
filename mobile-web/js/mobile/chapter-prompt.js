@@ -96,8 +96,10 @@ window.addEventListener('solace-ink-layout', (e) => {
   if (suppressed()) { hideBar(); return }
   const idx = detectCross(chapters, from, d.page)
   if (idx >= 0 && chapterLongEnough(chapters, idx) && !prompted.has(idx)) {
+    // 守卫（§5.1，第四轮审查补）：小条已显示 → 不触发（新章照记已提示，
+    // 但不打断正在看的这一条）
     prompted.add(idx)
-    showBar(idx)
+    if (!bar || bar.hidden) showBar(idx)
   } else {
     hideBar() // 继续翻页消散（§5.1）
   }

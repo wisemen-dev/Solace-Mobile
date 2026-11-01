@@ -22,7 +22,9 @@ let buildSeq = 0
 // 每页 TextContent 数十 KB 级且无失效时机，LRU 封顶防长会话逐页翻多本书后
 // 只增不减（移动 WebView 内存压力 → OOM）
 const textCache = makeLru(24) // `${docId}:${page}` -> { tc, items, pageText, spans }
-const linksCache = new Map()         // docId -> { records }
+// 侧车记录缓存同样封顶（第四轮审查）：长会话逐书翻看只增不减（textCache 已
+// LRU、此处漏网），条目小、16 本热集足够
+const linksCache = makeLru(16)       // docId -> { records }
 let selections = []                  // [{ page, text, hint }]（选词模式的整句选集）
 let appendTarget = null              // 追加会话目标文件名（null = 新建会话，§6.7）
 let tray = null                      // #linkTray（选词托盘，懒建）
@@ -55,17 +57,19 @@ function shouldBuild () {
   return window.linkSelecting || !!(recs && Object.keys(recs.records).length)
 }
 
+// 返回 null = 读取失败（不缓存，下次重试），与「无记录」（records 空表）严格
+// 分流（第四轮审查）：旧版失败也回空表，调用方会把 IO 故障当「记录不存在」
+// ——查看器文案误导、併入作废整个选集、章总结绕过幂等匹配新建重复文件
 async function loadLinks (docId) {
-  if (!docId || linksCache.has(docId)) return linksCache.get(docId)
+  if (!docId) return null
+  if (linksCache.has(docId)) return linksCache.get(docId)
   try {
     const data = await window.solace.readNoteLinks(docId)
     if (data.notice) window.toast?.(data.notice)
     linksCache.set(docId, data)
     return data
   } catch {
-    // 读失败按无记录，但**不缓存**：一次瞬时失败（如读目录失败触发的保护性
-    // 上抛）不该把「空」钉到整段预览会话，下次渲染重试
-    return { records: {} }
+    return null
   }
 }
 
@@ -92,10 +96,16 @@ function applyLayout (d) {
 
 async function buildLayer (d) {
   const seq = ++buildSeq
-  // 拖选确认是单页模态：翻页即丢弃待确认选区（§6.6）
+  // 拖选确认与进行中的拖选都是单页模态：翻页/换书即丢弃（§6.6）。dragSel
+  // 不对账时旧页偏移会画进新页、抬手混出跨页选区（第四轮审查，同 ink 的
+  // 翻页对账：拖选中另一手点底栏翻页钮或目录跳页都不经过本模块的指针链）
   if (dragPending && String(dragPending.page) !== String(d.page)) {
     dragPending = null
     if (dragBar) dragBar.hidden = true
+  }
+  if (dragSel && (dragSel.docId !== d.docId || String(dragSel.page) !== String(d.page))) {
+    dragSel = null
+    window.linkDragging = false
   }
   await loadLinks(d.docId)
   if (seq !== buildSeq) return
@@ -316,9 +326,10 @@ function renderMarkers (d) {
       if (r) rangesToItems(entry, r.start, r.end, null, null, bandSel)
     }
     // 自由拖选（§6.6）：进行中与待确认共用；offset 是页面文本偏移，无需重锚定
+    // （dragSel 也要对账页码：buildLayer 异步窗口内旧页拖选可能尚未被清）
     const drag = dragPending && String(dragPending.page) === String(d.page)
       ? dragPending
-      : (dragSel ? { a: dragSel.a, b: dragSel.b } : null)
+      : (dragSel && String(dragSel.page) === String(d.page) ? { a: dragSel.a, b: dragSel.b } : null)
     if (drag) rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), null, null, bandDrag)
   }
   // 上一轮画过标记的项也要重切：byItem 只含本轮有条目的项，不补则旧标记
@@ -646,7 +657,7 @@ bodyEl?.addEventListener('pointerdown', (e) => {
     const off = caretOffsetForDrag(x, y)
     if (off == null) return
     cancelDragPending() // 长按开新段：此刻才替换待确认选区
-    dragSel = { ptr: pid, a: off, b: off }
+    dragSel = { ptr: pid, a: off, b: off, page: String(lastLayout.page), docId: lastLayout.docId }
     const anchor = rowAnchorForOffset(off)
     dragRowY = anchor ? anchor.y : null
     dragRowH = anchor ? anchor.h : 0
@@ -668,8 +679,13 @@ bodyEl?.addEventListener('pointermove', (e) => {
     selScroll = m
     return
   }
-  // 长按拖选
+  // 长按拖选（页码对账：拖选中翻页/跳页后的旧指针事件，不得把新页偏移混进旧页选区）
   if (dragSel && e.pointerId === dragSel.ptr) {
+    if (dragSel.docId !== lastLayout.docId || String(dragSel.page) !== String(lastLayout.page)) {
+      dragSel = null
+      window.linkDragging = false
+      return
+    }
     // 行锚吸附：垂直位移不足 0.6 行高时用行锚 y 命中（微偏/快滑不跳行），
     // 超过则放行真实 y——跨行纵向拖选照常
     let cy = e.clientY
@@ -724,6 +740,11 @@ bodyEl?.addEventListener('pointerup', (e) => {
     // 永久失效、横滑翻页失灵（真机实测）。见 mobile.js 的对应让位
     e.__consumedByLink = true
     if (!lastLayout) return
+    // 页码对账（第四轮审查）：拖选中翻页/跳页 → 本笔作废（旧页偏移对新页文本无意义）
+    if (sel.docId !== lastLayout.docId || String(sel.page) !== String(lastLayout.page)) {
+      renderMarkers(lastLayout)
+      return
+    }
     const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
     const made = entry && makeFreeSelection(entry.pageText, entry.spans, sel.a, sel.b)
     // 空/微选区（<2 字，拖回起点附近）静默丢弃，不出小条——「拖空即取消」
@@ -876,7 +897,10 @@ async function openViewer (docId, file) {
   try {
     ensureViewer()
     if (!linksCache.has(docId)) await loadLinks(docId)
-    const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
+    const cache = linksCache.get(docId)
+    // null = 读取故障（第四轮审查）：提示重试，不再误报「记录已不存在」
+    if (!cache) { window.toast?.('记录读取失败，请重试'); return }
+    const rec = cache.records[file]
     if (!rec || (!rec.excerpts.length && !rec.summary)) { window.toast?.('记录已不存在'); return }
     const ld = await loadRecordMd(docId, file)
     if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
@@ -912,7 +936,10 @@ async function commitAppend () {
   trayBtns.forEach(b => { b.disabled = true })
   try {
     if (!linksCache.has(docId)) await loadLinks(docId)
-    const rec = linksCache.get(docId) && linksCache.get(docId).records[file]
+    const cache = linksCache.get(docId)
+    // 读失败 ≠ 记录已不存在（第四轮审查）：留在选词可重试，不作废整个选集
+    if (!cache) { window.toast?.('记录读取失败，请重试'); return }
+    const rec = cache.records[file]
     if (!rec || !rec.excerpts || !rec.excerpts.length) {
       window.toast?.('记录已不存在')
       closeSelection(true)
@@ -1115,7 +1142,6 @@ async function saveEditor () {
     const content = edCtx.summary
       ? (edCtx.degraded ? body : generateSummaryMd(edCtx.summary, body))
       : (edCtx.degraded ? body : generateRecordMd(edCtx.excerpts, body))
-    await window.solace.writeNote(edCtx.docId, edCtx.file, content)
     // 摘录全移除 → entry 传 null 即删条目（.md 退化成普通笔记/外改格式原样）；
     // 降级时仅在摘录被改动过才写侧车（未动则承诺「锚点保留不动」）；
     // 总结流锚点恒在（章锚点即记录身份），总是写
@@ -1123,8 +1149,13 @@ async function saveEditor () {
       const entry = edCtx.summary
         ? { excerpts: [], summary: edCtx.summary, body0 }
         : (edCtx.excerpts.length ? { excerpts: edCtx.excerpts, body0 } : null)
+      // 两段写顺序与 commitAppend 统一（第四轮审查）：先侧车后 md——侧车先
+      // 成功而 md 失败时，幽灵/缺失锚点由 readNoteLinks 的孤儿剪除自愈回旧
+      // 态；反向（md 先）会留下剪不掉的摘录头，且 md 实已落盘却仍报「放弃
+      // 修改」语义错乱。md 由 generate* 整重建，重试幂等不重复
       await window.solace.setNoteLinkEntry(edCtx.docId, edCtx.file, entry)
     }
+    await window.solace.writeNote(edCtx.docId, edCtx.file, content)
     const { docId } = edCtx
     edDirty = false
     edDlg.close()
@@ -1216,12 +1247,15 @@ window.__linkOpenSummary = async (docId, chapter) => {
   if (!docId || !chapter || !chapter.title) return false
   if (!linksCache.has(docId)) await loadLinks(docId)
   const cache = linksCache.get(docId)
-  if (cache) {
-    for (const [f, r] of Object.entries(cache.records)) {
-      if (r.summary && r.summary.chapter === chapter.title) {
-        openEditor({ mode: 'edit', docId, file: f }).catch(() => {})
-        return true
-      }
+  // 读失败 ≠ 无记录（第四轮审查）：绕过章名幂等匹配直接新建会产出同章第二份总结
+  if (!cache) {
+    window.toast?.('记录读取失败，请稍后重试')
+    return false
+  }
+  for (const [f, r] of Object.entries(cache.records)) {
+    if (r.summary && r.summary.chapter === chapter.title) {
+      openEditor({ mode: 'edit', docId, file: f }).catch(() => {})
+      return true
     }
   }
   openEditor({ mode: 'summary', docId, chapter }).catch(() => {})

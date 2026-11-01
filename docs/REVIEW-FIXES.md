@@ -63,3 +63,41 @@
 - 墨迹翻页对账（P1）：第 22 页落笔画到一半，真实点击「下一页」翻至 23 页后抬手——两页笔画数 0→0 / 5→5，作废笔未落盘（修复前将作为新笔混入第 23 页）。
 - 验证后退标注/预览复位；logcat 全程 FATAL 计数 0。
 - 人工体验项留待日常使用：双指手势冲突、SAF 换目录授权释放、下载自动入库补扫节律。
+
+## 第四轮（全量审查，2026-11-01）
+
+双轴并行（规范轴 ×3 分片 + Spec 轴 ×3 分片）精读 bridge / mobile-web / scripts / 原生插件 / 测试质量，关键发现二次源码复核后修复。代码本体无 P1；历轮修复逐处核对零回退、同步一致性 18/18、测试起点 162/162 全绿。修复按严重程度分批执行，每批跑全量测试。
+
+| 级别 | 发现 | 修复 | 验证 |
+|---|---|---|---|
+| P2 | searchTextIndex 桥层参数错位：渲染层实调三参 (kw, sessionId, seq)，桥只收 (kw, token)——seq 被丢、sessionId 被误当 token 且本端数据层无此字段恒 undefined，检查点中止机制在真机从未生效（单测直调 lib 掩盖） | boot.mjs 改 `(kw, _sessionId, seq)`；注释记载非数字会话号陷阱 | 桥/渲染层签名对照；真机冒烟待验 |
+| P2 | dragSel 无页码/书对账（ink 同型 P1 第三轮已修、此处漏）：拖选中另一手点底栏翻页钮或目录跳页 → 旧页偏移画进新页、抬手混出跨页选区 | dragSel 补 {page, docId}；buildLayer 同步前缀 / pointermove / pointerup 三处对账作废 | mobile-regressions：翻页重建作废、页码不符 move 作废、换书 up 不落 dragPending |
+| P2 | saveEditor 两段写仍「先 md 后侧车」，与 0.6.0 P2-5 定向的 commitAppend 相反：侧车失败留剪不掉的摘录头、edDirty 语义错乱 | 统一先侧车后 md；PORTING 保存管线段回填 | mobile-regressions：断言 createNote→setNoteLinkEntry→writeNote 顺序 |
+| P2 | loadLinks 读失败回空表被当「无记录」：查看器误报已不存在、併入作废选集、章总结绕过幂等匹配新建同章第二份总结 | loadLinks 失败返回 null 严格分流；三处调用方中止并 toast 真实原因 | mobile-regressions：查看器/併入/章总结三条 IO 失败路径 |
+| P2 | push-library 合并校验恒假（全库计数 vs 源数恒真；adb 故障也打通过）；wipe 换入 rm+mv 有空窗 | 合并改按源相对路径集合精确比对；wipe 改「旧库挪 -old → 换入 → 成功才清」单串 shell 保序 | push-library：未到达/无法枚举/换入失败三条失败路径断言 |
+| P2 | sync-www 换入 rm+rename 非原子间隙（Windows 占用时半删态） | 先挪 .www-old 再换入，失败回滚，任何路径 www 完整无损 | 代码走查（Windows rename 语义） |
+| P2 | spine-group topOf 无成环防护：损坏库的分类环渲染挂死（桌面同型已加 seen） | seen 集合，撞环归未分类 | spine-group：成环用例不挂死且归未分类 |
+| P2 | olib-watch force 绕过 scanning 防重入：重叠扫描互相 ++scanSeq 作废、掐断导入批次 | force 等 scanningSettled 结算后再进（等待后重读设置） | olib-watch：在途未结算前 force 不进枚举、listFiles 峰值 1 |
+| P2 | 旧索引迁移把瞬时 I/O 故障当损坏：一次 EIO 即 .corrupt 永不重试、整批索引被弃 | 仅 SyntaxError 才隔离；I/O 上抛走既有「失败不缓存」重试链 | library-core：EIO 照抛且不改名、恢复后迁移成功；真损坏仍隔离 |
+| P2 | 迟到写防御两缺口：createNote 无守卫（复活 notes/<uuid>/ 孤儿目录）；查活在入队时非任务内 | isAlive 注入三数据核、查活下沉队列任务内；createNote 拒绝转译显式错误 | notes/links/annotations：isAlive=false 时 create/write/setEntry 拒绝且无文件 |
+| P2 | takePersistableUriPermission 只 catch SecurityException：ROM 其他 RuntimeException 杀进程（第三轮真机 P1 同型未覆盖全入口） | 扩为 catch(Exception)，统一按「未持久化」处理 | gradle 构建；ROM 异常路径待真机 |
+| P2 | cdp-touch 漂移：多设备/超时修复未同步（cdp-eval 已修）——Duplicated Code 的直接恶果 | 抽公共 scripts/cdp-conn.mjs，两脚本共用连接引导 | 语法/参数对照；多设备实测待真机 |
+| P3 | reduced-motion 漏覆盖（章节小条/简介卡两钮/目录胶囊按压缩放、胶囊让位淡出、抽屉滑入）；.tools-bar 死 transition | 文末补跳过块（同特异性按源码序压过定义处）；死规则删除 | 规范轴对照 |
+| P3 | 琥珀摘录色 8 处散落无令牌；--ink-red 未挂 .ink-dot；浮层注释与实现矛盾 | --lnk-amber/--lnk-drag/--lnk-picked/--lnk-amber-deep 令牌化；.ink-dot 用 var(--ink-red)；注释改写 | 规范轴对照 |
+| P3 | linksCache 无淘汰（textCache 已 LRU24，此处漏网） | 换 makeLru(16)；lru-cache 补 delete | lru-cache：delete 不占驱逐名额 |
+| P3 | ink onMove/onUp 缺退出/暂挂复查：退出标注后 pointer capture 仍采点并 commitStroke | drawing/erasing 分支复查 active/suspendDrawing，作废或结算 | 代码走查（vm 桩无 capture 语义，真机手势待验） |
+| P3 | 章节小条在显时被直接覆盖；简介卡「总结 N」缺单位 | 已显示不触发守卫；「📝 总结 N 章」 | 代码走查 |
+| P3 | mem-fs 原子写桩无 tmp 形态（*.tmp 清扫零覆盖）；build-bridge 覆盖刷新不清理目标 | 两桩补 tmp+rename 形态；www/js/mobile 先清再拷 | library-core：.tmp 残留随 init 清掉 |
+| 文档 | Spec 轴文档滞后成片：併入写序/等高带/互斥让位/工具簇两项拍板/书脊计数等实现已演进、设计书未回填 | 七份设计书 + PLAN + PORTING 各追加修订记（见各文档文末） | 逐条代码依据核对 |
+
+### 未修（本轮明示不动）
+
+- `library-shared.cjs` getOpenStats 就地修改注入时钟（纯度违规）与 notes/links 文件名校验上移共享层——桌面仓库是唯一事实源，需在桌面修后 `npm run www` 搬运，本轮范围外
+- importWith/importVia 四段同形（判断项 Duplicated Code）：导入内核是最重战损区，提核收益小于回归风险，维持现状
+- 需真机验证：搜索令牌冒烟、拖选对账真手势、cdp-touch 多设备、wipe 换入 -old 路径、ROM 异常授权路径、saveEditor 写序回归
+
+### 第四轮验证记录
+
+- `npm test`：**179/179** 通过（162 + 新增 17：搜索令牌对照之外的全部修复项均有锁定用例）。
+- `npm run apk`：桥重建（www/js/mobile 先清再拷）、cap sync、gradle debug 构建通过（见下）。
+- 同步一致性：www 副本 vs mobile-web 源逐字节 diff 一致。

@@ -476,3 +476,15 @@ trashNote: 扩展为 notes.trash + links.removeEntry（同链）
   会被拉伸填满）；dialog 的 auto 高在 UA `inset:0+margin:auto` 下解析为
   撑满可用空间，必须 `fit-content`（真机实测两次踩坑，均已在 css 注释
   记录）。真机截图评审通过。
+
+## 修订记（2026-11-01 第四轮审查回填）
+
+- §6.7 併入与编辑器保存的两段写顺序已反转为**先侧车后 md**（孤儿剪除自愈方向；CHANGELOG 0.6.0 审查 P2-5 有记；第四轮把编辑器 saveEditor 统一为同序并新增测试）。
+- §9 伪代码 `links.read(id, Set)` 已演化为 `readPruned` + provider（快照在写队列内取）。
+- §7.4「琥珀淡底纹+细下划线 span」→ 已移交等高带渲染（2026-10-08 用户实测驱动，span 仅剩点击锚；CHANGELOG 0.7.0 有记）。
+- 侧车 schema 已演进 v2（version:2、summary 章锚点、body0 正文首行快照）；列表行主行 = body0 正文首行优先、页序排序（READING-RECORDS-DESIGN §6 为新权威）。
+- 文本缓存已是 LRU 封顶 24 页；第四轮起侧车缓存 linksCache 亦 LRU 16。
+- §6.7 正文 560px 为四轮值，拍板 13 五轮定稿 480px（mobile.css 实现正确）；§6.6 表格「短点→整句选」未随拍板 9（圆钮、整句也走小条）更新——以拍板 9 与实现为准。
+- 无文字页时序：现状为「进入选词后异步发现无字才 toast+退出」，非「探测后不进入」。
+- 载入失败分流（第四轮新增）：loadLinks 返回 null 区分「读取失败」与「无记录」——查看器/併入/章总结入口失败时中止并提示，不再误判「已不存在」或绕过幂等匹配新建重复总结。
+- 拖选对账（第四轮新增）：dragSel 记 {page, docId}，翻页/换书作废（同 ink 的翻页对账）。

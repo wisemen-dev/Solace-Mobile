@@ -93,3 +93,9 @@
 贴边/截断——系 `.spine-name` 桌面既有样式（nowrap + overflow hidden，
 本次未改动），非分组引入，可另立打磨项。npm test 136/136、补丁 42 处
 锚点有效、APK 真机安装零崩溃。
+
+## 修订记（2026-11-01 第四轮审查回填）
+
+- 「app.js 移动补丁 ×2（总数 40→42）」→ 已失效：补丁上游化后钩子（__spineGroups 等）写进桌面源码，sync 现无 app.js 补丁（总数 14）。
+- 「隐色点轻量组头」→ 已强化为 4×16px 分类色竖条 + 名称提亮（CHANGELOG 0.6.0 C3）。
+- topOf 已加 seen 成环防护（撞环归未分类，同桌面 topCategoryColor 纪律；第四轮）。

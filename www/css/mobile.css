@@ -163,8 +163,9 @@ button,
   --overlay-dark: rgba(18, 22, 27, 0.95);
   --overlay-dark-line: rgba(255, 255, 255, 0.14);
   --on-dark: #e8edf2;
-  /* 浅色浮层直接复用主题的 --panel / --line（本身已随主题），
-     这里只补「浅底上的深字」与动作色 */
+  /* 浅色浮层两族：随主题的复用 --panel / --line（本身已随主题）；压在 PDF
+     纸面上的「浅底圆钮胶囊」（拖选确认小条 / 章节提醒）是固定纸面色、不随
+     主题——与 --action 同族，PDF 页面不属于主题色域。这里只补深字与动作色 */
   --on-light: #1f2733;
   /* 动作蓝：拖选确认条主钮与章节提醒的「写总结」。浮层压在 PDF 页面上，
      不属于主题色域——若沿用 accent，在素笺主题（朱印茜红 #972527）下会与
@@ -175,8 +176,16 @@ button,
      与三套 accent 的 ΔE 分别为 0.17 / 0.27 / 0.38，均在可区分区间 */
   --action: #3073b9;
   --danger-flat: #d64545;
-  /* 拾色器笔红（墨迹工具）：用户自选颜色，不跟主题 */
+  /* 拾色器笔红（墨迹工具默认色，与 ink.js TOOLS.pen.colors 的红支同值） */
   --ink-red: #e03131;
+  /* 摘录琥珀族（标记带 / chips / 闪烁）：摘录体系功能色，压在 PDF 页面与
+     浅色浮层上不跟主题（三主题下与纸面/强调色的区分已验证）。RGB 通道
+     形式便于各处按需调透明度。第四轮审查令牌化：此前 8 处手写同一族
+     rgba，调色必改漏；拖选蓝/入选紫同批收编 */
+  --lnk-amber: 245, 159, 0;
+  --lnk-amber-deep: #b26a00;
+  --lnk-drag: 64, 140, 255;
+  --lnk-picked: 103, 88, 255;
   /* 次级灰字：原 #8a94a0 在深色浮层上约 3.4:1、在卡片底上约 3:1，
      均低于 AA——压深一档 */
   --muted-soft: #6f7987;
@@ -423,13 +432,13 @@ body,
   cursor: pointer;
 }
 .lnk-band.lnk-band-lnk {
-  background: rgba(245, 159, 0, 0.28);
-  border-bottom: 1px solid rgba(245, 159, 0, 0.75);
+  background: rgba(var(--lnk-amber), 0.28);
+  border-bottom: 1px solid rgba(var(--lnk-amber), 0.75);
   pointer-events: auto; /* 容器 none，琥珀带单独放开：补上项间隙的全宽命中 */
   cursor: pointer;
 }
 .lnk-band-lnk.lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
-@keyframes lnk-flash { 50% { background: rgba(245, 159, 0, 0.75); } }
+@keyframes lnk-flash { 50% { background: rgba(var(--lnk-amber), 0.75); } }
 
 /* 选词模式：放开文本层指针并取手势主权（§6.6 修订）。touch-action:none 是
    关键：浏览器 pan-y 会在拖选带纵向分量时启动滚动并发 pointercancel 杀死
@@ -453,8 +462,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
    字体盒高低错落。位置/尺寸由 renderBands 按视觉坐标内联给出 */
 .lnk-bands { position: absolute; inset: 0; pointer-events: none; }
 .lnk-band { position: absolute; border-radius: 3px; }
-.lnk-band-drag { background: rgba(64, 140, 255, 0.26); outline: 1px dashed rgba(64, 140, 255, 0.75); }
-.lnk-band-sel { background: rgba(103, 88, 255, 0.25); outline: 1px dashed rgba(103, 88, 255, 0.7); }
+.lnk-band-drag { background: rgba(var(--lnk-drag), 0.26); outline: 1px dashed rgba(var(--lnk-drag), 0.75); }
+.lnk-band-sel { background: rgba(var(--lnk-picked), 0.25); outline: 1px dashed rgba(var(--lnk-picked), 0.7); }
 
 /* 拖选确认小条（§6.6 修订）：小圆形图标按钮组胶囊——无文字预览（页面高亮
    即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分。
@@ -480,10 +489,10 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
 .link-chip {
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px;
-  background: rgba(245, 159, 0, 0.14); border: 1px solid rgba(245, 159, 0, 0.4);
+  background: rgba(var(--lnk-amber), 0.14); border: 1px solid rgba(var(--lnk-amber), 0.4);
   font-size: 12px; max-width: 100%;
 }
-.link-chip b { color: #b26a00; font-weight: 600; }
+.link-chip b { color: var(--lnk-amber-deep); font-weight: 600; }
 .chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
 .link-chip-degraded { font-size: 12px; color: var(--muted-soft); }
 
@@ -535,8 +544,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .link-view-body:empty::before { content: '（无正文）'; color: var(--muted-soft); }
 .link-view-chip { cursor: pointer; }
-.link-view-chip:active { background: rgba(245, 159, 0, 0.34); }
-.link-view-chip .chip-go { font-style: normal; color: #b26a00; padding-left: 2px; }
+.link-view-chip:active { background: rgba(var(--lnk-amber), 0.34); }
+.link-view-chip .chip-go { font-style: normal; color: var(--lnk-amber-deep); padding-left: 2px; }
 /* 删除（危险动作）：与普通 ghost 按钮拉开颜色 */
 #btnLinkViewDelete { color: var(--danger-flat); }
 
@@ -646,7 +655,7 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   border-radius: 50%;
   vertical-align: -2px;
   border: 2px solid rgba(255, 255, 255, 0.85);
-  background: #e03131;
+  background: var(--ink-red);
 }
 /* 色板/粗细弹层：浮在工具栏上方 */
 .ink-pop {
@@ -824,7 +833,8 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 .tools-bar {
   display: block; width: 12px; height: 1.8px; border-radius: 1px;
   background: currentColor;
-  transition: transform 200ms var(--ease-out-expo), opacity 150ms var(--ease-out-expo);
+  /* 无 transition（第四轮审查）：形变取消后不再有状态改本元素的 transform/
+     opacity，旧过渡是死规则 */
 }
 
 /* 模式光环：标注/选词激活时亮 accent 描边 + 光圈（tools.js 切类，§5.4） */
@@ -1105,3 +1115,16 @@ body.ink-active #previewOverlay::after {
 }
 .spine-mode .spine-group-head:active .spine-group-name,
 .spine-mode .spine-group-head:active .pile-badge { color: var(--accent); }
+
+/* 降级补漏（第四轮审查）：0.6.0 新增的四处按压缩放与两处过渡未进上方
+   987 行的跳过块——按压缩放关断只留颜色反馈；目录胶囊的开簇让位淡出与
+   抽屉滑入瞬切（布局性 transform 终态不变）。置于文末压过各自的定义处
+   （#btnToc 与 .sidebar 的同特异性规则按源码序，在原跳过块里会被后文覆盖） */
+@media (prefers-reduced-motion: reduce) {
+  .chapter-prompt button:active,
+  .doc-info-open:active,
+  .doc-info-ico:active,
+  #btnToc:active { transform: none; }
+  #btnToc,
+  .sidebar { transition: none; }
+}

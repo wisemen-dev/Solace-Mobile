@@ -1,20 +1,16 @@
 // 临时验证工具：CDP Input.dispatchTouchEvent 注入真实级触摸序列（浏览器执行
 // 完整默认行为——pan/长按语义，与 dispatchEvent 合成事件不同）。用法：
-//   node scripts/cdp-touch.mjs '<JSON 指令数组>'
+//   node scripts/cdp-touch.mjs '<JSON 指令数组>' [--serial <设备序列号>]
 // 指令：{t:'start'|'move'|'end', x, y, wait?:ms} 或 {t:'eval', expr, save?:key}
 // 末尾自动求值 __result 并回显。
-import { spawnSync } from 'node:child_process'
+import { cdpBootstrap, cdpPage } from './cdp-conn.mjs'
 
-const out = spawnSync('adb', ['shell', 'cat /proc/net/unix'], { encoding: 'utf8' })
-if (out.error || out.status !== 0) { console.error('adb 不可用'); process.exit(1) }
-const sock = String(out.stdout || '').match(/@(webview_devtools_remote_\d+)/)?.[1]
-if (!sock) { console.error('未找到 WebView devtools socket'); process.exit(1) }
-const fwd = spawnSync('adb', ['forward', 'tcp:9222', `localabstract:${sock}`], { stdio: 'ignore' })
-if (fwd.status !== 0) { console.error('adb forward 失败'); process.exit(1) }
-
-const list = await (await fetch('http://127.0.0.1:9222/json')).json()
-const page = list.find(t => t.type === 'page' && t.url.includes('localhost'))
-if (!page) { console.error('没有 WebView 页面目标'); process.exit(1) }
+// 连接引导（--serial/ANDROID_SERIAL、PID 匹配 socket、fetch 超时）抽到
+// cdp-conn.mjs 与 cdp-eval 共用（第四轮审查）：本脚本曾漏多设备与超时两项
+// 修复——两份实现必然漂移
+const argv = process.argv.slice(2)
+const { port, serialIdx } = cdpBootstrap({ argv })
+const page = await cdpPage(port)
 
 const ws = new WebSocket(page.webSocketDebuggerUrl)
 await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no })
@@ -42,7 +38,7 @@ ws.onmessage = ev => {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-const cmds = JSON.parse(process.argv[2] || '[]')
+const cmds = JSON.parse(argv.filter((a, i) => a !== '--serial' && i !== serialIdx + 1)[0] || '[]')
 const saved = {}
 try {
   for (const c of cmds) {

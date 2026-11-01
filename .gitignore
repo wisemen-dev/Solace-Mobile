@@ -8,6 +8,7 @@ android/app/src/main/assets/capacitor.config.json
 android/capacitor.settings.gradle
 dist/
 .www-staging/
+.www-old/
 *.apk
 *.aab
 

@@ -4,6 +4,36 @@
 `Solace_Rust/CHANGELOG.md`。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本。
 
+## [Unreleased]
+
+第四轮全量代码审查（双轴：规范 × Fowler 基线 / Spec × 七份设计书）的修复批次。逐项明细与验证记录见 `docs/REVIEW-FIXES.md` 第四轮一节。
+
+### 修复
+- **搜索检查点中止在真机从未生效**：渲染层实调三参 `searchTextIndex(kw, sessionId, seq)`（textindex.js），桥只收两参——递增的 seq（作废令牌）被丢弃、sessionId 被误当 token 且本端数据层不产出该字段（恒 undefined），数据层注释声称的「新搜索一发起，旧搜索在检查点退出」从未生效（单测直调数据层掩盖桥层错位）。大库连续键入时旧搜索整库扫完、并发叠加争 CPU。桥改为 `(kw, _sessionId, seq)` 并注释非数字会话号的潜在陷阱
+- **摘录拖选中翻页/换书产出跨页混入选区**：dragSel 不记页码/书（ink 同型 P1 第三轮已修、此处漏网）。拖选中另一手点底栏翻页钮（在 `#previewBody` 外、不触发本模块第二指取消）或目录跳页 → 旧页偏移画进新页、抬手混出错乱选区。dragSel 补 `{page, docId}`，buildLayer / pointermove / pointerup 三处对账作废
+- **编辑器保存两段写序与併入不一致**：saveEditor 仍「先 md 后侧车」，与 0.6.0 P2-5 定向的 commitAppend（先侧车后 md——孤儿剪除自愈方向）相反；writeNote 成功侧车失败时留下剪不掉的摘录头、edDirty 未复位致「放弃修改」语义错乱。统一为先侧车后 md，PORTING.md 保存管线段回填
+- **记录读取失败被当「无记录」**：loadLinks 失败回空表——查看器误报「已不存在」、併入作废整个选集、**章总结入口绕过章名幂等匹配直接新建同章第二份总结**。loadLinks 改返回 null 严格分流，三处调用方中止并 toast 真实原因
+- **推库脚本两处失败路径**：合并模式校验恒假（全库计数 vs 源数在合并下恒成立，adb 故障也打「校验通过」）→ 改按源相对路径集合精确比对；wipe 换入 rm+mv 空窗 → 改「旧库挪 -old → 换入 → 成功才清」，换入失败两者均完整可手工恢复。sync-www 的 www 换入同款原子化（先挪 .www-old 再换入）
+- **书脊分组 topOf 无成环防护**：损坏 library.json 的分类环使渲染死循环（桌面同型已加 seen 集合）。撞环归「未分类」
+- **force 补扫绕过防重入**：`scan({force:true})` 可在在途扫描未结算时进入，两轮互相作废、掐断导入批次。force 改等在途结算（scanningSettled 信号）后再进
+- **旧索引迁移把瞬时 I/O 故障当损坏永久隔离**：一次 EIO 即改名 .corrupt 永不重试、整批索引被弃走全量重提取。改为仅解析失败（SyntaxError）才隔离，I/O 故障上抛走既有重试链
+- **迟到写防御两处缺口**：createNote 无守卫（删书后排队建笔记会在 `notes/<uuid>/` 复活永久孤儿目录）；三个写方法查活在入队时而非任务执行时。isAlive 注入三数据核、下沉队列任务内
+- **原生持久化授权 catch 过窄**：takePersistableUriPermission 只 catch SecurityException，ROM 抛其他 RuntimeException 时 io 线程未捕获异常杀进程（第三轮真机 P1 同型、修复未覆盖全部入口）。扩为全量 catch
+- **cdp-touch 修复漂移**：多设备 `--serial`/fetch 超时两项未随 cdp-eval 同步（双份实现的必然漂移）。抽公共 `scripts/cdp-conn.mjs` 共用连接引导
+
+### 变更
+- reduced-motion 跳过块补漏（章节小条/简介卡两钮/目录胶囊的按压缩放、胶囊让位淡出、抽屉滑入瞬切）；`.tools-bar` 死 transition 删除
+- 摘录琥珀/拖选蓝/入选紫色令牌化（`--lnk-amber`/`--lnk-drag`/`--lnk-picked`，8 处散落收敛）；`--ink-red` 挂通 `.ink-dot`
+- linksCache 换 LRU 封顶 16（textCache 已 LRU24、此处漏网）；lru-cache 补 delete
+- ink onMove/onUp 补退出标注/面板暂挂复查（pointer capture 使退出后事件仍派发，不再采点/提交；橡皮分支同款结算）
+- 章节小条「已显示不触发」守卫补齐（§5.1）；简介卡统计行「📝 总结 N 章」补单位
+- mem-fs 原子写桩补 tmp+rename 形态（`*.tmp` 残留清扫由此可测）；build-bridge 刷新副本先清目标（源侧删过的模块不再残留进 APK）
+- 七份设计书 + EXCERPT-LINK-PLAN + PORTING 文档回填（各文档文末「修订记（2026-11-01 第四轮审查回填）」）
+
+### 测试
+- `npm test` 162 → **179/179**：新增拖选对账、两段写序、读失败分流 ×3、force 防重入、成环防护、迟到写防御 ×3、迁移 I/O 分流 ×2、tmp 清扫、推库失败路径 ×3、LRU delete
+- 待真机验证：搜索令牌冒烟、拖选对账真手势、cdp-touch 多设备、wipe 换入 -old 路径、ROM 异常授权路径
+
 ## [0.7.0] - 2026-10-19
 
 ### 版本

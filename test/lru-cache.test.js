@@ -38,3 +38,15 @@ test('set 已存在键 = 更新且刷新时序', () => {
   assert.equal(lru.get('a'), 9)
   assert.equal(lru.has('b'), false)
 })
+
+test('delete 移除条目且不占容量（linksCache 换用 LRU 需要，第四轮审查）', () => {
+  const lru = makeLru(2)
+  lru.set('a', 1); lru.set('b', 2)
+  lru.delete('a')
+  assert.equal(lru.has('a'), false)
+  assert.equal(lru.get('b'), 2)
+  assert.equal(lru.size, 1)
+  lru.set('c', 3) // 容量 2：b、c 共存——已删的 a 不占驱逐名额
+  assert.equal(lru.has('b'), true)
+  assert.equal(lru.has('c'), true)
+})

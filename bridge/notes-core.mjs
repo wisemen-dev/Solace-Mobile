@@ -7,7 +7,7 @@ import { checkDocId } from './doc-id.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
 import { isNotFoundError } from './file-errors.mjs'
 
-export function createNotes ({ fs, now = () => new Date() }) {
+export function createNotes ({ fs, now = () => new Date(), isAlive }) {
   // docId 是入库时生成的 UUID；白名单校验防路径穿越（共用检查见 doc-id.mjs）
   function docDir (docId) {
     return `notes/${checkDocId(docId)}`
@@ -77,6 +77,9 @@ export function createNotes ({ fs, now = () => new Date() }) {
   // 一键新建：文件名「日期 时间（含秒）」，模板含书名/时间/建笔记时的页码，
   // 与桌面端完全一致（桌面端可把同一目录下建出的笔记拿到 Typora 续写）
   async function createLocked (docId, payload = {}) {
+    // 迟到写防御（第四轮审查）：删书后仍排队在途的建笔记不再执行——否则
+    // 会在 notes/<uuid>/ 重建出清扫范围（files/covers）之外的永久孤儿目录
+    if (isAlive && !isAlive(docId)) return null
     const dir = docDir(docId)
     await fs.mkdirp(dir)
     const t = now()
@@ -107,6 +110,7 @@ export function createNotes ({ fs, now = () => new Date() }) {
   }
 
   async function write (docId, file, text) {
+    if (isAlive && !isAlive(docId)) return false // 迟到写防御，见 createLocked
     const p = notePath(docId, file)
     if (!await fs.exists(p)) throw new Error('笔记文件不存在')
     await fs.writeFileAtomicText(p, String(text ?? ''))

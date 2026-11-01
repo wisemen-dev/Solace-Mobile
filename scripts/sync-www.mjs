@@ -205,10 +205,31 @@ patch('js/pdfjs.js', [
 /* ---- 5. 全部补丁成功——staging 原子替换 www/ ----
    旧序「先删 www 再打补丁」在锚点失败时会留下半打补丁且桥缺失的毒化
    www（直接 cap sync 装出 window.solace 不存在的废包）。现在构建全程落
-   staging，全部补丁校验通过才走到这里删旧换新；任何失败路径
-   www 完整无损，staging 残留由下次运行自清 */
-rmSync(WWW, { recursive: true, force: true })
-renameSync(STAGING, WWW)
+   staging，全部补丁校验通过才走到这里换新（第四轮审查加固：rm+rename 有
+   非原子间隙——Windows 下 www 被占用时 rm 中途抛错留半删态；改为先把
+   www 挪到 .www-old 再换入，任何失败路径 www 完整无损，staging/old
+   残留由下次运行自清） */
+const WWW_OLD = join(root, '.www-old')
+rmSync(WWW_OLD, { recursive: true, force: true })
+const hadOld = existsSync(WWW)
+if (hadOld) {
+  try {
+    renameSync(WWW, WWW_OLD) // 失败即中止：www 未动
+  } catch (err) {
+    console.error(`旧 www/ 挪移失败（被占用？）：${err.message}\n本次未做任何修改，www/ 完整无损`)
+    process.exit(1)
+  }
+}
+try {
+  renameSync(STAGING, WWW)
+} catch (err) {
+  if (hadOld) {
+    try { renameSync(WWW_OLD, WWW) } catch { /* 回滚也失败：www 缺失，.www-old 是完整副本 */ }
+  }
+  console.error(`staging 换入 www/ 失败：${err.message}\nwww/ 已尽量回滚；完整副本在 .www-old/（若上述回滚失败）或 .www-staging/`)
+  process.exit(1)
+}
+rmSync(WWW_OLD, { recursive: true, force: true })
 
 console.log(`www/ 同步完成（源：${SRC}）`)
 console.log(`补丁：${Object.entries(patchStats).map(([f, n]) => `${f}×${n}`).join(', ')}（共${Object.values(patchStats).reduce((a, b) => a + b, 0)}）`)

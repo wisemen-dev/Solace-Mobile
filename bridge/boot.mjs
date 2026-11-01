@@ -29,9 +29,14 @@ const randomUUID = () => {
 }
 
 const lib = createLibrary({ fs, sha256: sha256Hex, randomUUID, hashStorageFile: hashLibraryPath })
-const notes = createNotes({ fs })
-const annotations = createAnnotations({ fs })
-const links = createLinks({ fs })
+// 侧车迟到写防御（全量审查 P2-4；第四轮审查下沉）：删书后 UI 层的防抖
+// 冲刷/重试队列可能仍持有旧书数据。查活注入各数据核、在**写任务执行时**
+// 复核（入队时查与任务执行之间仍有微窗口），书不在则拒绝——丢的只是死
+// 数据，UI 层按写失败处理即可。用 hasDocument 的 O(1) 索引查询，不深拷贝整库
+const docAlive = (id) => lib.hasDocument(id)
+const notes = createNotes({ fs, isAlive: docAlive })
+const annotations = createAnnotations({ fs, isAlive: docAlive })
+const links = createLinks({ fs, isAlive: docAlive })
 
 // 自动入库（Olib 下载目录补扫）：settings 随取随读，配置变更即时生效
 const watch = createWatch({ lib, fs, getSettings: () => lib.getSettings() })
@@ -130,11 +135,6 @@ async function importDialog () {
 
 /* ---- window.solace（签名与桌面端 preload.js 一一对应） ---- */
 
-// 侧车迟到写防御的查询（用途见 writeNote / setNoteLinkEntry / writeAnnotations
-// 的注释）：书是否仍在库。用 hasDocument 的 O(1) 索引查询——这里每次写
-// 都会走，不能为了一个布尔值深拷贝整库。
-const docAlive = (id) => lib.hasDocument(id)
-
 const solace = {
   // 平台标记：渲染层的移动端分支（打开=预览、拖拽导入禁用等）据此分流
   isMobile: true,
@@ -181,7 +181,11 @@ const solace = {
 
   // 全文索引
   getTextIndexStatus: gate(() => lib.getTextIndexStatus()),
-  searchTextIndex: gate((kw, token) => lib.searchTextIndex(kw, token)),
+  // 渲染层实调三参 (kw, sessionId, seq)（textindex.js searchTextIndex）——检查点
+  // 中止认的是每次搜索递增的 seq；sessionId 是库会话号（本端数据层不产出，
+  // 恒 undefined），不能当 token 用（否则两参恒等、旧搜索永不退出，且一旦
+  // 日后补出非数字会话号，Number()||0 与 !== 比对会让全部搜索立即返回空）
+  searchTextIndex: gate((kw, _sessionId, seq) => lib.searchTextIndex(kw, seq)),
   setTextIndex: gate((id, payload) => lib.setTextIndex(id, payload)),
 
   // 封面
@@ -249,7 +253,13 @@ const solace = {
 
   // 笔记：列表/新建/删除与桌面端同形；打开改为交内置编辑器（inApp）
   listNotes: gate((id) => notes.list(id)),
-  createNote: gate((id, payload) => notes.create(id, payload)),
+  // 建笔记同样受迟到写防御（见顶部 wiring 注释）：拒绝时数据层任务返回
+  // null，桥侧转译成显式错误——渲染层当保存失败处理，不会拿空 {file} 走两段写
+  createNote: gate(async (id, payload) => {
+    const r = await notes.create(id, payload)
+    if (!r) throw new Error('文档已不在库中，笔记未创建')
+    return r
+  }),
   openNote: gate(async (id, file) => {
     const doc = lib.getDocument(id)
     const content = await notes.read(id, file)
@@ -267,10 +277,7 @@ const solace = {
   revealNote: gate(async () => true), // 无「在文件夹中查看」，按钮已隐藏
   // 移动端内置编辑器专用：读写笔记正文
   readNote: gate((id, file) => notes.read(id, file)),
-  writeNote: gate(async (id, file, text) => {
-    if (!docAlive(id)) return false
-    return notes.write(id, file, text)
-  }),
+  writeNote: gate((id, file, text) => notes.write(id, file, text)), // 迟到写防御在数据层任务内
 
   // 摘录链接锚点（移动端专有；links/<docId>.json，与 notes/ 的 .md 解耦）。
   // 一次读改写：按现存 .md 剪除孤儿（仅发现孤儿时写回），保留损坏告示——读取
@@ -280,22 +287,14 @@ const solace = {
     // 队列外提前取的过期快照会把并发保存中刚写入的锚点误剪成孤儿
     return links.readPruned(id, async () => (await notes.list(id)).notes.map(f => f.file))
   }),
-  // 侧车迟到写防御（全量审查 P2-4）：删书后 UI 层的防抖冲刷/重试队列
-  // 可能仍持有旧书数据（ink.js retryWrites 在下次 flushSave 无条件重写、
-  // links setEntry 排队同理），把刚清掉的 notes/links 侧车复活成永不再
-  // 清理的孤儿。桥侧统一兜底：写前查书仍在库，不在则返回 false 拒绝
-  // ——丢的只是死数据，UI 层按写失败处理即可
-  setNoteLinkEntry: gate(async (id, file, entry) => {
-    if (!docAlive(id)) return false
-    return links.setEntry(id, file, entry)
-  }), // entry=null → 删除
+  // 迟到写防御（全量审查 P2-4；第四轮审查查活下沉进 links 队列任务内）：
+  // 删书后 UI 层的防抖冲刷/重试队列可能仍持有旧书数据（ink.js retryWrites、
+  // links setEntry 排队同理），任务执行时查书仍在库，不在则返回 false 拒绝
+  setNoteLinkEntry: gate((id, file, entry) => links.setEntry(id, file, entry)), // entry=null → 删除
 
   // 手写标注（移动端专有；annotations/<docId>.json，与 notes/ 的 .md 解耦）
   readAnnotations: gate((id) => annotations.read(id)),
-  writeAnnotations: gate(async (id, data) => {
-    if (!docAlive(id)) return false
-    return annotations.write(id, data)
-  }),
+  writeAnnotations: gate((id, data) => annotations.write(id, data)), // 迟到写防御在数据层任务内
 
   // 桌面端经 webUtils 转换 File 路径；平板端不提供，渲染层据此禁用拖入导入
   getStartupNotice: () => lib.getStartupNotice()

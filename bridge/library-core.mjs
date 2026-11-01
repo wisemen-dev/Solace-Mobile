@@ -721,19 +721,28 @@ export function createLibrary ({ fs, sha256, randomUUID, hashStorageFile, now = 
 
   async function migrateLegacyTextIndexNow () {
     if (!await fs.exists('textindex.json')) return
+    let old
     try {
-      const old = JSON.parse(await fs.readFileText('textindex.json'))
-      for (const [id, e] of Object.entries(old || {})) {
-        try { assertDocumentId(id) } catch { continue } // 非法键跳过（与桌面端同款防御）
-        if (!e || !Array.isArray(e.pages)) continue
-        await writeShard(id, e)
-        textIndexMeta.entries[id] = { ver: Number(e.ver) || undefined, failed: !!e.failed, at: e.at }
-      }
-      await saveTextIndexMeta()
-      await fs.rename('textindex.json', 'textindex.json.migrated')
-    } catch {
+      old = JSON.parse(await fs.readFileText('textindex.json'))
+    } catch (err) {
+      // 只有解析级损坏（SyntaxError）才隔离改名——改名后 exists 为假、永不
+      // 重试；无差别隔离会把一次磁盘瞬断当永久损坏，整批索引被弃、渲染层
+      // 视全部条目 stale 走 pdf.js 全量重提取（第四轮审查：S1「I/O 故障
+      // 上抛」纪律同源，读取故障上抛走「失败不缓存」的既有重试链）
+      if (!(err instanceof SyntaxError)) throw err
       try { await fs.rename('textindex.json', 'textindex.json.corrupt') } catch { /* 下次再试 */ }
+      return
     }
+    // 写阶段（分片/元数据/改名）失败不隔离：几乎全是 I/O 故障，上抛等下次
+    // 重试；半写的分片由 readShardPages 的形状校验/缺失自愈兜底
+    for (const [id, e] of Object.entries(old || {})) {
+      try { assertDocumentId(id) } catch { continue } // 非法键跳过（与桌面端同款防御）
+      if (!e || !Array.isArray(e.pages)) continue
+      await writeShard(id, e)
+      textIndexMeta.entries[id] = { ver: Number(e.ver) || undefined, failed: !!e.failed, at: e.at }
+    }
+    await saveTextIndexMeta()
+    await fs.rename('textindex.json', 'textindex.json.migrated')
   }
 
   async function getTextIndexStatus () {

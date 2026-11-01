@@ -15,9 +15,18 @@
  */
 export function groupSpines (docs, categories, keyword) {
   const byId = new Map(categories.map(c => [c.id, c]))
+  // 上溯顶级。seen 防环（第四轮审查，同桌面 topCategoryColor 的纪律）：
+  // assertMoveCategory 挡住正常 API 造环，但损坏的 library.json（两端互传/
+  // 手工编辑）仍可能带入——无防护时 while 永不退出、书脊渲染挂死。撞环
+  // 视同悬空：归「未分类」（决策 4 同族：上溯不到顶级 = 未分类）
   const topOf = (id) => {
+    const seen = new Set()
     let c = id ? byId.get(id) : null
-    while (c && c.parentId) c = byId.get(c.parentId)
+    while (c && c.parentId) {
+      if (seen.has(c.id)) return null
+      seen.add(c.id)
+      c = byId.get(c.parentId)
+    }
     return c ? c.id : null
   }
   const byTop = new Map()

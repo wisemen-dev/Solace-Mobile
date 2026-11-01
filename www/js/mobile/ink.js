@@ -638,10 +638,23 @@ function onMove (e) {
   }
   if (erasing) {
     if (e.pointerId !== erasing.ptr) return
+    // 退出/暂挂复查（第四轮审查，同下方 drawing 分支）：退出后模型已随退出
+    // 处置（settleErase 自带换书对账，origins 空即 no-op）；面板打开则结算
+    // 已切部分再停
+    if (!active || suspendDrawing()) {
+      const g = erasing
+      erasing = null
+      if (settleErase(g)) updateLayerVisibility()
+      return
+    }
     eraseAt(toPageXY(e))
     return
   }
   if (!drawing || e.pointerId !== drawing.ptr) return
+  // 退出/暂挂复查（第四轮审查）：另一指点「✕ 完成」退出标注后，pointer
+  // capture 仍会把事件派发到本层——不复查会把笔画继续采点并经 commitStroke
+  // 提交（退出后语义应为穿透）
+  if (!active || suspendDrawing()) { drawing = null; clearLive(); return }
   if (loadedDoc !== drawing.docId || String(lastLayout.page) !== drawing.page) {
     // 翻页/换书后 rect 与坐标系已换新页，继续采点会把新页坐标混进旧页笔画
     drawing = null
@@ -677,6 +690,7 @@ function onUp (e) {
     return
   }
   if (!drawing || e.pointerId !== drawing.ptr) return
+  if (!active || suspendDrawing()) { drawing = null; clearLive(); return } // 见 onMove 的同款复查
   commitStroke()
 }
 

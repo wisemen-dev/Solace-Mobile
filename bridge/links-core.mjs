@@ -5,7 +5,7 @@ import { checkDocId } from './doc-id.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
 import { readSidecarJson } from './sidecar-json.mjs'
 
-export function createLinks ({ fs }) {
+export function createLinks ({ fs, isAlive }) {
   function docFile (docId) {
     return `links/${checkDocId(docId)}.json`
   }
@@ -129,9 +129,13 @@ export function createLinks ({ fs }) {
     return true
   }
 
-  // 读改写串行化（同一队列内：损坏文件先留档再写新数据，不丢原文）
+  // 读改写串行化（同一队列内：损坏文件先留档再写新数据，不丢原文）。
+  // 迟到写防御（第四轮审查）在任务内查活：删书后仍排队的 setEntry/
+  // removeEntry 返回 false 拒绝，不把刚清掉的侧车复活成永不再清理的孤儿
+  //——入队时查与任务执行之间还有微窗口，查活必须落在任务里
   function mutate (docId, fn) {
     return writeQ.run(async () => {
+      if (isAlive && !isAlive(docId)) return false
       const data = await loadValidated(docId)
       fn(data)
       return writeLocked(docId, data)
