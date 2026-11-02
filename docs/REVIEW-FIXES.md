@@ -88,16 +88,27 @@
 | P3 | ink onMove/onUp 缺退出/暂挂复查：退出标注后 pointer capture 仍采点并 commitStroke | drawing/erasing 分支复查 active/suspendDrawing，作废或结算 | 代码走查（vm 桩无 capture 语义，真机手势待验） |
 | P3 | 章节小条在显时被直接覆盖；简介卡「总结 N」缺单位 | 已显示不触发守卫；「📝 总结 N 章」 | 代码走查 |
 | P3 | mem-fs 原子写桩无 tmp 形态（*.tmp 清扫零覆盖）；build-bridge 覆盖刷新不清理目标 | 两桩补 tmp+rename 形态；www/js/mobile 先清再拷 | library-core：.tmp 残留随 init 清掉 |
+| P2·真机 | **push-library wipe 校验的 shellCount 把 find 输出里路径中的 UUID 数字拼进计数**（`\D` 删除法）：真机 2 文件被数成 4e19，wipe 校验必假、永远中止——第三轮引入时 vm 测试回显纯数字掩盖，真机从未跑过 wipe（2026-11-02 真机验证抓到；中止保护本身生效，旧库未动） | wipe 校验改用 shellList 行级计数（合并模式已是行级无此问题）；vm 测试 find 回显改为带 UUID 数字的路径行 | npm test 179/179；真机 wipe 重跑「2 个文件校验通过，旧库已替换并清理」 |
 | 文档 | Spec 轴文档滞后成片：併入写序/等高带/互斥让位/工具簇两项拍板/书脊计数等实现已演进、设计书未回填 | 七份设计书 + PLAN + PORTING 各追加修订记（见各文档文末） | 逐条代码依据核对 |
 
 ### 未修（本轮明示不动）
 
 - `library-shared.cjs` getOpenStats 就地修改注入时钟（纯度违规）与 notes/links 文件名校验上移共享层——桌面仓库是唯一事实源，需在桌面修后 `npm run www` 搬运，本轮范围外
 - importWith/importVia 四段同形（判断项 Duplicated Code）：导入内核是最重战损区，提核收益小于回归风险，维持现状
-- 需真机验证：搜索令牌冒烟、拖选对账真手势、cdp-touch 多设备、wipe 换入 -old 路径、ROM 异常授权路径、saveEditor 写序回归
+- ROM 特定 RuntimeException 的异常分支（Java catch 扩面）：无法程序化触发，仅验证正常路径零回归 + 与 copyAndHash 同款纪律的代码对照
+
+### 第四轮真机验证（2026-11-02，vivo 平板 PA2353 / 400D8S01LU00000）
+
+- **搜索令牌**：桥层并发双搜索（token 1 被 2 顶掉）→ 旧搜索检查点作废返回 0 命中、新搜索 15 命中；UI 真实链路（textindex.js 三参实调 → 桥 → 数据层）过滤结果一致。
+- **拖选对账（cdp-touch 真触摸注入）**：正向对照——长按 520ms + 拖动 → 确认小条 + 蓝带出现（功能无回归）；翻页对照——拖选中点「下一页」→ `linkDragging` 翻页瞬间即被作废，旧指针后续 move×2 + 抬手零产出（无小条、无带、无待确认选区）。
+- **推库（危险项零风险方案：真库 mv 旁路 + E 盘全库备份双保险）**：合并模式真跑「源 2 个文件全部就位，校验通过」（源相对路径集合比对）；wipe 真跑暴露 shellCount UUID 拼接 bug（见上表）→ 修复后重跑「旧库已替换并清理」、无 -old/-incoming 残留；真库 90 文件 mv 原样回归、27 本 + links/notes 完好。
+- **SAF 授权（uiautomator 驱动系统选择器全程）**：pickDirectory → 选 Download/Olib → `persisted: true`、uri/name 正确——takePersistableUriPermission 正常路径在改动后的 Java 上零回归。
+- **cdp 工具链**：`--serial` 与无参数默认路径均通。本机注意：宿主 9222 被 ZCode 自身 DevTools 占用、9223 被残留 node 占用——CDP 验证需 `CDP_PORT=9333`。
+- 全程 logcat FATAL/AndroidRuntime 计数 0；恢复后启动 27 本、DOM 健康、无错误浮层。
 
 ### 第四轮验证记录
 
 - `npm test`：**179/179** 通过（162 + 新增 17：搜索令牌对照之外的全部修复项均有锁定用例）。
-- `npm run apk`：桥重建（www/js/mobile 先清再拷）、cap sync、gradle debug 构建通过（见下）。
+- `npm run apk`：桥重建（www/js/mobile 先清再拷）、cap sync、gradle debug 构建通过。
 - 同步一致性：www 副本 vs mobile-web 源逐字节 diff 一致。
+- 真机全项见上节（2026-11-02）。

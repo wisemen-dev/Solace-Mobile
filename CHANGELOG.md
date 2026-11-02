@@ -20,6 +20,7 @@
 - **迟到写防御两处缺口**：createNote 无守卫（删书后排队建笔记会在 `notes/<uuid>/` 复活永久孤儿目录）；三个写方法查活在入队时而非任务执行时。isAlive 注入三数据核、下沉队列任务内
 - **原生持久化授权 catch 过窄**：takePersistableUriPermission 只 catch SecurityException，ROM 抛其他 RuntimeException 时 io 线程未捕获异常杀进程（第三轮真机 P1 同型、修复未覆盖全部入口）。扩为全量 catch
 - **cdp-touch 修复漂移**：多设备 `--serial`/fetch 超时两项未随 cdp-eval 同步（双份实现的必然漂移）。抽公共 `scripts/cdp-conn.mjs` 共用连接引导
+- **推库 wipe 校验把路径中的 UUID 数字拼进计数（真机验证抓到）**：shellCount 用「剥掉非数字」解析 find 输出，`files/<uuid>.pdf` 的数字全部拼入——真机 2 文件被数成 4e19，wipe 校验必假、永远中止（中止保护本身生效，旧库未动；vm 测试回显纯数字掩盖、真机此前从未跑过 wipe）。改用行级计数，测试回显同步改为带 UUID 数字的路径行
 
 ### 变更
 - reduced-motion 跳过块补漏（章节小条/简介卡两钮/目录胶囊的按压缩放、胶囊让位淡出、抽屉滑入瞬切）；`.tools-bar` 死 transition 删除
@@ -32,7 +33,7 @@
 
 ### 测试
 - `npm test` 162 → **179/179**：新增拖选对账、两段写序、读失败分流 ×3、force 防重入、成环防护、迟到写防御 ×3、迁移 I/O 分流 ×2、tmp 清扫、推库失败路径 ×3、LRU delete
-- 待真机验证：搜索令牌冒烟、拖选对账真手势、cdp-touch 多设备、wipe 换入 -old 路径、ROM 异常授权路径
+- 真机验证（2026-11-02，vivo PA2353）全项通过：搜索令牌检查点作废实测生效（旧令牌 0 命中即退、新令牌 15 命中、UI 链路一致）；拖选对账真触摸注入（正向小条正常、翻页瞬间作废、旧指针零产出）；推库合并集合校验 + wipe -old 换入真跑（并抓到上条 shellCount bug）；SAF 授权正常路径 `persisted:true`；cdp `--serial`/默认路径均通；全程零 FATAL。细节见 `docs/REVIEW-FIXES.md` 第四轮真机验证一节
 
 ## [0.7.0] - 2026-10-19
 

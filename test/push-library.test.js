@@ -21,10 +21,11 @@ function runScript ({ wipe = false, stopFails = false, findOut = '1', findFails 
     process: { argv: wipe ? ['node', 'push-library', '--wipe'] : ['node', 'push-library'], exit: () => { exited = true; throw new Error('exit') } },
     spawnSync: (cmd, args) => {
       calls.push([cmd, ...args])
-      // find 有两种形态：分参（wipe 校验 INCOMING 计数，恒给 1 对上源数）与
-      // 单串（合并校验，回显 findOut/findFails）；swap 恒为单串
+      // find 有两种形态：分参（wipe 校验 INCOMING 计数，回显一行带 UUID 数字
+      // 的路径——防回归：旧 shellCount 会把路径数字拼进计数）与单串（合并
+      // 校验，回显 findOut/findFails）；swap 恒为单串
       const a1 = String(args[1] || '')
-      if (args.includes('find') && !a1.startsWith('find ')) return { status: 0, stdout: '1' }
+      if (args.includes('find') && !a1.startsWith('find ')) return { status: 0, stdout: 'incoming/files/00000000-0000-4000-8000-000000000099.pdf\r\n' }
       if (a1.startsWith('find ')) {
         if (findFails) return { status: 1, stdout: '' }
         return { status: 0, stdout: findOut }
@@ -48,7 +49,7 @@ test('推库和 wipe 的任何写入之前先停止应用', () => {
       // 之前不允许触碰 DST 本体（挪 -old 是 mv 不是 rm，失败可手工恢复）
       assert.equal(calls[1][2], 'rm') // rm -rf .solace-incoming（清上次残留）
       assert.deepEqual(calls[2], ['adb', 'push', join('desktop-user', 'AppData/Roaming/solace/SolaceLibrary'), '/storage/emulated/0/Android/data/com.molly.solacemobile/files/.solace-incoming'])
-      assert.equal(calls[3][2], 'find') // 临时目录文件数校验
+      assert.ok(String(calls[3][2]).startsWith('find '), '临时目录文件数校验（单串 find，行级计数）')
       assert.equal(calls[4][1], 'shell')
       assert.ok(calls[4][2].startsWith(`mv ${DST} ${DST}-old`), '先挪旧库再换入')
       assert.ok(calls[4][2].includes('.solace-incoming') && calls[4][2].includes('rm -rf'), '换入成功才清 -old')

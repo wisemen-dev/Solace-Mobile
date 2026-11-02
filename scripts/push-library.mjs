@@ -35,14 +35,9 @@ function run (cmd, args) {
   }
 }
 
-// 换行返回值（adb shell 输出带 \r\n）剥成纯数字；失败返回 null
-function shellCount (args) {
-  const r = spawnSync('adb', args, { encoding: 'utf8' })
-  const n = r.status === 0 ? Number(String(r.stdout || '').replace(/\D/g, '')) : NaN
-  return Number.isFinite(n) ? n : null
-}
-
-// 行列表版（校验合并结果用）；失败返回 null
+// 行列表版（计数与集合校验都用行级）；失败返回 null。注意不能用「剥掉非数字
+// 拼计数」的旧解法——find 输出是路径，files/<uuid>.pdf 的 UUID 数字会被拼进
+// 计数（第四轮真机验证实测：2 文件被数成 4e19，wipe 校验必假）
 function shellList (args) {
   const r = spawnSync('adb', args, { encoding: 'utf8' })
   if (r.status !== 0) return null
@@ -79,13 +74,13 @@ if (process.argv.includes('--wipe')) {
   console.log('注意：旧库中的手写标注（annotations/）与摘录链接锚点（links/）将随替换移除，桌面端均无此数据，不可恢复')
   run('adb', ['shell', 'rm', '-rf', INCOMING]) // 清理上次中断的残留
   run('adb', ['push', SRC, INCOMING])
-  const got = shellCount(['shell', 'find', INCOMING, '-type', 'f'])
-  if (got === null) {
+  const gotLines = shellList(['shell', `find ${INCOMING} -type f`])
+  if (!gotLines) {
     console.error('推送后无法统计平板端文件数（adb 故障？）——为保护旧库不做替换；可重跑本命令')
     process.exit(1)
   }
-  if (got !== srcFiles) {
-    console.error(`文件数校验不符：源 ${srcFiles}、平板 ${got}（推送中断/部分失败）——旧库未动，请重跑本命令`)
+  if (gotLines.length !== srcFiles) {
+    console.error(`文件数校验不符：源 ${srcFiles}、平板 ${gotLines.length}（推送中断/部分失败）——旧库未动，请重跑本命令`)
     process.exit(1)
   }
   // 换入（第四轮审查）：旧实现 rm 旧库后再 mv——mv 失败即留下不可恢复的空
