@@ -9,6 +9,7 @@ import './tools.js'
 import './chapter-prompt.js'
 import './doc-info.js'
 import './spine-group.js'
+import './immersive.js'
 import './dialog-motion.js'
 
 const $ = (sel) => document.querySelector(sel)

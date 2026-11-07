@@ -704,3 +704,72 @@ test('章总结入口：记录读取失败（IO）不得绕过幂等匹配新建
   assert.equal(created, 0, '读失败不得走新建（旧实现会产出同章第二份总结）')
   assert.ok(toasts.some(t => t.includes('记录读取失败')))
 })
+
+/* ---- 沉浸式阅读（immersive.js，2026-11-07）：状态机与中心区判定 ---- */
+
+function immersiveHarness () {
+  const h = uiHarness('immersive', `({
+    open() {
+      overlay.hidden = false
+      window.dispatchEvent({ type: 'solace-ink-layout', detail: { page: 12 } })
+    },
+    closePreview() {
+      overlay.hidden = true
+      window.dispatchEvent({ type: 'solace-ink-close' })
+    },
+    // 与 3s timer 到点回调同体（vm 桩的 setTimeout 不自动执行）
+    enterNow() { if (previewOpen() && !working()) setImmersive(true) },
+    setWorking(v) { window.inkActive = v; onStatesChanged() },
+    isOn: () => immersive,
+    barWidth: () => bar && bar.style.width,
+    tap(fx, fy) {
+      const r = host.getBoundingClientRect()
+      const x = r.left + fx * r.width
+      const y = r.top + fy * r.height
+      host.dispatchEvent({ type: 'pointerdown', clientX: x, clientY: y })
+      host.dispatchEvent({ type: 'pointerup', clientX: x, clientY: y })
+    }
+  })`, {})
+  h.element('pageTotal').textContent = '138'
+  h.element('tocPanel').hidden = true // 桩的 hidden 默认 false 会被 working() 当「面板开着」
+  h.element('notesPanel').hidden = true
+  return h
+}
+
+test('沉浸状态机：到点进入、进度线随页码、关预览清态', () => {
+  const h = immersiveHarness()
+  h.api.open()
+  h.api.enterNow() // 3s 到点
+  assert.equal(h.api.isOn(), true)
+  assert.equal(h.api.barWidth(), '8.70%') // 12/138
+  h.api.closePreview()
+  assert.equal(h.api.isOn(), false)
+  assert.equal(h.api.barWidth(), '0%')
+})
+
+test('工作状态互斥：出现即唤出、在场进不了沉浸、退出后可再进', () => {
+  const h = immersiveHarness()
+  h.api.open()
+  h.api.enterNow()
+  assert.equal(h.api.isOn(), true)
+  h.api.setWorking(true) // inkActive 出现（MutationObserver 路径的等价驱动）
+  assert.equal(h.api.isOn(), false, '工作状态出现必须立即唤出')
+  h.api.enterNow()
+  assert.equal(h.api.isOn(), false, '工作状态在场到点不得进入')
+  h.api.setWorking(false)
+  h.api.enterNow()
+  assert.equal(h.api.isOn(), true, '全部退出后可再进')
+})
+
+test('中心区点按切换：中心切换、边缘（翻页热区）不响应', () => {
+  const h = immersiveHarness()
+  h.api.open()
+  h.api.tap(0.5, 0.5)
+  assert.equal(h.api.isOn(), true, '中心点按进入沉浸')
+  h.api.tap(0.5, 0.5)
+  assert.equal(h.api.isOn(), false, '再点中心唤出')
+  h.api.tap(0.1, 0.5) // 左缘 20% 是点按翻页热区
+  assert.equal(h.api.isOn(), false, '边缘点按不得触发切换')
+  h.api.tap(0.5, 0.05) // 顶缘（栏区域）
+  assert.equal(h.api.isOn(), false)
+})

@@ -1128,3 +1128,30 @@ body.ink-active #previewOverlay::after {
   #btnToc,
   .sidebar { transition: none; }
 }
+
+/* ---------- 沉浸式阅读（immersive.js，2026-11-07 拍板：3s 自动沉浸/
+   中心区点按切换/原地淡出/贴底 2px 进度线） ----------
+   原地淡出：栏在 flex 布局流里（flex-shrink:0），display/位移会让正文区
+   重排跳动——只做 opacity+pointer-events，布局恒定、页面区域不变 */
+.preview-head,
+.preview-foot { transition: opacity 200ms var(--ease-out-expo); }
+body.preview-immersive .preview-head,
+body.preview-immersive .preview-foot {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 进度线：贴底 2px，仅沉浸时可见（常态完全隐身）；翻页短暂增亮（.lit） */
+.imm-progress {
+  position: absolute; left: 0; bottom: 0; height: 2px; width: 0;
+  background: var(--accent); opacity: 0; pointer-events: none; z-index: 3;
+  transition: opacity 300ms var(--ease-out-expo), width 160ms var(--ease-out-expo);
+}
+body.preview-immersive .imm-progress { opacity: 0.5; }
+body.preview-immersive .imm-progress.lit { opacity: 0.9; }
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-head,
+  .preview-foot,
+  .imm-progress { transition: none; }
+}

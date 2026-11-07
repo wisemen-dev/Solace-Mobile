@@ -16,6 +16,7 @@ let pageNum = 0
 let loadingTask = null
 let renderState = null
 let canvasTask = null
+let renderBuf = null        // 离屏渲染缓冲（双缓冲防翻页白闪，见 renderPage）
 let currentDoc = null     // 阅读进度归属的文档
 let readMarked = false    // 本次会话是否已记过阅读足迹（只在第一次真实翻页时记）
 let pendingProgress = null // 待落库的进度 { doc, page, total }，绑定所属文档防切书串写
@@ -322,8 +323,11 @@ async function renderPage () {
     // 按设备像素比渲染，保证文字清晰
     const dpr = window.devicePixelRatio || 1
     const fitted = fitPageViewport(page, Math.max(0.2, zoom) * dpr)
-    canvas.width = fitted.width
-    canvas.height = fitted.height
+    // 同尺寸跳过重设：canvas 的 width/height 赋值即使同值也会清空画布——
+    // 同版式书翻页每次都白板一闪（重画异步，白板期几十~几百 ms）。等值时
+    // 保留旧帧直接重画：PDF 页自带白底绘制会覆盖旧内容，无残留
+    if (canvas.width !== fitted.width) canvas.width = fitted.width
+    if (canvas.height !== fitted.height) canvas.height = fitted.height
     canvas.style.width = (fitted.viewport.width / dpr) + 'px'
     canvas.style.height = (fitted.viewport.height / dpr) + 'px'
     // 页面布局尺寸设定后通知墨迹层与文本层（补丁上游化，平板端消费；桌面
@@ -340,11 +344,19 @@ async function renderPage () {
     })
     updateZoomUI()
 
-    const task = page.render({ canvasContext: canvas.getContext('2d'), viewport: fitted.viewport })
+    // 双缓冲：pdf.js 的 render 会先画整页白底再逐笔画内容——直接画到显示
+    // canvas 时旧页被白底刷掉、内容跟上前的间隙就是翻页白板闪（真机 rAF
+    // 帧采样实测每次翻页 3~4 帧全白）。离屏渲染完成后一次性上屏，显示
+    // canvas 从旧页直达新页；取消/失败时不 drawImage，旧帧保持
+    if (!renderBuf) renderBuf = document.createElement('canvas')
+    renderBuf.width = fitted.width
+    renderBuf.height = fitted.height
+    const task = page.render({ canvasContext: renderBuf.getContext('2d'), viewport: fitted.viewport })
     state.task = task
     canvasTask = task
     await task.promise
     if (!isCurrentSession(token, pdfDoc)) return
+    canvas.getContext('2d').drawImage(renderBuf, 0, 0)
   } catch (err) {
     // 关闭预览时 pdf.destroy() 会打断在途渲染，这里报的「失败」并不是真失败：
     // 只在仍属于当前会话时才写错误浮层
