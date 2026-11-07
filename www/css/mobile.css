@@ -1130,14 +1130,22 @@ body.ink-active #previewOverlay::after {
 }
 
 /* ---------- 沉浸式阅读（immersive.js，2026-11-07 拍板：3s 自动沉浸/
-   中心区点按切换/原地淡出/贴底 2px 进度线） ----------
-   原地淡出：栏在 flex 布局流里（flex-shrink:0），display/位移会让正文区
-   重排跳动——只做 opacity+pointer-events，布局恒定、页面区域不变 */
+   中心区点按切换/栏收起正文扩展/贴底 2px 进度线） ----------
+   栏收起而非仅淡出（2026-11-08 用户实测反馈：淡出后上下留空带、读本
+   不覆盖原栏区域很怪）：height→0 让 flex 正文区扩展满屏，immersive.js
+   在收起动画结束后派发 resize 触发 fit 重算，「适应」模式的整页随之
+   长大填满。height/opacity 同步 200ms 过渡；border 归零防撑高 */
 .preview-head,
-.preview-foot { transition: opacity 200ms var(--ease-out-expo); }
+.preview-foot {
+  transition: opacity 200ms var(--ease-out-expo),
+              height 200ms var(--ease-out-expo);
+}
 body.preview-immersive .preview-head,
 body.preview-immersive .preview-foot {
+  height: 0;
   opacity: 0;
+  overflow: hidden;
+  border-width: 0;
   pointer-events: none;
 }
 
@@ -1155,3 +1163,5 @@ body.preview-immersive .imm-progress.lit { opacity: 0.9; }
   .preview-foot,
   .imm-progress { transition: none; }
 }
+/* reduced-motion 下收起是瞬切：resize 联动无需等待（immersive.js 统一
+   220ms 后派发，晚到的重算无副作用） */

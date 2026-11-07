@@ -93,7 +93,8 @@ function uiHarness (name, expose, solace) {
     CustomEvent: class {
       constructor (type, options = {}) { this.type = type; Object.assign(this, options) }
       preventDefault () { this.defaultPrevented = true }
-    }
+    },
+    Event: class { constructor (type) { this.type = type } }
   }
   const source = readFileSync(new URL(`../mobile-web/js/mobile/${name}.js`, import.meta.url), 'utf8')
     .replace(/^import .+\r?\n/gm, '')

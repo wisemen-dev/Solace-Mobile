@@ -13,6 +13,7 @@ const host = document.getElementById('previewBody')
 const DELAY = 3000
 let immersive = false
 let timer = 0
+let reflowTimer = 0
 let lastPage = 0
 let bar = null
 let litTimer = 0
@@ -36,6 +37,14 @@ function setImmersive (on) {
   immersive = on
   if (on) body.classList.add('preview-immersive')
   else body.classList.remove('preview-immersive')
+  // 栏收起/展开改变 previewBody 可视高：等 200ms 高度动画结束再派发
+  // resize，preview.js 的 fit 重算拿到稳定尺寸（「适应」模式整页随视口
+  // 长大填满；fit-width 宽度未变、fitted 不变零重画）。提前派发会读到
+  // 动画中间值算出半吊子尺寸
+  clearTimeout(reflowTimer)
+  reflowTimer = setTimeout(() => {
+    window.dispatchEvent(new Event('resize'))
+  }, 220)
 }
 
 // 3 秒无操作进入沉浸；到点复查（计时期间可能开了面板/对话框）。
