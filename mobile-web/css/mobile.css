@@ -334,6 +334,11 @@ body,
 /* 阅读区纵向滚动交给原生，横向触摸留给页面（滑动翻页）：不声明的话横向
    滑动会被滚动手势接管并以 pointercancel 结束，滑动翻页收不到 pointerup */
 .preview-body { touch-action: pan-y; }
+/* 预览正文区铺不透明底（2026-11-08 频闪修复）：overlay 是半透明遮罩
+   （rgba 0.5）、body 原本全透明——页面元素任何半透明瞬间（翻页脉冲/
+   动效）都会叠着遮罩透出主界面封面墙。铺 var(--bg) 后半透明期透出的
+   恒是深色页底，观感只是轻微变暗 */
+#previewBody { background: var(--bg); }
 .preview-head { height: 54px; }
 .preview-head .btn-ghost { padding: 7px 12px; }
 .preview-foot { height: 58px; }
@@ -966,11 +971,17 @@ dialog.dlg-leave::backdrop { animation: dlg-backdrop-out 120ms var(--ease-in-exp
 @keyframes dlg-backdrop-in { from { opacity: 0; } }
 @keyframes dlg-backdrop-out { to { opacity: 0; } }
 
-/* 翻页淡入（A2）：页面各层（previewBody 直接子元素——canvas/墨迹层/
-   文本层）同帧淡入；class 由 mobile.js 翻页收口处挂摘，240ms 自清。
-   子元素统一动效避免单动 canvas 时文本/墨迹层先显的穿帮 */
-#previewBody.page-fx > * { animation: page-fade-in 160ms var(--ease-out-expo); }
-@keyframes page-fade-in { from { opacity: 0; } }
+/* 翻页反馈（A2 重做，2026-11-08）：preview.js 双缓冲 drawImage 上屏后给
+   canvas 挂 .page-in——120ms、opacity 只从 0.88 起步（不从 0：任何半
+   透明期透出的也只是下面的不透明页底，而非主界面）；类由 preview.js
+   自摘重挂（连续翻页重启动画）。旧的 .page-fx 整层从 0 淡入已删：body
+   背景透明 + overlay 半透明遮罩下，半透明页面直接透出封面墙，且动画
+   播完时新页多半未上屏——「暗一下透封面→旧页回现→突变」即频闪主诉 */
+#previewCanvas.page-in { animation: page-in 120ms var(--ease-out-expo); }
+@keyframes page-in { from { opacity: 0.88; } }
+@media (prefers-reduced-motion: reduce) {
+  #previewCanvas.page-in { animation: none; }
+}
 
 /* 标注模式页面层状态宣告（UI 优化 D2，2026-10-08）：切入标注时页面边缘
    泛起一次 600ms accent 呼吸光——此前模式反馈只有顶栏远端的光环，页面
@@ -999,8 +1010,7 @@ body.ink-active #previewOverlay::after {
   dialog[open]::backdrop,
   dialog.dlg-leave,
   dialog.dlg-leave::backdrop,
-  body.ink-active #previewOverlay::after,
-  #previewBody.page-fx > * { animation: none; }
+  body.ink-active #previewOverlay::after { animation: none; }
   /* 按压缩放同属动效（全量审查 P3 补漏）：减弱动效下只留颜色反馈 */
   .tools-trigger:active,
   .tools-circle:active { transform: none; }

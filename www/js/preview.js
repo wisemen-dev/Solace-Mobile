@@ -111,10 +111,15 @@ function isAutoZoom () {
 // 可能没定义这两个字段，兜底后本函数恒返回 ≥120，不会把 NaN 传进
 // fitPageViewport 的有限性校验而抛错
 function availBox () {
-  return {
-    w: Math.max(120, (body.clientWidth || 0) - 36),
-    h: Math.max(120, (body.clientHeight || 0) - 36)
-  }
+  // 盒宽（getBoundingClientRect）而非 clientWidth：clientWidth 会被滚动条
+  // 扣掉——滚动条出现/消失时（如平板沉浸模式收起顶底栏）两态可用宽差
+  // 一个滚动条宽，「适应」页面随之轻跳（真机竖屏实测 700↔691）。按盒宽
+  // 算，能滚就滚（fit-width 本就要滚）。DOM 替身环境可能没有 rect，兜底
+  // 回 clientWidth/Height
+  const r = typeof body.getBoundingClientRect === 'function' ? body.getBoundingClientRect() : null
+  const w = (r && r.width) || body.clientWidth || 0
+  const h = (r && r.height) || body.clientHeight || 0
+  return { w: Math.max(120, w - 36), h: Math.max(120, h - 36) }
 }
 
 // 计算本次渲染比例：自动模式给出精确适应比例，手动态直接用 zoomScale
@@ -357,6 +362,12 @@ async function renderPage () {
     await task.promise
     if (!isCurrentSession(token, pdfDoc)) return
     canvas.getContext('2d').drawImage(renderBuf, 0, 0)
+    // 新内容上屏的轻确认脉冲（挂 .page-in，120ms、透明度只从 0.88 起）：
+    // 样式由各端自带（平板 mobile.css；桌面无对应样式即 no-op）。先摘类
+    // 再强制 reflow 后重挂——连续翻页时重启动画而非被「已挂」短路
+    canvas.classList.remove('page-in')
+    void canvas.offsetWidth
+    canvas.classList.add('page-in')
   } catch (err) {
     // 关闭预览时 pdf.destroy() 会打断在途渲染，这里报的「失败」并不是真失败：
     // 只在仍属于当前会话时才写错误浮层

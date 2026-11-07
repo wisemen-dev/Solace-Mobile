@@ -119,25 +119,13 @@ previewBody.addEventListener('pointercancel', (e) => {
   if (ptr && e.pointerId === ptr.id) ptr = null
 }, { passive: true })
 
-/* ================= 翻页淡入反馈（UI 优化 A2，2026-10-08） =================
-   移动端所有翻页路径（滑动/边缘点按/底栏按钮）都收口在 btnNext/btnPrev
-   的 click——在这两钮叠加监听给页面容器挂 .page-fx，CSS 让页面各层
-   （canvas/墨迹层/文本层，previewBody 直接子元素）同帧淡入，给大脑一个
-   「页已翻过」的确认；此前 canvas 内容瞬间替换无任何过渡。
-   快翻节流 250ms：连续翻页时不重播（反复重启的闪烁比持续静止更晕）。
-   页码跳转/目录跳转不在此路径，跳变本身有明确的落点反馈，不加 */
-let pageFxBusy = false
-function playPageFx () {
-  if (pageFxBusy) return
-  pageFxBusy = true
-  previewBody.classList.add('page-fx')
-  setTimeout(() => {
-    previewBody.classList.remove('page-fx')
-    pageFxBusy = false
-  }, 240)
-}
-btnNext?.addEventListener('click', playPageFx, true)
-btnPrev?.addEventListener('click', playPageFx, true)
+/* 翻页反馈（A2，2026-10-08 引入、2026-11-08 重做）：旧的 .page-fx 整层
+   淡入已移除——它从 opacity 0 起步且 previewBody 背景透明，翻页瞬间把
+   半透明页面叠在半透明 overlay 遮罩上，透出底下的封面墙（用户体感：
+   「稍暗一下 + 闪现模糊封面」），且动画播完时双缓冲的新页多半还没上屏，
+   「淡入的是旧页」后再突变，三段观感即频闪主诉。现由 preview.js 在双
+   缓冲 drawImage 上屏后挂 .page-in 轻脉冲（120ms、opacity 0.88 起，
+   见 mobile.css），样式与时机都贴着内容就绪点 */
 
 /* ================= 内置笔记编辑器（桌面端经 Typora 打开的等价物） ===== */
 
