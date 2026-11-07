@@ -1158,6 +1158,14 @@ body.preview-immersive .preview-foot {
   border-width: 0;
   pointer-events: none;
 }
+/* 沉浸时正文区内距收到 0：页面满幅（竖屏 700→736 宽，availBox 动态读
+   padding 联动重算），翻页空白余量减到几何下限；页面竖向**居中**——
+   竖屏看「比视口更方」的 PDF 时 fit-width 必有高度余量（页面比例 >
+   视口比例），堆在底部像「没铺满」（用户实测反馈），对称分布才是
+   阅读器的常规排布。常态保持顶对齐：翻页时页顶位置稳定 */
+#previewBody { transition: padding 200ms var(--ease-out-expo); }
+body.preview-immersive #previewBody { padding: 0; }
+body.preview-immersive #previewBody > * { align-self: center; }
 
 /* 进度线：贴底 2px，仅沉浸时可见（常态完全隐身）；翻页短暂增亮（.lit） */
 .imm-progress {
@@ -1171,6 +1179,7 @@ body.preview-immersive .imm-progress.lit { opacity: 0.9; }
 @media (prefers-reduced-motion: reduce) {
   .preview-head,
   .preview-foot,
+  #previewBody,
   .imm-progress { transition: none; }
 }
 /* reduced-motion 下收起是瞬切：resize 联动无需等待（immersive.js 统一

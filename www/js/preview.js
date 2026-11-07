@@ -119,7 +119,17 @@ function availBox () {
   const r = typeof body.getBoundingClientRect === 'function' ? body.getBoundingClientRect() : null
   const w = (r && r.width) || body.clientWidth || 0
   const h = (r && r.height) || body.clientHeight || 0
-  return { w: Math.max(120, w - 36), h: Math.max(120, h - 36) }
+  // 内距动态读（平板沉浸模式把 padding 收到 0，可用区随之扩大 36px）；
+  // 非浏览器环境无 getComputedStyle 时兜底 18（与 .preview-body 常态一致）
+  let pad = 18
+  try {
+    // 注意不能用 `parseFloat(...) || 18`：padding 0 会因 falsy 被误判成
+    // 失败回退 18（沉浸收距后页面仍按 36 inset 算，满幅失效）
+    const p = parseFloat(getComputedStyle(body).paddingLeft)
+    if (Number.isFinite(p)) pad = p
+  } catch { /* 替身环境 */ }
+  const inset = pad * 2
+  return { w: Math.max(120, w - inset), h: Math.max(120, h - inset) }
 }
 
 // 计算本次渲染比例：自动模式给出精确适应比例，手动态直接用 zoomScale
