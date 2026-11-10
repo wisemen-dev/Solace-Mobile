@@ -1165,7 +1165,12 @@ body.preview-immersive .preview-foot {
    阅读器的常规排布。常态保持顶对齐：翻页时页顶位置稳定 */
 #previewBody { transition: padding 200ms var(--ease-out-expo); }
 body.preview-immersive #previewBody { padding: 0; }
-body.preview-immersive #previewBody > * { align-self: center; }
+/* 居中必须用 margin-block:auto（auto margin 只在有剩余空间时分配）而非
+   align-self:center——flex 的 center 对**高于容器**的子元素会把起点侧
+   溢出排到滚动起点之外、永远滚不到（横屏 fit-width 页高 ~1400 > 视口
+   ~708，顶部 ~346px 内容被吞 = 用户实测「靠上内容空白」）。auto margin
+   在溢出时归零回落顶对齐：竖屏装得下→居中，横屏装不下→可滚全页 */
+body.preview-immersive #previewBody > * { align-self: auto; margin-block: auto; }
 
 /* 进度线：贴底 2px，仅沉浸时可见（常态完全隐身）；翻页短暂增亮（.lit） */
 .imm-progress {

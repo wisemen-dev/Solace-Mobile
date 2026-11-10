@@ -4,6 +4,11 @@
 `Solace_Rust/CHANGELOG.md`。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本。
 
+## [Unreleased]
+
+### 修复
+- **横屏沉浸「吞画面」（0.8.0 引入，11-10 用户实测）**：沉浸居中用的 `align-self: center` 对**高于容器**的子元素会把起点侧溢出排到滚动起点之外、永远滚不到——横屏 fit-width 页高（~1560）> 视口（708）时顶部 ~400px 内容被吞（「靠上内容空白」）；竖屏页面装得下（1026 < 1092）所以无恙。改为 `margin-block: auto` 安全居中：auto margin 只在有剩余空间时分配、溢出时归零回落顶对齐——竖屏装得下居中不变（实测 top/bottomGap 33/33），横屏装不下顶对齐可滚全页（实测 canvasTopInBody 0、滚到底完整可见、scrollRange 全覆盖）
+
 ## [0.8.0] - 2026-11-07
 
 ### 版本
