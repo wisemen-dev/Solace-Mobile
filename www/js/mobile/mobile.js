@@ -117,7 +117,58 @@ previewBody.addEventListener('pointerup', (e) => {
 previewBody.addEventListener('pointercancel', (e) => {
   activePtrs.delete(e.pointerId)
   if (ptr && e.pointerId === ptr.id) ptr = null
+  // D4：浏览器接管手势的标记（touch 通道据此判断是否接棒翻页，见下）
+  if (panTouch) panTouch.cancelled = true
 }, { passive: true })
+
+/* 横向溢出平移（2026-11-13 bug5）：放大（−/＋）或「适应高度」后画布宽于
+   视口时放开 pan-x——浏览器原生接管横向滚动（带惯性），溢出内容终于可
+   左右滑动查看；已滚到边界后的继续横滑浏览器不再消费、回落给上面 JS 的
+   滑动判定翻页（翻页链路零改动）。触摸手势归属在落指瞬间按 touch-action
+   定，逐页渲染后（含缩放/沉浸/转屏）重新核算即可 */
+function updatePanX () {
+  // 阈值 48px：fit-width 下画布与可用盒有 dpr 取整的几像素残差（真机实测
+  // 1116 vs 1111），不足半根手指宽的溢出平移无意义、还会让首个横滑被浏览器
+  // 吃掉 5px 而不翻页——只有真放大产生的溢出才交出翻页权
+  previewBody.classList.toggle('pan-x', (previewBody.scrollWidth - previewBody.clientWidth) > 48)
+}
+window.addEventListener('solace-ink-layout', updatePanX)
+window.addEventListener('resize', updatePanX)
+
+/* 边界横滑翻页接棒（D4，报告 FIX-VERIFY-2026-11-13 拍板方向①）：pan-x 态下
+   Chromium 越 touch-slop 即派 pointercancel 接管滚动——pointerup 永不派发，
+   放大态滚到边界后横滑翻不了页。touch 流不受 pointer 取消影响（touchend 恒
+   派发），作第二触通道。互斥判据 = 本次手势是否收到过 pointercancel：
+   没收到（选词/标注层的 touch-action:none 挡住原生接管）说明 pointerup 链路
+   自己会处理，touchend 让位防双翻；收到过 = pointer 流已被浏览器吃掉，仅在
+   「手势朝向的滚动边界」上接棒（未到边界的横滑是平移，不翻页） */
+let panTouch = null // pan-x 态的活动触点 { id, x, y, scrollL, cancelled }
+previewBody.addEventListener('touchstart', (e) => {
+  if (!previewBody.classList.contains('pan-x') || e.touches.length !== 1) { panTouch = null; return }
+  const t = e.touches[0]
+  panTouch = { id: t.identifier, x: t.clientX, y: t.clientY, scrollL: previewBody.scrollLeft, cancelled: false }
+}, { passive: true })
+previewBody.addEventListener('touchend', (e) => {
+  const p = panTouch
+  panTouch = null
+  if (!p || !p.cancelled || !previewBody.classList.contains('pan-x')) return
+  const t = e.changedTouches && e.changedTouches[0]
+  if (!t || t.identifier !== p.id) return
+  const dx = t.clientX - p.x
+  const dy = t.clientY - p.y
+  if (!(Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4)) return
+  // 真机复验补丁（2026-11-21）：中段横滑会被原生 pan 吃掉大部分行程、终点
+  // 恰在墙上——只按 dx 与边界判会把「滚到位」误判成「推过界翻页」，一次
+  // 手势既滚又翻。扣除本次手势实际滚掉的距离后仍超出步进阈值，才视为
+  // 「推到墙后继续压着」的翻页意图
+  const consumed = Math.abs(previewBody.scrollLeft - p.scrollL)
+  if (Math.abs(dx) - consumed <= 48) return
+  const atLeft = previewBody.scrollLeft <= 0
+  const atRight = previewBody.scrollLeft >= previewBody.scrollWidth - previewBody.clientWidth - 1
+  if (dx < 0 && atRight) btnNext?.click()
+  else if (dx > 0 && atLeft) btnPrev?.click()
+}, { passive: true })
+previewBody.addEventListener('touchcancel', () => { panTouch = null }, { passive: true })
 
 /* 翻页反馈（A2，2026-10-08 引入、2026-11-08 重做）：旧的 .page-fx 整层
    淡入已移除——它从 opacity 0 起步且 previewBody 背景透明，翻页瞬间把

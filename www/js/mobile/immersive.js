@@ -37,6 +37,10 @@ function setImmersive (on) {
   immersive = on
   if (on) body.classList.add('preview-immersive')
   else body.classList.remove('preview-immersive')
+  // 过渡跟随（2026-11-13 bug1）：padding 0↔18 的过渡期与后续重渲染窗口内，
+  // 墨迹/摘录层按画布实时位置逐帧对齐（标记漂离文字一瞬的根治）——
+  // ink.js / link.js 各自监听该事件，新 layout 落地即停
+  window.dispatchEvent(new CustomEvent('solace-preview-follow'))
   // 栏收起/展开改变 previewBody 可视高：等 200ms 高度动画结束再派发
   // resize，preview.js 的 fit 重算拿到稳定尺寸（「适应」模式整页随视口
   // 长大填满；fit-width 宽度未变、fitted 不变零重画）。提前派发会读到
@@ -103,6 +107,12 @@ window.addEventListener('solace-ink-close', () => {
 
 // 滚动是阅读操作：未沉浸时重置计时
 host?.addEventListener('scroll', () => { if (!immersive) schedule() }, { passive: true })
+
+// 系统窗口变化（转屏/分屏）同样有「画布先动、层后跟」窗口（preview.js 的
+// resize 重渲染是异步的），同样触发覆盖层跟随
+window.addEventListener('resize', () => {
+  window.dispatchEvent(new CustomEvent('solace-preview-follow'))
+})
 
 // 点按正文中心区切换（短点 <300ms、位移 <12px，与 link.js 点按判定同风格）。
 // 边缘不响应：左右 20% 是既有点按翻页热区，上下留出栏区域——沉浸切换

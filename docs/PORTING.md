@@ -57,7 +57,10 @@ preload 暴露、平板端 bridge/boot.mjs 组装），渲染代码零感知平�
   两条路径永不相交（Typora 互通不变量零影响）。孤儿清扫只扫 `files/`、
   `covers/`，不碰 `annotations/`、`links/`
 - 摘录链接（0.5.0）同模式：记录仍是 `notes/` 下的普通 .md，锚点在
-  `links/<docId>.json` 侧车——平板专有、随整库搬运、桌面端静默忽略
+  `links/<docId>.json` 侧车——平板专有、随整库搬运、桌面端静默忽略。
+  2026-11-13 起 excerpt 可选 `color`（标记色号 0..4，缺省 0=琥珀，旧数据
+  免迁移）；色值在 mobile.css `--lnk-c0..4`，色数与 bridge/constants.mjs
+  的 LINK_COLOR_COUNT、link.js 的 LNK_COLORS 三处同步
 
 ## 渲染层补丁清单（scripts/sync-www.mjs）
 
@@ -239,6 +242,14 @@ notespanel.js 的 30 处补丁已全部写进桌面源码，改由 `isMobile` �
   用 Touch Events 时横向滑动被原生滚动手势接管、以 touchcancel 结束，
   touchend 收不到 → 翻页失灵。解法：CSS `touch-action: pan-y`（纵向归
   原生、横向归页面）+ Pointer Events（`pointerup`/`pointercancel`）。
+- **横向溢出平移**（2026-11-13；边界翻页 2026-11-21 补）：放大/「适应高度」
+  后画布宽于视口时，mobile.js 按溢出（>48px，滤掉 dpr 取整残差）给
+  `#previewBody` 挂 `pan-x` 类放开 `touch-action: pan-x pan-y`——横向滚动归
+  原生（带惯性）。**坑（验证报告 D4）**：Chromium 越 touch-slop 即派
+  pointercancel 接管手势（边界处也一样），pointerup 永不派发——「滚不动就
+  放行给 JS」不成立，边界横滑翻页被吞。已补 touch 第二通道接棒：手势收到过
+  pointercancel 且朝向滚动边界时由 touchend 判翻页（无 cancel 则让位
+  pointerup 链路防双翻）。
 - **边缘点按翻页**：快速点按（<300ms、位移 <12px）落在容器左右 20%
   热区时点 `#btnPrevPage/#btnNextPage`（复用按钮链路，进度/足迹逻辑不变）。
 

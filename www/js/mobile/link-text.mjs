@@ -84,6 +84,30 @@ export function stepEndpoint (pageText, off, dir) {
   return Math.min(pageText.length, b + 1)
 }
 
+// 兜底选行（2026-11-13 bug4 修订）：caret 落空（行间隙/页边空白/transform
+// 缩放项怪癖）时的几何近似。旧版按「垂直距离，盒高」双键取最优——同垂直
+// 距离时最矮盒胜：一行里有短文本项时，落在行首/行尾空白的指针会命中短项
+// 的起/终点，端点整段错位（最左/最右字选不进的直接根因）。改为「垂直含 y
+// （或最近）优先，水平距离最近次之」。boxes = [{ item, top, bottom, left,
+// right }]（client 坐标），返回 { item, edge }——edge 按指针相对盒中线取
+// 'start' | 'end'（盒外近侧自然成立）
+export function pickRowBox (boxes, x, y) {
+  let best = null
+  let bestKey = Infinity
+  for (const b of boxes) {
+    const h = (b.bottom - b.top) || 1
+    const dy = y < b.top ? b.top - y : (y > b.bottom ? y - b.bottom : 0)
+    const dx = x < b.left ? b.left - x : (x > b.right ? x - b.right : 0)
+    // 垂直 1px ≈ 水平 1000px：先锁视觉行；同行内水平最近者胜（盒内为 0）。
+    // 末位挂盒高（矮盒指行更精确），权重压到千分之一——只在 dy/dx 全同分
+    // 时起作用（多行大盒垂直罩住整段时的次优选）
+    const key = dy * 1000 + Math.min(dx, 999) + Math.min(h, 200) / 1000
+    if (key < bestKey) { bestKey = key; best = b }
+  }
+  if (!best) return null
+  return { item: best.item, edge: x > (best.left + best.right) / 2 ? 'end' : 'start' }
+}
+
 export function buildSearchIndex (text) {
   let norm = ''
   const back = []

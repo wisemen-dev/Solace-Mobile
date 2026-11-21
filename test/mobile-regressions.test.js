@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { createAnnotations } from '../bridge/annotations-core.mjs'
 import { createMemFs } from './mem-fs.mjs'
 import { generateRecordMd, parseRecordMd } from '../mobile-web/js/mobile/link-md.mjs'
+import { makeFreeSelection, findRangeByText } from '../mobile-web/js/mobile/link-text.mjs'
 import { splitStroke } from '../mobile-web/js/mobile/ink-erase.mjs'
 import { makeLru } from '../mobile-web/js/mobile/lru-cache.mjs'
 import { groupRectsToBands } from '../mobile-web/js/mobile/bands.mjs'
@@ -55,6 +56,12 @@ function uiHarness (name, expose, solace) {
     }
     append () {}
     appendChild (child) { return child }
+    // D3 回归（2026-11-21）首次把 renderMarkers 全链跑进桩：renderBands 的
+    // insertBefore/firstChild 与 placeHandles 的 children 在此补齐（真 DOM 语义
+    // 的最小子集，其余用例不感知）
+    insertBefore (node) { return node }
+    get firstChild () { return null }
+    get children () { return [] }
     get firstElementChild () { return new Element() }
     getContext () { return new Proxy({}, { get: () => () => {} }) }
     getBoundingClientRect () { return { left: 0, top: 0, width: 100, height: 100 } }
@@ -85,6 +92,7 @@ function uiHarness (name, expose, solace) {
   const timers = new Map()
   const context = {
     window, document, console, generateRecordMd, parseRecordMd, splitStroke, makeLru, groupRectsToBands,
+    makeFreeSelection, findRangeByText,
     getStroke: () => [], askConfirm: async () => true, jumpPage () {}, closeNotes () {},
     esc: text => String(text), localStorage: { getItem: () => null, setItem () {} },
     setTimeout: fn => { timers.set(++timerSeq, fn); return timerSeq },
@@ -655,6 +663,48 @@ test('拖选中翻页/换书：旧页 dragSel 作废，move/up 不再产出跨�
   h.api.flip({ docId: 'other', page: 1, pageObj: {} })
   h.element('previewBody').dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 50, clientY: 50 })
   assert.equal(h.api.pending(), null, '换书后的 up 不得产出待确认选区')
+})
+
+test('手柄调整被双指打断/系统取消：text/hint 按 a/b 重算，入选不吃旧文字（D3）', async () => {
+  // 复验报告 D3：旧实现双指打断与 pointercancel 只清 handleDrag 不重算
+  // dragPending.text/hint——之后点 ✓ 落盘的是拖拽前快照，与高亮区错位
+  const mk = () => uiHarness('link', `({
+    setup(d, entry) {
+      lastLayout = d
+      layer = document.createElement('div')
+      dragBar = document.createElement('div')
+      window.linkSelecting = true
+      ensureTray(); tray.hidden = false
+      textCache.set(d.docId + ':' + d.page, entry)
+      // 旧 text/hint 是拖拽前快照；a/b 已被手柄拖到新位置（2..8 → cdefgh）
+      dragPending = { page: d.page, a: 2, b: 8, text: '旧文字', hint: { item: 0, char: 0 }, color: 0 }
+      handleDrag = { end: 'b', ptr: 1, docId: d.docId, page: String(d.page) }
+    },
+    pending() { return dragPending },
+    dragging() { return !!handleDrag },
+    commit() { commitDragPending() },
+    sels() { return selections }
+  })`, {
+    readNoteLinks: async () => ({ version: 1, records: {} }),
+    readNote: async () => ''
+  })
+  const entry = { pageText: 'abcdefgh', spans: [{ start: 0, end: 8 }] }
+  // ① 双指打断：第一指已在（直接置 handleDrag），第二指落下触发收尾
+  const a = mk()
+  a.api.setup({ docId: 'doc', page: 1 }, entry)
+  a.element('previewBody').dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 10, clientY: 10 })
+  a.element('previewBody').dispatchEvent({ type: 'pointerdown', pointerId: 2, clientX: 20, clientY: 10 })
+  assert.equal(a.api.dragging(), false, '双指打断应结束手柄拖拽')
+  assert.equal(a.api.pending().text, 'cdefgh', 'text 应按 a/b=2..8 重算')
+  assert.deepEqual(a.api.pending().hint, { item: 0, char: 2 }, 'hint 应取新起点')
+  a.api.commit()
+  assert.equal(a.api.sels()[0].text, 'cdefgh', '入选不得存入打断前的旧文字')
+  // ② pointercancel（系统手势打断）同口径
+  const b = mk()
+  b.api.setup({ docId: 'doc', page: 1 }, entry)
+  b.element('previewBody').dispatchEvent({ type: 'pointercancel', pointerId: 1, clientX: 10, clientY: 10 })
+  assert.equal(b.api.dragging(), false)
+  assert.equal(b.api.pending().text, 'cdefgh')
 })
 
 test('查看器打开时记录读取失败（IO）：toast 真实原因，不误报「已不存在」（第四轮审查）', async () => {

@@ -270,6 +270,7 @@ window.addEventListener('solace-ink-layout', (e) => {
   // 先按新尺寸铺画布，再归位书模型；同书路径由这里唯一一次 redraw 收尾
   // （syncBookToDoc 不再自行重绘，避免旧尺寸上多画一遍）
   applyLayout(d)
+  stopFollow() // 新布局已给权威位置，跟随循环退场（见 follow 注释）
   syncBookToDoc(d.docId)
   redrawStatic()
   updateLayerVisibility()
@@ -824,6 +825,36 @@ function applyLayout (d) {
     cv.style.height = d.cssH + 'px'
   }
   syncCursorSize() // 布局尺寸变了，光圈直径跟随重算
+}
+
+/* ---- 沉浸/resize 过渡跟随（2026-11-13 bug1） ----
+   沉浸切换的 padding 过渡（0↔18px，200ms）期间画布位置每帧都在动，而本层
+   是静态绝对定位、applyLayout 只在重渲染后的 layout 事件里同步一次（重渲染
+   还要等 220ms 定时器 + 异步渲染）——中间数百毫秒墨迹会漂离落笔位置。
+   solace-preview-follow 窗口内每帧按画布视觉盒重设层 left/top（笔迹坐标
+   存页面单位、画布尺寸未变，层贴住画布即全部对齐）；新 layout 落地即停 */
+let followRaf = 0
+let followUntil = 0
+function syncLayerToCanvas () {
+  if (!layer || !pdfCanvas || !host) return
+  const hr = host.getBoundingClientRect()
+  const cr = pdfCanvas.getBoundingClientRect()
+  layer.style.left = (cr.left - hr.left + host.scrollLeft) + 'px'
+  layer.style.top = (cr.top - hr.top + host.scrollTop) + 'px'
+}
+function followStep () {
+  followRaf = 0
+  syncLayerToCanvas()
+  if (Date.now() < followUntil) followRaf = requestAnimationFrame(followStep)
+}
+window.addEventListener('solace-preview-follow', () => {
+  syncLayerToCanvas()
+  followUntil = Date.now() + 700
+  if (!followRaf) followRaf = requestAnimationFrame(followStep)
+})
+function stopFollow () {
+  followUntil = 0
+  if (followRaf) { cancelAnimationFrame(followRaf); followRaf = 0 }
 }
 
 function decodePts (s) {

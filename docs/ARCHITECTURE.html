@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solace Mobile · 架构实现原理图</title>
+<style>
+  :root{
+    --ink:#1c232b; --muted:#6b7684; --line:#d8dee6; --bg:#f6f7f9; --card:#ffffff;
+    --render:#3a6ea5; --render-bg:#eef4fb; --mobile:#0e8a80; --mobile-bg:#eaf7f5;
+    --bridge:#b0741a; --bridge-bg:#fbf3e4; --native:#3f8f4a; --native-bg:#eef7ef;
+    --store:#6a5aa8; --store-bg:#f1effa; --danger:#b3423a;
+    --accent:#3a6ea5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:var(--ink);
+       font-size:14px;line-height:1.65;padding:36px 24px 60px}
+  .wrap{max-width:1240px;margin:0 auto}
+
+  header{margin-bottom:26px}
+  header h1{font-size:26px;font-weight:700;letter-spacing:.5px}
+  header h1 small{font-size:13px;font-weight:400;color:var(--muted);margin-left:12px}
+  .thesis{margin-top:10px;padding:12px 18px;background:var(--card);border:1px solid var(--line);
+          border-left:4px solid var(--accent);border-radius:8px;font-size:14.5px}
+  .thesis b{color:var(--accent)}
+  .thesis code{background:#eef1f5;border-radius:4px;padding:1px 6px;font-size:12.5px}
+
+  h2{font-size:17px;margin:34px 0 14px;display:flex;align-items:center;gap:10px}
+  h2 .no{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;
+         background:var(--ink);color:#fff;font-size:13px;font-weight:700}
+  h2 small{font-weight:400;color:var(--muted);font-size:12.5px}
+
+  /* ---- 分层主图 ---- */
+  .layer{border:1.5px solid var(--line);border-radius:10px;background:var(--card);padding:12px 14px;margin:0}
+  .layer-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .layer-head .tag{font-size:12px;font-weight:700;color:#fff;border-radius:5px;padding:2px 10px;white-space:nowrap}
+  .layer-head .sub{font-size:12.5px;color:var(--muted)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .box{flex:1;min-width:170px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff}
+  .box h4{font-size:13px;margin-bottom:4px}
+  .box p{font-size:12px;color:var(--muted);line-height:1.55}
+  .box p b{color:var(--ink);font-weight:600}
+  .box code{background:#eef1f5;border-radius:3px;padding:0 4px;font-size:11px}
+
+  .l-render{border-color:#bcd0e6}.l-render .tag{background:var(--render)}
+  .l-render .box{background:var(--render-bg);border-color:#cfdfef}
+  .l-render .box.alt{background:var(--mobile-bg);border-color:#c8e8e4}
+  .l-render .box.alt h4{color:var(--mobile)}
+  .contract{margin-top:10px;border:1.5px dashed var(--render);border-radius:8px;background:#fff;
+            padding:8px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .contract .name{font-weight:700;color:var(--render);white-space:nowrap}
+  .contract p{font-size:12.5px;color:var(--muted)}
+
+  .l-bridge{border-color:#e6d3ab}.l-bridge .tag{background:var(--bridge)}
+  .l-bridge .box{background:var(--bridge-bg);border-color:#ecdcb8}
+  .l-bridge .box h4{color:#8a5a12}
+
+  .l-native{border-color:#bfe0c3}.l-native .tag{background:var(--native)}
+  .l-native .box{background:var(--native-bg);border-color:#cfe8d2}
+  .l-native .box h4{color:#2f6f38}
+
+  .l-store{border-color:#cfc6ec}.l-store .tag{background:var(--store)}
+  .l-store .box{background:var(--store-bg);border-color:#dcd5f2}
+  .l-store .box h4{color:#54479c}
+
+  .conn{display:flex;justify-content:center;align-items:center;gap:10px;padding:4px 0}
+  .conn .arrow{font-size:16px;color:var(--muted)}
+  .conn .label{font-size:11.5px;color:var(--muted);background:#fff;border:1px solid var(--line);
+               border-radius:20px;padding:2px 12px}
+
+  /* ---- 关键路径卡片 ---- */
+  .paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px}
+  .path{background:var(--card);border:1.5px solid var(--line);border-radius:10px;padding:14px 16px}
+  .path h3{font-size:14px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .path h3 .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .flow{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .step{border:1px solid var(--line);border-radius:7px;padding:5px 9px;font-size:11.5px;background:#fff;
+        display:flex;align-items:center;text-align:center;line-height:1.45}
+  .step.hot{border-color:var(--danger);color:var(--danger);font-weight:600}
+  .fa{align-self:center;color:var(--muted);font-size:13px}
+  .note{font-size:11.5px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px;margin-top:8px}
+  .note b{color:var(--ink)}
+  .note code{background:#eef1f5;border-radius:3px;padding:0 4px;font-size:10.5px}
+
+  /* ---- 链条 ---- */
+  .chain{background:var(--card);border:1.5px solid var(--line);border-radius:10px;padding:12px 16px;
+         display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+  .chain .node{border:1px solid var(--line);border-radius:6px;padding:3px 9px;font-size:12px;background:#fff}
+  .chain .node.root{border-color:var(--danger);color:var(--danger);font-weight:600}
+  .chain .fa{font-size:12px}
+  .chain .cap{font-size:12.5px;font-weight:700;margin-right:8px;color:var(--bridge)}
+
+  /* ---- 构建管线 ---- */
+  .pipeline{background:var(--card);border:1.5px solid var(--line);border-radius:10px;padding:14px 16px}
+  .pipe-row{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
+  .src{border:1px dashed var(--line);border-radius:7px;padding:6px 10px;font-size:11.5px;color:var(--muted);
+       display:flex;align-items:center;background:#fafbfc}
+  .tool{border:1.5px solid var(--bridge);color:var(--bridge);font-weight:700;border-radius:7px;
+        padding:6px 10px;font-size:11.5px;display:flex;align-items:center;background:var(--bridge-bg);white-space:nowrap}
+  .out{border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:11.5px;
+       display:flex;align-items:center;background:#fff}
+  .out.final{border-color:var(--native);color:var(--native);font-weight:700;background:var(--native-bg)}
+
+  /* ---- 不变量 ---- */
+  .invariants{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:10px}
+  .inv{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:12.5px}
+  .inv b{display:block;margin-bottom:3px;font-size:13px}
+  .inv span{color:var(--muted)}
+  .inv code{background:#eef1f5;border-radius:3px;padding:0 4px;font-size:11px}
+
+  footer{margin-top:36px;font-size:12px;color:var(--muted);text-align:center}
+  @media print{body{background:#fff;padding:10mm}.path,.layer,.inv,.chain,.pipeline{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Solace Mobile · 架构实现原理图<small>本地 PDF 私人图书馆 · 桌面端（Electron）的 Android / Capacitor 移植版 v0.8.1</small></h1>
+  <div class="thesis">
+    总纲：<b>渲染层零感知平台</b> —— 桌面端渲染代码原样搬运，其全部能力收敛在
+    <code>window.solace.*</code> 约 35 个 Promise 方法上；桌面端由 preload.js（IPC）兑现，平板端由
+    <code>bridge/boot.mjs</code>（Capacitor）组装，两套后端可整体互换。<b>文件内容永不过 JS 桥</b>
+    —— 大 PDF 的读取与导入全走原生通道（_capacitor_file_ 流式 URL / 原生复制+哈希）。
+  </div>
+</header>
+
+<!-- ================= ① 运行时分层 ================= -->
+<h2><span class="no">1</span>运行时分层 <small>WebView 里是「一套渲染代码 + 一个桥脚本」，原生侧只补官方插件没有的能力</small></h2>
+
+<div class="layer l-render">
+  <div class="layer-head">
+    <span class="tag">渲染层</span>
+    <span class="sub">www/（WebView 内运行）· 桌面渲染层原样拷贝 + 14 处锚点补丁 ｜ 移动适配层为本仓库自有代码</span>
+  </div>
+  <div class="row">
+    <div class="box">
+      <h4>桌面渲染层（原样 + 补丁）</h4>
+      <p><b>app.js</b> 封面墙/书脊/书架三视图 · <b>preview.js</b> pdf.js 预览<br>
+      <b>textindex.js</b> 全文检索 · <b>notespanel.js</b> 笔记面板<br>
+      <b>settings.js / theme.js / covers.js / dialog.js / util.js</b></p>
+    </div>
+    <div class="box alt">
+      <h4>移动适配层（自有代码）</h4>
+      <p><b>mobile.js</b> 触屏/抽屉/滑动翻页 · <b>ink.js</b> 手写标注<br>
+      <b>link.js</b> 摘录链接 · <b>tools.js</b> 工具簇 · <b>doc-info.js</b> 简介卡<br>
+      <b>immersive.js</b> 沉浸阅读 · chapter-prompt / spine-group / dialog-motion</p>
+    </div>
+  </div>
+  <div class="contract">
+    <span class="name">window.solace.*（唯一契约）</span>
+    <p>约 35 个 Promise 方法 + <code>isMobile:true</code>，签名与桌面 preload.js 一一对应。
+    适配层与桌面代码经 <b>window 事件</b>（solace-ink-layout / -flush / -close、solace-outline）与
+    <b>可选钩子</b>（<code>__linkNewOverride</code>、<code>__spineGroups</code>、<code>__toolsClose</code>）解耦——桌面无监听者即 no-op。</p>
+  </div>
+</div>
+
+<div class="conn"><span class="arrow">▼</span><span class="label">方法调用（Promise）—— 双端唯一耦合点</span></div>
+
+<div class="layer l-bridge">
+  <div class="layer-head">
+    <span class="tag">桥接层</span>
+    <span class="sub">bridge/ → esbuild 打包为 www/vendor/solace-bridge.js（IIFE 经典脚本，先于一切模块执行，window.solace 提前就位）</span>
+  </div>
+  <div class="row">
+    <div class="box">
+      <h4>boot.mjs · 组装与生命周期</h4>
+      <p>每方法 <b>gate()→await ready</b>（库初始化完才放行）；init 失败→全屏错误页。<br>
+      <b>返回键语义链</b>（见③）；<b>appStateChange</b>：回前台补扫、进后台派发墨迹冲刷</p>
+    </div>
+    <div class="box">
+      <h4>数据核（依赖注入 fs/sha256/uuid，可换内存实现单测）</h4>
+      <p><b>library-core</b>：桌面 library.js 异步移植，<b>mutationQ 全库事务队列</b>＋committedData
+      已提交快照（读取不见在途态，写失败回滚内存）<br>
+      <b>notes / annotations / links</b>：各自 promise 链串行 ＋ 查活（删书后的迟到写拒绝）<br>
+      <b>library-shared.cjs</b>：双端共享纯函数（桌面是唯一事实源）</p>
+    </div>
+    <div class="box">
+      <h4>fs-adapter.mjs · 存储适配</h4>
+      <p>相对路径封装 Capacitor Filesystem；<b>原子写</b> = .tmp＋rename＋按目标串行链；<br>
+      <b>fileUrl()</b> 把库内路径换算成 <code>_capacitor_file_</code> 直读 URL</p>
+    </div>
+    <div class="box">
+      <h4>native.mjs ＋ olib-watch.mjs</h4>
+      <p>native.mjs：SolaceNative 原生插件的 JS 封装（见下）。<br>
+      olib-watch：SAF 授权目录<b>补扫式自动入库</b>（启动 3s / 回前台 / 启用时），watch-state.json 按 size+mtime 短路未变文件</p>
+    </div>
+  </div>
+</div>
+
+<div class="conn"><span class="arrow">▼</span><span class="label">Capacitor 桥（JSON 消息过 JNI；文本与元数据走这里，大文件不走）</span></div>
+
+<div class="layer l-native">
+  <div class="layer-head">
+    <span class="tag">原生层</span>
+    <span class="sub">android/ · Capacitor 7 · MainActivity 注册自有插件</span>
+  </div>
+  <div class="row">
+    <div class="box">
+      <h4>Capacitor 官方插件</h4>
+      <p><b>Filesystem</b>（Directory.External 应用专属外部目录，免权限）<br>
+      <b>App</b>（返回键 backButton / 前后台 appStateChange）</p>
+    </div>
+    <div class="box">
+      <h4>SolaceNativePlugin.java（自有，文件 IO 全走单线程 executor）</h4>
+      <p><b>pickPdfs</b> SAF 多选 · <b>copyAndHash</b> 流式复制＋SHA-256 一次完成 ·
+      <b>hashLibraryPath</b> 库内文件哈希<br>
+      <b>pickFolder</b> SAF 目录授权＋持久化＋清旧配额 · <b>listPdfs</b> 递归枚举（深度≤6）·
+      <b>findApps / launchApp</b> 检测并拉起 Olib</p>
+    </div>
+    <div class="box">
+      <h4>WebViewLocalServer（Capacitor 内置）</h4>
+      <p>拦截 <code>https://localhost/_capacitor_file_&lt;绝对路径&gt;</code>，
+      直接 FileInputStream <b>流式返回文件内容——不进 JS、无 base64、不占主线程</b></p>
+    </div>
+  </div>
+</div>
+
+<div class="conn"><span class="arrow">▼</span><span class="label">文件 IO（原生直读直写）</span></div>
+
+<div class="layer l-store">
+  <div class="layer-head">
+    <span class="tag">存储层</span>
+    <span class="sub">SolaceLibrary/（应用专属外部目录，免运行时权限，adb 可直推；卸载应用即删除——母本留在桌面端）</span>
+  </div>
+  <div class="row">
+    <div class="box"><h4>library.json</h4><p>全部元数据，<b>与桌面端逐字段同格式</b></p></div>
+    <div class="box"><h4>files/&lt;uuid&gt;.pdf</h4><p>PDF 副本，严格 UUID 命名</p></div>
+    <div class="box"><h4>covers/ · textindex/</h4><p>封面缓存 · 全文索引分片（可删重建）</p></div>
+    <div class="box"><h4>notes/&lt;docId&gt;/*.md</h4><p>笔记＝普通 .md，<b>Typora 互通</b>；摘录记录也在这</p></div>
+    <div class="box"><h4>annotations/ ★</h4><p>手写墨迹，<b>平板专有</b>，桌面静默忽略</p></div>
+    <div class="box"><h4>links/ ★</h4><p>摘录锚点侧车，<b>平板专有</b>，桌面静默忽略</p></div>
+  </div>
+  <div class="contract" style="border-color:var(--store)">
+    <span class="name" style="color:var(--store)">整库互通</span>
+    <p>SHA-256 与 UUID 两端同值 → 去重与文档关联跨端成立；整个 SolaceLibrary/ 目录可在桌面与平板之间搬运，
+    进度/分类/标签/收藏夹/笔记全部保留。</p>
+  </div>
+</div>
+
+<!-- ================= ② 关键路径 ================= -->
+<h2><span class="no">2</span>三条关键路径 <small>性能架构的核心：大内容走原生通道，JS 桥只过元数据</small></h2>
+
+<div class="paths">
+  <div class="path">
+    <h3><span class="dot"></span>A · 大文件快路径（预览 / 封面 / 索引）</h3>
+    <div class="flow">
+      <span class="step">preview.js 请求打开</span><span class="fa">→</span>
+      <span class="step">solace.getDocUrl(id)</span><span class="fa">→</span>
+      <span class="step hot">https://localhost/_capacitor_file_…/files/&lt;id&gt;.pdf</span><span class="fa">→</span>
+      <span class="step">WebViewLocalServer 原生拦截</span><span class="fa">→</span>
+      <span class="step">FileInputStream 流式返回</span><span class="fa">→</span>
+      <span class="step">pdf.js 在 worker 里 fetch＋解析</span>
+    </div>
+    <div class="note"><b>为什么</b>：桥传 base64 需两侧全尺寸编解码＋JSON 序列化＋JNI 拷贝，实测纯 JS 编码 10MB≈1.1s
+    （原生 SHA-256 同量仅 29ms，<b>差 37 倍</b>）——0.2.x 的卡顿全部源于此。封面 <code>getCoverUrl</code> 同一条路；
+    不支持 Range → pdf.js 自动整取仍全速（30.8MB≈220ms）。预览打开期间封面/索引队列 sleep 让路。</div>
+  </div>
+
+  <div class="path">
+    <h3><span class="dot" style="background:var(--native)"></span>B · 导入管线（SAF 多选）</h3>
+    <div class="flow">
+      <span class="step">pickPdfs() SAF 选择器</span><span class="fa">→</span>
+      <span class="step hot">copyAndHash：一次读取同时做 SHA-256＋复制（哈希与副本严格同源）</span><span class="fa">→</span>
+      <span class="step">importVia：SHA-256 查重</span><span class="fa">→</span>
+      <span class="step">原子 rename 暂存→files/&lt;uuid&gt;.pdf</span><span class="fa">→</span>
+      <span class="step">mutationQ 落库 library.json</span>
+    </div>
+    <div class="note"><b>兜底链</b>：原生选择器异常 → WebView <code>&lt;input type=file&gt;</code> 的 JS 字节路径（慢但不失效）；
+    一次读取消除「先哈希后复制」之间文件仍被写入的竞态；失败原生侧自动清半截文件。Olib 下载目录的自动入库复用同管线（内容去重）。</div>
+  </div>
+
+  <div class="path">
+    <h3><span class="dot" style="background:var(--mobile)"></span>C · 手写标注（墨迹层事件流）</h3>
+    <div class="flow">
+      <span class="step">preview.js 派发 solace-ink-layout（坐标系基准）</span><span class="fa">→</span>
+      <span class="step hot">三层画布：pdf.js 页面 ＋ 已提交墨迹 ＋ 当前笔画</span><span class="fa">→</span>
+      <span class="step">1.5s 防抖保存 ＋ 四处立即冲刷（退出/关预览/回后台/换书）</span><span class="fa">→</span>
+      <span class="step">writeAnnotations → annotations/&lt;docId&gt;.json</span>
+    </div>
+    <div class="note"><b>坐标系</b>：存 PDF 用户单位（viewport scale:1），渲染只乘一个系数——与 dpr / fitWidth / 设备无关，任意倍率重绘不失真。<br>
+    <b>荧光笔不叠深不盖字</b>：离屏层求并集 + canvas <code>multiply</code> + CSS <code>mix-blend-mode:multiply</code> 三层机制合起来。
+    回后台冲刷是独立于 JS 定时器的第二条保险（OEM 冻结后台 JS 时原生事件仍达）。</div>
+  </div>
+</div>
+
+<!-- ================= ③ 返回键语义链 ================= -->
+<h2><span class="no">3</span>返回键语义链 <small>boot.mjs · Android 返回手势从最上层浮层开始消费，到根界面才「再按一次退出」</small></h2>
+<div class="chain">
+  <span class="cap">backButton</span>
+  <span class="node">模态对话框（栈顶，先给拦截机会）</span><span class="fa">→</span>
+  <span class="node">顶栏 ⋯ 菜单</span><span class="fa">→</span>
+  <span class="node">阅读工具簇收起</span><span class="fa">→</span>
+  <span class="node">取消摘录选词</span><span class="fa">→</span>
+  <span class="node">退出标注（冲刷保存）</span><span class="fa">→</span>
+  <span class="node">关预览（走按钮链路落进度）</span><span class="fa">→</span>
+  <span class="node">收抽屉</span><span class="fa">→</span>
+  <span class="node root">根界面：2s 内再按一次才退出</span>
+</div>
+<p class="note" style="border:none;margin-top:8px">每消费一层都清零「再按一次」计时——关掉浮层后 2 秒内误按不会杀掉应用。</p>
+
+<!-- ================= ④ 构建管线 ================= -->
+<h2><span class="no">4</span>构建管线 <small>三条源流汇入 www/，再 cap sync 进 Android 工程</small></h2>
+<div class="pipeline">
+  <div class="pipe-row" style="margin-bottom:8px">
+    <span class="src">桌面仓库 Solace_Rust<br>src/renderer ＋ node_modules</span><span class="fa">→</span>
+    <span class="tool">sync-www.mjs<br><small>staging 全量校验后替换 · 14 处锚点补丁 · 收拢 vendor（pdf.js / 霞鹜文楷）· 搬运 library-shared.cjs</small></span><span class="fa">→</span>
+    <span class="out">www/（index.html · css · js）</span>
+  </div>
+  <div class="pipe-row" style="margin-bottom:8px">
+    <span class="src">bridge/（桥接层源码）<br>mobile-web/（适配层源码）</span><span class="fa">→</span>
+    <span class="tool">build-bridge.mjs<br><small>esbuild bundle（IIFE，含 @capacitor/core+filesystem）· 刷新 www/js/mobile 副本</small></span><span class="fa">→</span>
+    <span class="out">www/vendor/solace-bridge.js<br>www/vendor/perfect-freehand.js</span>
+  </div>
+  <div class="pipe-row">
+    <span class="src">www/ ＋ android/ 工程</span><span class="fa">→</span>
+    <span class="tool">cap sync ＋ build-apk.mjs</span><span class="fa">→</span>
+    <span class="out">assets/public（打进 APK）</span><span class="fa">→</span>
+    <span class="out final">APK → install:device 上真机</span>
+  </div>
+</div>
+
+<!-- ================= ⑤ 数据兼容不变量 ================= -->
+<h2><span class="no">5</span>数据兼容不变量 <small>移植的铁律——违反任何一条，整库互通即破</small></h2>
+<div class="invariants">
+  <div class="inv"><b>格式逐字段一致</b><span><code>library.json</code> 结构与桌面端完全一致；写入恒为「临时文件＋原子重命名」，半截文件永不出现在库根</span></div>
+  <div class="inv"><b>事务串行＋已提交快照</b><span>全部资料库变更共用 <code>mutationQ</code>：读只暴露 <code>committedData</code>；写失败回滚内存，删书在提交成功后才清文件与索引</span></div>
+  <div class="inv"><b>SHA-256 / UUID 两端同值</b><span>跨端去重与文档关联成立的基础；孤儿清扫只认严格 UUID 形状、库为空不清扫、只扫 <code>files/</code> <code>covers/</code></span></div>
+  <div class="inv"><b>两条路径永不相交</b><span><code>notes/</code> 只放 .md（Typora 互通）；平板专有数据放 <code>annotations/</code>、<code>links/</code> 侧车——桌面端不识别即静默忽略</span></div>
+  <div class="inv"><b>缺失 ≠ 故障</b><span>存储适配器仅把明确的「文件不存在」当缺失；I/O 与权限故障上抛，绝不拿空库/空墨迹覆盖现存数据</span></div>
+  <div class="inv"><b>平台差异优先上游化</b><span>能写进桌面源码的（isMobile 分支 / 可选钩子 / 事件派发）就上游化，sync 补丁只留桌面装不下的（路径、专有 DOM、专有样式）——补丁从 44 处降到 14 处</span></div>
+</div>
+
+<footer>Solace Mobile · 架构实现原理图 · 依据 docs/PORTING.md 与 bridge/ · mobile-web/ · android/ 源码整理 · 2026-11</footer>
+</div>
+</body>
+</html>

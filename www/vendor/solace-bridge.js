@@ -1338,6 +1338,7 @@
 
   // bridge/constants.mjs
   var LIB_ROOT = "SolaceLibrary";
+  var LINK_COLOR_COUNT = 5;
 
   // bridge/file-errors.mjs
   function isNotFoundError(err) {
@@ -2631,6 +2632,9 @@
         if (typeof e.text !== "string" || !e.text.trim()) throw new Error("\u975E\u6CD5\u6458\u5F55\u6587\u672C");
         if (e.hint != null && (typeof e.hint !== "object" || !Number.isInteger(e.hint.item) || !Number.isInteger(e.hint.char))) {
           throw new Error("\u975E\u6CD5\u5B9A\u4F4D\u63D0\u793A");
+        }
+        if (e.color != null && (!Number.isInteger(e.color) || e.color < 0 || e.color >= LINK_COLOR_COUNT)) {
+          throw new Error("\u975E\u6CD5\u6458\u5F55\u989C\u8272");
         }
       }
       if (entry.body0 != null && (typeof entry.body0 !== "string" || entry.body0.length > 80)) {

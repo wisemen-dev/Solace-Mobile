@@ -186,6 +186,15 @@ button,
   --lnk-amber-deep: #b26a00;
   --lnk-drag: 64, 140, 255;
   --lnk-picked: 103, 88, 255;
+  /* 摘录标记调色板（2026-11-13 bug2）：功能性高亮色压在纸面上不跟主题
+     （同 --lnk-amber 纪律，各形态按需调透明度）。c0 = 琥珀（缺省，旧数据
+     无 color 字段同色无缝）。色数与 bridge/links-core.mjs 的
+     LINK_COLOR_COUNT、link.js 的 LNK_COLORS 保持一致 */
+  --lnk-c0: 245, 159, 0;
+  --lnk-c1: 13, 148, 136;
+  --lnk-c2: 168, 85, 247;
+  --lnk-c3: 47, 158, 68;
+  --lnk-c4: 225, 63, 113;
   /* 次级灰字：原 #8a94a0 在深色浮层上约 3.4:1、在卡片底上约 3:1，
      均低于 AA——压深一档 */
   --muted-soft: #6f7987;
@@ -334,6 +343,11 @@ body,
 /* 阅读区纵向滚动交给原生，横向触摸留给页面（滑动翻页）：不声明的话横向
    滑动会被滚动手势接管并以 pointercancel 结束，滑动翻页收不到 pointerup */
 .preview-body { touch-action: pan-y; }
+/* 横向溢出（2026-11-13 bug5）：放大（−/＋）/「适应高度」后画布宽于视口时
+   放开 pan-x——浏览器原生接管横向滚动（带惯性），溢出内容可左右滑动查看；
+   已滚到边界后的继续横滑浏览器不消费、回落给 JS 滑动判定翻页。状态类由
+   mobile.js 在每页渲染/resize 后按 scrollWidth 核算 */
+#previewBody.pan-x { touch-action: pan-x pan-y; }
 /* 预览正文区铺不透明底（2026-11-08 频闪修复）：overlay 是半透明遮罩
    （rgba 0.5）、body 原本全透明——页面元素任何半透明瞬间（翻页脉冲/
    动效）都会叠着遮罩透出主界面封面墙。铺 var(--bg) 后半透明期透出的
@@ -436,14 +450,21 @@ body,
   pointer-events: auto;
   cursor: pointer;
 }
+/* 色号类（bug2）：带/手柄/色点/色板通用——把该元素的 RGB 通道组挂进
+   --lnk-c，具体形态（带底/描边/圆点）由使用方规则取用；缺号回琥珀 */
+.lnk-c0 { --lnk-c: var(--lnk-c0); }
+.lnk-c1 { --lnk-c: var(--lnk-c1); }
+.lnk-c2 { --lnk-c: var(--lnk-c2); }
+.lnk-c3 { --lnk-c: var(--lnk-c3); }
+.lnk-c4 { --lnk-c: var(--lnk-c4); }
 .lnk-band.lnk-band-lnk {
-  background: rgba(var(--lnk-amber), 0.28);
-  border-bottom: 1px solid rgba(var(--lnk-amber), 0.75);
-  pointer-events: auto; /* 容器 none，琥珀带单独放开：补上项间隙的全宽命中 */
+  background: rgba(var(--lnk-c, var(--lnk-amber)), 0.28);
+  border-bottom: 1px solid rgba(var(--lnk-c, var(--lnk-amber)), 0.75);
+  pointer-events: auto; /* 容器 none，持久带单独放开：补上项间隙的全宽命中 */
   cursor: pointer;
 }
 .lnk-band-lnk.lnk-flash { animation: lnk-flash 0.45s ease-in-out 2; }
-@keyframes lnk-flash { 50% { background: rgba(var(--lnk-amber), 0.75); } }
+@keyframes lnk-flash { 50% { background: rgba(var(--lnk-c, var(--lnk-amber)), 0.75); } }
 
 /* 选词模式：放开文本层指针并取手势主权（§6.6 修订）。touch-action:none 是
    关键：浏览器 pan-y 会在拖选带纵向分量时启动滚动并发 pointercancel 杀死
@@ -461,18 +482,39 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
 }
 .link-tray[hidden] { display: none; }
 
-/* 按行统一带（拍板 2026-10-07）：拖选（蓝）/入选（紫）的等高高亮带——
-   容器插在文本层首部，同为绝对定位按 DOM 序绘制，垫在文本项与琥珀标记之下。
-   带高 = 该行最高文本项 ×1.12（几何分组见 bands.mjs），跨字号混排不再随
-   字体盒高低错落。位置/尺寸由 renderBands 按视觉坐标内联给出 */
+/* 按行统一带（拍板 2026-10-07；2026-11-13 bug2 色板化）：拖选/入选的等高
+   高亮带——容器插在文本层首部，同为绝对定位按 DOM 序绘制，垫在文本项与
+   持久标记之下。带高 = 该行最高文本项 ×1.12（几何分组见 bands.mjs），跨
+   字号混排不再随字体盒高低错落。颜色跟随选区色号（--lnk-c），虚线描边
+   = 会话态（待确认/已入选）、底边线 = 已落盘，状态与颜色正交。
+   位置/尺寸由 renderBands 按视觉坐标内联给出 */
 .lnk-bands { position: absolute; inset: 0; pointer-events: none; }
 .lnk-band { position: absolute; border-radius: 3px; }
-.lnk-band-drag { background: rgba(var(--lnk-drag), 0.26); outline: 1px dashed rgba(var(--lnk-drag), 0.75); }
-.lnk-band-sel { background: rgba(var(--lnk-picked), 0.25); outline: 1px dashed rgba(var(--lnk-picked), 0.7); }
+.lnk-band-drag { background: rgba(var(--lnk-c, var(--lnk-drag)), 0.26); outline: 1px dashed rgba(var(--lnk-c, var(--lnk-drag)), 0.75); }
+.lnk-band-sel { background: rgba(var(--lnk-c, var(--lnk-picked)), 0.25); outline: 1px dashed rgba(var(--lnk-c, var(--lnk-picked)), 0.7); }
+
+/* 拖选两端手柄（2026-11-13 bug3；D2 修订 2026-11-21）：原生选区式端点
+   调整——拖左/右手柄改选区起/终点（可收可放，拖过头自动翻转）。容器随
+   文本层滚动；手柄中心精确落在行底边（translate -50%,-50% + top=行底），
+   距行锚中心恰 H/2，任何行高都在 0.6H 吸附半径内——旧 -35% 的中心偏移
+   3.3px 使吸附几何不可达（报告 D2）。色环 = 选区颜色；::after 扩命中区
+   不扩视觉（抓偏由 link.js 的抓取偏移校正兜住） */
+.lnk-handles { position: absolute; inset: 0; pointer-events: none; }
+.lnk-handles[hidden] { display: none; }
+.lnk-handle {
+  position: absolute; width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; border: 2.5px solid rgba(var(--lnk-c, var(--lnk-amber)), 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transform: translate(-50%, -50%);
+  pointer-events: auto; touch-action: none; cursor: ew-resize;
+}
+.lnk-handle::after { content: ''; position: absolute; inset: -12px; border-radius: 50%; }
+.lnk-handle:active { transform: translate(-50%, -50%) scale(1.15); }
 
 /* 拖选确认小条（§6.6 修订）：小圆形图标按钮组胶囊——无文字预览（页面高亮
    即所见）、浅底描边，与深色长条托盘在形状/大小/底色上明显区分。
-   bottom 150px = 托盘(86px + 实测高 53px) + 间隙——压低会遮住托盘计数 */
+   bottom 150px = 托盘(86px + 实测高 53px) + 间隙——压低会遮住托盘计数。
+   色点钮（bug2）：点开上方 5 色小板改当前选区颜色 */
 .link-drag-bar {
   position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%);
   display: flex; align-items: center; gap: 6px; z-index: 6;
@@ -489,6 +531,29 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   color: var(--on-light); font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
 }
 .link-drag-bar button.primary { background: var(--action); border-color: var(--action); color: #fff; }
+.link-drag-bar .dot {
+  width: 16px; height: 16px; border-radius: 50%; display: block;
+  background: rgba(var(--lnk-c, var(--lnk-amber)), 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+/* 色板弹层（bug2）：确认条上方 5 色小板，浅底胶囊同确认条语言。
+   bottom 204px = 确认条(150px + 高约 46px) + 间隙 */
+.link-color-pop {
+  position: absolute; left: 50%; bottom: 204px; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 7;
+  padding: 8px 10px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.link-color-pop[hidden] { display: none; }
+.link-color-pop .swatch {
+  width: 26px; height: 26px; border-radius: 50%; cursor: pointer; padding: 0;
+  background: rgba(var(--lnk-c), 0.55);
+  border: 2px solid transparent;
+}
+.link-color-pop .swatch.on { border-color: #2b2f36; box-shadow: inset 0 0 0 2px #fff; }
 
 /* 记录编辑器的摘录 chips */
 .link-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 30vh; overflow: auto; padding: 4px 0; }
@@ -498,6 +563,12 @@ body.link-selecting .ink-text-layer { pointer-events: auto; user-select: none; t
   font-size: 12px; max-width: 100%;
 }
 .link-chip b { color: var(--lnk-amber-deep); font-weight: 600; }
+/* 色点（bug2 生命周期）：编辑器 chip 的小色钮，点击循环 5 色 */
+.chip-dot {
+  width: 14px; height: 14px; border-radius: 50%; padding: 0; flex: none;
+  cursor: pointer; border: 1px solid rgba(0, 0, 0, 0.22);
+  background: rgba(var(--lnk-c, var(--lnk-amber)), 0.85);
+}
 .chip-x { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0 2px; }
 .link-chip-degraded { font-size: 12px; color: var(--muted-soft); }
 
@@ -1137,6 +1208,9 @@ body.ink-active #previewOverlay::after {
   #btnToc:active { transform: none; }
   #btnToc,
   .sidebar { transition: none; }
+  /* 手柄按压缩放关断（验证报告 1113 纪律项）：只留基础定位 transform——
+     不能 none，-50%,-50% 是定位不是动画（同工具簇 translateY 纪律） */
+  .lnk-handle:active { transform: translate(-50%, -50%); }
 }
 
 /* ---------- 沉浸式阅读（immersive.js，2026-11-07 拍板：3s 自动沉浸/

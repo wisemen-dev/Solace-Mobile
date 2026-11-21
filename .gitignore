@@ -26,3 +26,7 @@ android/keystore.properties
 # ZCode 会话目录（本机工具产物）
 .zcode/
 .zcodeignore
+
+# 真机验证期临时产物（1113 报告纪律项）：屏幕截图暂存 / 设备锁
+.video_agent/
+test/.device-lock

@@ -8,7 +8,7 @@ import pdfjsLib from '../pdfjs.js'
 import { askConfirm } from '../dialog.js'
 import { esc } from '../util.js'
 import { closeNotes } from '../notespanel.js'
-import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText, makeFreeSelection, stepEndpoint } from './link-text.mjs'
+import { buildPageText, splitSentences, sentenceAt, normalizeText, offsetToItem, findRangeByText, makeFreeSelection, stepEndpoint, pickRowBox } from './link-text.mjs'
 import { generateRecordMd, generateSummaryMd, parseRecordMd } from './link-md.mjs'
 import { jumpPage } from './page-jump.mjs'
 import { makeLru } from './lru-cache.mjs'
@@ -33,8 +33,17 @@ let layerDown = null                 // 点按判定起点 { id, x, y, t }（与
 let pressTimer = null                // 长按定时器（自由拖选入口，§6.6）
 let press = null                     // 长按观察中的按下 { id, x, y }
 let dragSel = null                   // 进行中的拖选 { ptr, a, b }（页面文本偏移）
-let dragPending = null               // 抬手/短点后待确认的选区 { page, a, b, text, hint }
-let dragBar = null                   // 拖选确认小条（‹ › ✕ ✓ 圆钮）
+let dragPending = null               // 抬手/短点后待确认的选区 { page, a, b, text, hint, color }
+let dragBar = null                   // 拖选确认小条（色点 ‹ › ✕ ✓ 圆钮）
+// 摘录标记调色板（2026-11-13 bug2）：色号 0..4（0=琥珀缺省，旧数据无字段
+// 同色）。色值定义在 mobile.css 的 --lnk-c0..4（功能性高亮色不跟主题）；
+// 数据层校验上限同步硬编码于 bridge/links-core.mjs（LINK_COLOR_COUNT）
+const LNK_COLORS = 5
+let pickColor = 0                    // 会话默认色（色板选定后延续到后续选区）
+let colorPop = null                  // 色板弹层（.link-color-pop，懒建）
+let handleBox = null                 // 拖选两端手柄容器（.lnk-handles，每轮重查回写，见 D1 注释）
+let handleDrag = null                // 手柄拖拽 { end:'a'|'b', ptr, docId, page }
+let handleGrabDy = 0                 // 抓取偏移：落指 y − 手柄中心 y（D2，move 时还原手柄中心轨迹）
 let dragRaf = 0                      // 拖选预览的 rAF 节流句柄
 let dragRowY = null                  // 拖选行锚：最近有效命中项的中心 y（防垂直抖动跳行）
 let dragRowH = 0                     // 行锚所在行高（吸附阈值 = 0.6 × 行高）
@@ -44,6 +53,11 @@ let flick = null                     // 单指快滑观察 { id, x, y }
 let flickScrolled = false            // 本次快滑是否真的滚动了（up 据此截断翻页语义）
 
 window.linkSelecting = false
+
+// 色号归一：非法/缺省一律回 0（琥珀）——旧数据无 color 字段与手改侧车都安全
+function validColor (c) {
+  return Number.isInteger(c) && c >= 0 && c < LNK_COLORS ? c : 0
+}
 
 function ensureDom () {
   if (host) return
@@ -94,6 +108,37 @@ function applyLayout (d) {
   layer.style.setProperty('--scale-factor', String(d.cssW / d.baseW))
 }
 
+/* ---- 沉浸/resize 过渡跟随（2026-11-13 bug1） ----
+   沉浸切换的 padding 过渡（0↔18px，200ms）期间画布位置每帧都在动，而本层
+   是静态绝对定位、只在重渲染后的 layout 事件里同步一次（重渲染还要等
+   220ms 定时器 + 异步渲染）——中间数百毫秒标记带会漂离文字。跟随窗口内
+   每帧按画布视觉盒重设层位置（带坐标是层内相对值，层贴住画布即全部对齐）；
+   新 layout 落地（applyLayout 已给权威值）即停。immersive.js 在切换与
+   resize 时派发 solace-preview-follow */
+let followRaf = 0
+let followUntil = 0
+function syncLayerToCanvas () {
+  if (!layer || !pdfCanvas || !host) return
+  const hr = host.getBoundingClientRect()
+  const cr = pdfCanvas.getBoundingClientRect()
+  layer.style.left = (cr.left - hr.left + host.scrollLeft) + 'px'
+  layer.style.top = (cr.top - hr.top + host.scrollTop) + 'px'
+}
+function followStep () {
+  followRaf = 0
+  syncLayerToCanvas()
+  if (Date.now() < followUntil) followRaf = requestAnimationFrame(followStep)
+}
+window.addEventListener('solace-preview-follow', () => {
+  syncLayerToCanvas()
+  followUntil = Date.now() + 700
+  if (!followRaf) followRaf = requestAnimationFrame(followStep)
+})
+function stopFollow () {
+  followUntil = 0
+  if (followRaf) { cancelAnimationFrame(followRaf); followRaf = 0 }
+}
+
 async function buildLayer (d) {
   const seq = ++buildSeq
   // 拖选确认与进行中的拖选都是单页模态：翻页/换书即丢弃（§6.6）。dragSel
@@ -101,7 +146,10 @@ async function buildLayer (d) {
   // 翻页对账：拖选中另一手点底栏翻页钮或目录跳页都不经过本模块的指针链）
   if (dragPending && String(dragPending.page) !== String(d.page)) {
     dragPending = null
+    handleDrag = null
     if (dragBar) dragBar.hidden = true
+    if (handleBox) handleBox.hidden = true
+    hideColorPop()
   }
   if (dragSel && (dragSel.docId !== d.docId || String(dragSel.page) !== String(d.page))) {
     dragSel = null
@@ -146,6 +194,7 @@ window.addEventListener('solace-ink-layout', async (e) => {
   ensureLayer()
   lastLayout = d
   applyLayout(d)
+  stopFollow() // 新布局已给权威位置，跟随循环退场（见 syncLayerToCanvas 注释）
   // catch 掉（全量审查 P3）：预览竞态关闭时 getTextContent 拒绝会成
   // unhandled rejection（纯噪音）；标记渲染失败下次翻页自然重试
   await buildLayer(d).catch(() => {})
@@ -222,15 +271,18 @@ function locateOffsets (el, from, to) {
   return s && e ? { s, e } : null
 }
 
-// 按行统一带渲染（拍板 2026-10-07）：拖选（蓝）/入选（紫）不再做内联背景，
-// 而是层内 .lnk-bands 容器上的等高带 div——容器插在层首，与文本项同为绝对
-// 定位按 DOM 序绘制。2026-10-08 持久琥珀标记同样移交带渲染（用户实测：
-// 保存后标记按文本项内联背景宽度不一、中英文项间露出断隔——拖选时等高带
-// 正常、落盘标记回退旧内联即此根因）；span 仅保留为点击锚（dataset.file +
-// 文字盒命中），带补上项间隙的全宽命中。带列表序即 z 序：琥珀垫底，
-// 进行中的拖选/入选蓝紫在上（动态反馈 > 既有状态，半透明叠加仍透出琥珀）。
-// 几何用 DOM Range 的 getClientRects：字符级精确，多行文本项自动逐行分片
-function renderBands (bandSel, bandDrag, bandLnk) {
+// 按行统一带渲染（拍板 2026-10-07）：拖选/入选不再做内联背景，而是层内
+// .lnk-bands 容器上的等高带 div——容器插在层首，与文本项同为绝对定位按
+// DOM 序绘制。2026-10-08 持久标记同样移交带渲染（用户实测：保存后标记按
+// 文本项内联背景宽度不一、中英文项间露出断隔——拖选时等高带正常、落盘
+// 标记回退旧内联即此根因）；span 仅保留为点击锚（dataset.file + 文字盒
+// 命中），带补上项间隙的全宽命中。
+// 2026-11-13 bug2 色板：groups = [{ map, cls, file?, color }]——每条摘录/
+// 选区独立一组各自着色（lnk-c0..4，色号类给 --lnk-c 通道组），z 序即列表
+// 序：持久带垫底 → 入选 → 拖选/待确认（动态反馈 > 既有状态，半透明叠加
+// 仍透出下层）。几何用 DOM Range 的 getClientRects：字符级精确，多行文本
+// 项自动逐行分片
+function renderBands (groups) {
   if (!layer) return
   let box = layer.querySelector(':scope > .lnk-bands')
   if (!box) {
@@ -242,14 +294,9 @@ function renderBands (bandSel, bandDrag, bandLnk) {
   if (typeof document.createRange !== 'function') return // node 桩环境：带渲染跳过（断言不看 DOM）
   const layerRect = layer.getBoundingClientRect()
   if (!layerRect.width && !layerRect.height) return
-  // 琥珀带带 lnk class + dataset.file：pointerup 的 closest('.lnk') 直接命中，
-  // 点击开查看器零新增监听（容器 pointer-events:none，琥珀带在 CSS 单独放开）。
-  // bandLnk 是 Set<{file, map}>：每条摘录独立一组，组内独立行聚类
-  const groups = []
-  if (bandLnk) for (const seg of bandLnk) groups.push({ map: seg.map, cls: 'lnk-band-lnk', file: seg.file })
-  groups.push({ map: bandDrag, cls: 'lnk-band-drag' })
-  groups.push({ map: bandSel, cls: 'lnk-band-sel' })
-  for (const { map, cls, file } of groups) {
+  // 持久带带 lnk class + dataset.file：pointerup 的 closest('.lnk') 直接命中，
+  // 点击开查看器零新增监听（容器 pointer-events:none，持久带在 CSS 单独放开）
+  for (const { map, cls, file, color } of groups) {
     const rects = []
     for (const [i, list] of map || new Map()) {
       const el = layer.querySelector(`[data-item="${i}"]`)
@@ -276,7 +323,7 @@ function renderBands (bandSel, bandDrag, bandLnk) {
     }
     for (const b of groupRectsToBands(rects)) {
       const div = document.createElement('div')
-      div.className = 'lnk-band ' + cls + (file ? ' lnk' : '')
+      div.className = `lnk-band ${cls} lnk-c${validColor(color)}` + (file ? ' lnk' : '')
       if (file) div.dataset.file = file
       div.style.left = b.x + 'px'
       div.style.top = b.y + 'px'
@@ -295,11 +342,12 @@ function renderMarkers (d) {
   const entry = textCache.get(`${d.docId}:${d.page}`)
   if (!entry) return
   const byItem = new Map()
-  // 琥珀带按 file 分组（renderBands 约定）：span 锚与带视觉同源同区间。
+  // 持久带按 file 分组（renderBands 约定）：span 锚与带视觉同源同区间。
   // 每条摘录（ex）独立成组——同记录同页多条摘录时各自聚类画带，中间
   // 未摘录的空档不被跨接（审查修复 2026-10-08：行聚类的 x 取组内 min→max，
-  // 同组合并会把空档一并染色，旧 span 内联渲染无此问题）
-  const bandLnk = new Set()
+  // 同组合并会把空档一并染色，旧 span 内联渲染无此问题）。色板（bug2）：
+  // 每组带各自色号，ex.color 缺省/非法回 0（琥珀）
+  const savedGroups = new Set()
   const docLinks = linksCache.get(d.docId)
   for (const [file, rec] of Object.entries((docLinks && docLinks.records) || {})) {
     for (const ex of (rec && rec.excerpts) || []) {
@@ -310,27 +358,38 @@ function renderMarkers (d) {
       const r = findRangeByText(entry.pageText, ex.text, hint)
       if (r) {
         rangesToItems(entry, r.start, r.end, file, 'lnk', byItem)
-        const seg = { file, map: new Map() }
-        bandLnk.add(seg)
+        const seg = { map: new Map(), cls: 'lnk-band-lnk', file, color: validColor(ex.color) }
+        savedGroups.add(seg)
         rangesToItems(entry, r.start, r.end, null, null, seg.map)
       }
     }
   }
-  const bandSel = new Map() // item -> [{from, to}]（项内相对偏移）
-  const bandDrag = new Map()
+  // 入选/拖选各选区独立成组（色板：入选即所见色）；z 序见 renderBands
+  const selGroups = []
+  const dragGroups = []
   if (window.linkSelecting) {
     for (const sel of selections) {
       if (sel.page !== d.page) continue
       const hint = entry.spans[sel.hint.item] ? entry.spans[sel.hint.item].start + sel.hint.char : null
       const r = findRangeByText(entry.pageText, sel.text, hint)
-      if (r) rangesToItems(entry, r.start, r.end, null, null, bandSel)
+      if (r) {
+        const seg = { map: new Map(), cls: 'lnk-band-sel', color: validColor(sel.color) }
+        selGroups.push(seg)
+        rangesToItems(entry, r.start, r.end, null, null, seg.map)
+      }
     }
     // 自由拖选（§6.6）：进行中与待确认共用；offset 是页面文本偏移，无需重锚定
     // （dragSel 也要对账页码：buildLayer 异步窗口内旧页拖选可能尚未被清）
     const drag = dragPending && String(dragPending.page) === String(d.page)
-      ? dragPending
-      : (dragSel && String(dragSel.page) === String(d.page) ? { a: dragSel.a, b: dragSel.b } : null)
-    if (drag) rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), null, null, bandDrag)
+      ? { a: dragPending.a, b: dragPending.b, color: dragPending.color }
+      : (dragSel && String(dragSel.page) === String(d.page)
+        ? { a: dragSel.a, b: dragSel.b, color: pickColor }
+        : null)
+    if (drag) {
+      const seg = { map: new Map(), cls: 'lnk-band-drag', color: validColor(drag.color) }
+      dragGroups.push(seg)
+      rangesToItems(entry, Math.min(drag.a, drag.b), Math.max(drag.a, drag.b), null, null, seg.map)
+    }
   }
   // 上一轮画过标记的项也要重切：byItem 只含本轮有条目的项，不补则旧标记
   // 残留（真机实测残留 31 字）。空列表 = paintItem 重切回纯文本
@@ -343,11 +402,107 @@ function renderMarkers (d) {
     const el = layer.querySelector(`[data-item="${i}"]`)
     if (el) paintItem(el, list)
   }
-  renderBands(bandSel, bandDrag, bandLnk)
+  renderBands([...savedGroups, ...selGroups, ...dragGroups])
+  placeHandles(d)
   // 跳回定位：目标页渲染完才闪（一次性消费；同页跳回在 jumpToExcerpt 直接闪）
   if (pendingFlash && pendingFlash.docId === d.docId && String(pendingFlash.page) === String(d.page)) {
     tryFlashNow()
   }
+}
+
+/* ---- 拖选两端手柄（2026-11-13 bug3，原生选区式端点调整） ----
+   抬手待确认（dragPending）时在选区两端各挂一枚圆钮：拖左手柄改起点、
+   右手柄改终点，可收可放（拖过头自动翻转），复用拖选的端点命中 + 行锚吸附
+   管线。容器放在文本层内随滚动移动；手柄色环 = 选区颜色 */
+/* D1（报告 FIX-VERIFY-REPORT-2026-11-13）：buildLayer 的 layer.textContent=''
+   会摘除 .lnk-handles，模块变量持游离节点时旧版 ensureHandles 永久早退——
+   翻页/退出重进后手柄整会话消失。改 renderBands 的 .lnk-bands 同款纪律：
+   每轮重查当前节点并回写，游离变量只作当轮缓存 */
+function ensureHandles () {
+  if (!layer) return
+  let box = layer.querySelector(':scope > .lnk-handles')
+  if (!box) {
+    box = document.createElement('div')
+    box.className = 'lnk-handles'
+    box.hidden = true
+    box.innerHTML = '<div class="lnk-handle h-a" data-end="a"></div>' +
+      '<div class="lnk-handle h-b" data-end="b"></div>'
+    layer.appendChild(box)
+  }
+  handleBox = box
+}
+
+// 端点字符 [off, off+1) 的视觉矩形（client 坐标）：x0/x1 是字符级 X（Range
+// 口径，renderBands 同源）；y/h 取所在**项**盒（多行项的 Range 高不可靠）；
+// charY 是字符首矩形中心 y——仅作大项定行锚的提示值（D2 ②）。失败返回 null
+function endpointCharRect (entry, off) {
+  if (off < 0 || off >= entry.pageText.length) return null
+  const it = offsetToItem(entry.spans, off)
+  const itemEl = layer.querySelector(`[data-item="${it.item}"]`)
+  if (!itemEl || typeof itemEl.getBoundingClientRect !== 'function' ||
+      typeof document.createRange !== 'function') return null
+  const loc = locateOffsets(itemEl, it.char, it.char + 1)
+  if (!loc) return null
+  const range = document.createRange()
+  try {
+    range.setStart(loc.s.node, loc.s.off)
+    range.setEnd(loc.e.node, loc.e.off)
+    let x0 = Infinity
+    let x1 = -Infinity
+    let charY = NaN
+    for (const rr of range.getClientRects()) {
+      if (rr.width <= 0) continue
+      if (!Number.isFinite(charY)) charY = rr.y + rr.height / 2
+      x0 = Math.min(x0, rr.x)
+      x1 = Math.max(x1, rr.x + rr.width)
+    }
+    if (!(x1 > x0)) return null
+    const ir = itemEl.getBoundingClientRect()
+    return { x0, x1, y: ir.y, h: ir.height, charY }
+  } catch {
+    return null
+  }
+}
+
+// 大项（height>30）的行锚兜底（D2 ②）：rowAnchorForOffset 对多行大盒返回
+// null，抓手柄即无吸附——退用端点字符矩形中心定行（charY 不可靠，夹回
+// 项盒内；h 取近似行高，只定吸附半径）。小项本就有常规行锚，不会走到这里
+function charLineAnchorForOffset (off) {
+  if (!lastLayout || !layer) return null
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
+  if (!entry) return null
+  const rc = endpointCharRect(entry, off)
+  if (!rc || !Number.isFinite(rc.charY) || rc.h < 24) return null
+  const y = Math.min(Math.max(rc.charY, rc.y + 8), rc.y + rc.h - 8)
+  return { y, h: 20 }
+}
+
+// 手柄位置 = 端点边界字符的视觉坐标（a 取首字左缘、b 取末字右缘），挂行
+// 底边、中心对齐底边（D2 ①：transform -50%,-50%，中心距行锚中心恰 H/2，
+// 对一切行高都在 0.6H 吸附半径内）。renderMarkers 每轮重画后调用（带/手柄
+// 同源对齐）；无待确认选区即藏
+function placeHandles (d) {
+  ensureHandles()
+  if (!handleBox || !layer) return
+  if (!window.linkSelecting || !dragPending || String(dragPending.page) !== String(d.page)) {
+    handleBox.hidden = true
+    return
+  }
+  const entry = textCache.get(`${d.docId}:${d.page}`)
+  const layerRect = layer.getBoundingClientRect()
+  if (!entry || (!layerRect.width && !layerRect.height)) { handleBox.hidden = true; return }
+  let ok = true
+  for (const el of handleBox.children) {
+    const end = el.dataset.end
+    // b 是开区间右端：手柄贴末字 [b-1, b) 的右缘
+    const off = end === 'a' ? dragPending.a : dragPending.b - 1
+    const rc = endpointCharRect(entry, off)
+    if (!rc) { ok = false; break }
+    el.style.left = ((end === 'a' ? rc.x0 : rc.x1) - layerRect.x) + 'px'
+    el.style.top = (rc.y + rc.h - layerRect.y) + 'px'
+    el.className = `lnk-handle ${end === 'a' ? 'h-a' : 'h-b'} lnk-c${validColor(dragPending.color)}`
+  }
+  handleBox.hidden = !ok
 }
 
 /* ================= 选词模式（整句点选 / 托盘 / 跨页 / 与墨水互斥） ========= */
@@ -444,36 +599,30 @@ function caretToOffset (x, y) {
   return span.start + Math.min(charInItem, span.end - span.start)
 }
 
-// caret 命中兜底（§6.6 修订）：caretPositionFromPoint 在行间隙/段落间隙返回
-// null——拖选终点会冻结在最后一次命中上，纵向拖动看起来「没反应」（真机
-// 实测 a=b=起点）。退化为几何近似：在层内找指针 y 所在（或最近）的文本行，
-// x 偏左取行首、偏右取行尾——精度足够拖选（误差至多半个文本项）
+// caret 命中兜底（§6.6 修订；2026-11-13 bug4 改行感知选行）：caretPosition-
+// FromPoint 在行间隙/段落间隙返回 null——拖选终点会冻结在最后一次命中上，
+// 纵向拖动看起来「没反应」（真机实测 a=b=起点）。退化为几何近似：在层内找
+// 指针所在（或最近）的文本行、水平最近的文本项，x 相对盒中线取起/终点。
+// 选行判定下沉 pickRowBox（纯函数可单测）：旧版「同垂直距离取最矮盒」在
+// 一行里有短文本项时会命中短项的起/终点，行首/行尾空白处端点整段错位
+// ——最左/最右字选不进的直接根因
 function caretToOffsetFallback (x, y, entry) {
   if (!layer) return null
-  // §6.6 三轮修订（真机实测两处缺陷）：
-  // ① 必须用 getBoundingClientRect（视觉盒）：pdf.js 的文本项 span 带
-  //   transform:scale（--scale-factor ≈7.8），offsetTop/offsetHeight 是未
-  //   缩放的布局盒——与 clientY 混比坐标系错位，行选择完全失真；
-  // ② 不能「d=0 即停」：多行文本项的盒子高百余 px，垂直罩住后面的单项
-  //   行，先遍历到大盒就 break 会让终点跳回多行项开头（拖选稍偏即跨行）。
-  //   全遍历按（垂直距离，盒高）双键取最优：d 相同时矮盒胜——行级盒子
-  //   比跨行大盒更精确地指明指针所在的视觉行
-  let best = null
-  let bestKey = Infinity
-  const items = layer.querySelectorAll('[data-item]')
-  for (const el of items) {
+  // 视觉盒（getBoundingClientRect）：pdf.js 文本项带 transform:scale
+  // （--scale-factor ≈7.8），offsetTop/offsetHeight 是未缩放布局盒，与
+  // clientY 混比坐标系错位（§6.6 真机实测）
+  const boxes = []
+  for (const el of layer.querySelectorAll('[data-item]')) {
+    const item = Number(el.dataset.item)
+    const sp = entry.spans[item]
+    if (!sp) continue
     const r = el.getBoundingClientRect()
-    const h = r.height || 1
-    const d = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0)
-    const key = d * 1000 + Math.min(h, 200)
-    if (key < bestKey) { bestKey = key; best = el }
+    boxes.push({ item, top: r.top, bottom: r.bottom, left: r.left, right: r.right })
   }
-  if (!best) return null
-  const item = Number(best.dataset.item)
-  const sp = entry.spans[item]
-  if (!sp) return null
-  const br = best.getBoundingClientRect()
-  return x > br.left + (br.width || 0) / 2 ? sp.end : sp.start
+  const hit = pickRowBox(boxes, x, y)
+  if (!hit) return null
+  const sp = entry.spans[hit.item]
+  return hit.edge === 'end' ? sp.end : sp.start
 }
 
 // 拖选/点选共用的命中入口：先精确 caret，失败走行几何兜底
@@ -484,6 +633,55 @@ function caretOffsetForDrag (x, y) {
   const off = caretToOffset(x, y)
   if (off != null) return off
   return caretToOffsetFallback(x, y, entry)
+}
+
+// 单字符视觉中心 x（项内相对偏移 from → [from, from+1) 的 Range 矩形中点）。
+// 宽 0（空白/换行）或定位失败返回 null——调用方保持 caret 原值不动
+function charCenterX (el, spanLen, from) {
+  if (from < 0 || from >= spanLen) return null
+  const loc = locateOffsets(el, from, from + 1)
+  if (!loc || typeof document.createRange !== 'function') return null
+  const range = document.createRange()
+  try {
+    range.setStart(loc.s.node, loc.s.off)
+    range.setEnd(loc.e.node, loc.e.off)
+    let x0 = Infinity
+    let x1 = -Infinity
+    for (const rr of range.getClientRects()) {
+      if (rr.width <= 0) continue
+      x0 = Math.min(x0, rr.x)
+      x1 = Math.max(x1, rr.x + rr.width)
+    }
+    return x1 > x0 ? (x0 + x1) / 2 : null
+  } catch {
+    return null
+  }
+}
+
+// 端点命中（2026-11-13 bug4）：拖选/手柄的**移动端点**专用——caret 给的是
+// 字符边界，手指落在边缘字的半边时边界落在字内侧，首/尾字选不进来。规则：
+// ① 指针已在该项视觉盒外 → 直接吸附到该项起/终点（行边缘拖选的确定性，
+//    transform 缩放项上 caret 的边界怪癖不再影响端点）；
+// ② 盒内比相邻两字符的中心：越过中心即把该字计入/剔除——「过中心即覆盖」
+//    与原生选区手柄同语义，两端通用（不需知道在拖哪一端）
+function endpointOffsetForDrag (x, y) {
+  const off = caretOffsetForDrag(x, y)
+  if (off == null || !lastLayout || !layer) return off
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
+  if (!entry) return off
+  const it = offsetToItem(entry.spans, off)
+  const sp = entry.spans[it.item]
+  const el = layer.querySelector(`[data-item="${it.item}"]`)
+  if (!el || typeof el.getBoundingClientRect !== 'function') return off
+  const r = el.getBoundingClientRect()
+  if (x <= r.left) return sp.start
+  if (x >= r.right) return sp.end
+  const len = sp.end - sp.start
+  const cPrev = charCenterX(el, len, it.char - 1)
+  const cNext = charCenterX(el, len, it.char)
+  if (cPrev != null && x < cPrev) return Math.max(sp.start, off - 1)
+  if (cNext != null && x > cNext) return Math.min(sp.end, off + 1)
+  return off
 }
 
 // 行锚（§6.6 三轮）：页面文本偏移 → 所在文本项的行几何（client 坐标）。
@@ -520,6 +718,8 @@ function onLayerTap (e) {
     return
   }
   if (!window.linkSelecting) return
+  // 点在手柄上：那是拖端点的抓取区（pointerdown 已接管），不当「取消选区」
+  if (e.target && e.target.closest && e.target.closest('.lnk-handle')) return
   // 短点在待确认选区上 = 取消它（滚动不取消——那是查看操作；只有明确的
   // 点按意图才视为「不要这段了」）
   if (dragPending) { cancelDragPending(); return }
@@ -534,11 +734,13 @@ function onLayerTap (e) {
   const text = normalizeText(entry.pageText.slice(r.start, r.end))
   if (!text) return
   const hint = offsetToItem(entry.spans, r.start)
-  // 整句预选（§6.6 修订）：与自由选区同一条确认链（小条 + 步进 + 入选/取消），
-  // 不再直接入集——选词模式下不存在「无确认入集」，误点可反悔
-  dragPending = { page: lastLayout.page, a: r.start, b: r.end, text, hint }
+  // 整句预选（§6.6 修订）：与自由选区同一条确认链（小条 + 步进 + 手柄 +
+  // 入选/取消），不再直接入集——选词模式下不存在「无确认入集」，误点可反悔
+  dragPending = { page: lastLayout.page, a: r.start, b: r.end, text, hint, color: pickColor }
   ensureDragBar()
+  ensureHandles()
   dragBar.hidden = false
+  syncDragColorUI()
   renderMarkers(lastLayout)
 }
 
@@ -550,18 +752,75 @@ function ensureDragBar () {
   dragBar.id = 'linkDragBar'
   dragBar.className = 'link-drag-bar'
   dragBar.hidden = true
-  // §6.6 修订：无文字预览（页面高亮即所见），圆钮图标组与文字型托盘区分
+  // §6.6 修订：无文字预览（页面高亮即所见），圆钮图标组与文字型托盘区分。
+  // 色点钮（bug2）：点开上方 5 色小板，选定即改当前选区并作会话默认
   dragBar.innerHTML = `
+    <button class="drag-color" title="标记颜色" aria-label="标记颜色"><i class="dot"></i></button>
     <button class="drag-step" title="左端向外一字" aria-label="扩左">‹</button>
     <button class="drag-step" title="右端向外一字" aria-label="扩右">›</button>
     <button title="取消" aria-label="取消">✕</button>
     <button class="primary" title="入选" aria-label="入选">✓</button>`
   document.getElementById('previewOverlay').appendChild(dragBar)
-  const [btnL, btnR, btnX, btnOk] = dragBar.querySelectorAll('button')
+  const btnColor = dragBar.querySelector('.drag-color')
+  const btnL = dragBar.querySelector('.drag-step[aria-label="扩左"]')
+  const btnR = dragBar.querySelector('.drag-step[aria-label="扩右"]')
+  const btnX = dragBar.querySelectorAll('button')[3]
+  const btnOk = dragBar.querySelector('.primary')
+  btnColor.addEventListener('click', () => toggleColorPop())
   btnL.addEventListener('click', () => stepDrag(-1))
   btnR.addEventListener('click', () => stepDrag(1))
   btnX.addEventListener('click', () => cancelDragPending())
   btnOk.addEventListener('click', () => commitDragPending())
+}
+
+/* ---- 色板弹层（bug2）：确认条上方 5 色小板；选定改当前选区 + 会话默认 ---- */
+
+function ensureColorPop () {
+  if (colorPop) return
+  colorPop = document.createElement('div')
+  colorPop.className = 'link-color-pop'
+  colorPop.hidden = true
+  colorPop.innerHTML = Array.from({ length: LNK_COLORS }, (_, i) =>
+    `<button class="swatch lnk-c${i}" data-c="${i}" title="标记颜色 ${i + 1}" aria-label="标记颜色 ${i + 1}"></button>`).join('')
+  document.getElementById('previewOverlay').appendChild(colorPop)
+  colorPop.addEventListener('click', (e) => {
+    const b = e.target && e.target.closest && e.target.closest('.swatch')
+    if (!b) return
+    pickColor = Number(b.dataset.c) || 0
+    if (dragPending) dragPending.color = pickColor
+    syncDragColorUI()
+    hideColorPop()
+    if (lastLayout) renderMarkers(lastLayout) // 带与手柄即时换色（所见即所得）
+  })
+  // 点在板外（含页面任意处）收起——capture 在最外层接，色板开着的窗口内
+  // 任何落指都先走这里
+  document.addEventListener('pointerdown', (e) => {
+    if (colorPop.hidden) return
+    const inPop = colorPop.contains && colorPop.contains(e.target)
+    const inBar = dragBar && dragBar.contains && dragBar.contains(e.target)
+    if (!inPop && !inBar) hideColorPop()
+  }, true)
+}
+
+function toggleColorPop () {
+  ensureColorPop()
+  if (!colorPop.hidden) { hideColorPop(); return }
+  colorPop.hidden = false
+  const cur = validColor(dragPending && dragPending.color)
+  colorPop.querySelectorAll('.swatch').forEach(el => {
+    el.classList.toggle('on', Number(el.dataset.c) === cur)
+  })
+}
+
+function hideColorPop () {
+  if (colorPop) colorPop.hidden = true
+}
+
+// 确认条色点跟随当前选区颜色（无待确认选区时显示会话默认色）
+function syncDragColorUI () {
+  if (!dragBar) return
+  const dot = dragBar.querySelector('.dot')
+  if (dot) dot.className = `dot lnk-c${validColor(dragPending ? dragPending.color : pickColor)}`
 }
 
 // 端点步进后重算选区：text/hint 跟随端点变化（hint 恒为当前起点）
@@ -588,10 +847,11 @@ function commitDragPending () {
     selections.splice(idx, 1)
     window.toast?.('已移除该选区')
   } else {
-    selections.push({ page: p.page, text: p.text, hint: p.hint })
+    selections.push({ page: p.page, text: p.text, hint: p.hint, color: validColor(p.color) })
   }
   dragPending = null
   dragBar.hidden = true
+  hideColorPop()
   trayUpdate()
   renderMarkers(lastLayout)
 }
@@ -600,7 +860,26 @@ function cancelDragPending () {
   if (!dragPending) return
   dragPending = null
   dragBar.hidden = true
+  hideColorPop()
   if (lastLayout) renderMarkers(lastLayout)
+}
+
+// 手柄调整收尾（D3，报告 FIX-VERIFY-2026-11-13）：正常抬手、双指打断、
+// pointercancel 三个出口统一走这里——拖拽中 a/b 已变，旧 text/hint 不重算
+// 就落盘会与高亮区错位（hint 陈旧还把重锚定拉回旧区间）。拖空（<2 字）
+// 整段取消，与「拖空即取消」语义对齐
+function settleHandleAdjust () {
+  handleDrag = null
+  window.linkDragging = false
+  dragRowY = null
+  dragRowH = 0
+  if (!lastLayout || !dragPending) return
+  const entry = textCache.get(`${lastLayout.docId}:${lastLayout.page}`)
+  const made = entry && makeFreeSelection(entry.pageText, entry.spans, dragPending.a, dragPending.b)
+  if (!made || made.text.length < 2) { cancelDragPending(); return }
+  dragPending.text = made.text
+  dragPending.hint = made.hint
+  renderMarkers(lastLayout) // 重画带 + 重放手柄
 }
 
 function clearDragState () {
@@ -611,7 +890,10 @@ function clearDragState () {
   dragRowY = null
   dragRowH = 0
   dragPending = null
+  handleDrag = null
   window.linkDragging = false
+  hideColorPop()
+  if (handleBox) handleBox.hidden = true
   cancelAnimationFrame(dragRaf)
   dragRaf = 0
   selPtrs.clear()
@@ -636,12 +918,39 @@ bodyEl?.addEventListener('pointerdown', (e) => {
   // 按下不取消待确认选区：滚动（快滑/双指）是查看操作，不该破坏它——
   // 取消只发生在「真正开新选择」时（短点 onLayerTap / 长按 timer 回调）
   selPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY })
-  // 第二指落下：单指状态作废（拖选/长按/快滑），进入双指滚动（同墨迹层惯例）
+  // 第二指落下：单指状态作废（拖选/长按/快滑/手柄拖拽），进入双指滚动
+  // （同墨迹层惯例）；手柄只拖到一半时选区保持当前态，抬手后可再抓
   if (selPtrs.size >= 2) {
     clearTimeout(pressTimer); pressTimer = null; press = null
     if (dragSel) { dragSel = null; window.linkDragging = false; if (lastLayout) renderMarkers(lastLayout) }
+    if (handleDrag) settleHandleAdjust() // D3：打断也要重算 text/hint，防落盘错位
     flick = null; flickScrolled = false
     selScroll = twoMid()
+    return
+  }
+  // 手柄抓取（bug3）：拖待确认选区的端点——绕开长按/快滑判定，直接进入
+  // 端点调整（linkDragging 让位标记同拖选，mobile.js/墨迹层不抢手势）。
+  // D2 抓取偏移：手指落在手柄圆钮的任意位置（含 ::after 扩展命中区）都记
+  // 下与中心的偏移，move 时还原成「手柄中心」的轨迹——否则 17px 行高下
+  // 吸附半径（0.6H≈10px）盖不住半颗圆钮的抓偏，抓中心也会跳行
+  const hEl = e.target && e.target.closest && e.target.closest('.lnk-handle')
+  if (hEl && dragPending && lastLayout &&
+      String(dragPending.page) === String(lastLayout.page)) {
+    handleDrag = {
+      end: hEl.classList.contains('h-a') ? 'a' : 'b',
+      ptr: e.pointerId,
+      docId: lastLayout.docId,
+      page: String(lastLayout.page)
+    }
+    const hr = hEl.getBoundingClientRect()
+    handleGrabDy = Number.isFinite(hr.height) ? e.clientY - (hr.top + hr.height / 2) : 0
+    const movingOff = handleDrag.end === 'a' ? dragPending.a : dragPending.b
+    // 行锚：常规项走行锚；大项（height>30 无行锚）退端点字符矩形定行（D2 ②）
+    const anchor = rowAnchorForOffset(movingOff) || charLineAnchorForOffset(movingOff)
+    dragRowY = anchor ? anchor.y : null
+    dragRowH = anchor ? anchor.h : 0
+    window.linkDragging = true
+    try { navigator.vibrate?.(8) } catch { /* 无振动模块忽略 */ }
     return
   }
   if (press || dragSel) return
@@ -679,6 +988,41 @@ bodyEl?.addEventListener('pointermove', (e) => {
     selScroll = m
     return
   }
+  // 手柄拖拽（bug3）：调整待确认选区的对应端点，行锚吸附与拖选同款。
+  // 页码对账：拖拽中翻页/跳页 → 本次调整作废（手柄留在半调状态，不混页）
+  if (handleDrag && e.pointerId === handleDrag.ptr) {
+    if (!lastLayout || !dragPending ||
+        handleDrag.docId !== lastLayout.docId || String(handleDrag.page) !== String(lastLayout.page)) {
+      handleDrag = null
+      window.linkDragging = false
+      return
+    }
+    // D2：还原手柄中心轨迹（落指偏移见 pointerdown），再叠加行锚吸附
+    let cy = e.clientY - handleGrabDy
+    if (dragRowY != null && dragRowH > 0 && Math.abs(cy - dragRowY) < dragRowH * 0.6) {
+      cy = dragRowY
+    }
+    const off = endpointOffsetForDrag(e.clientX, cy)
+    if (off != null) {
+      dragPending[handleDrag.end] = off
+      // 端点拖过头（越过另一端）即翻转选区——与原生手柄同语义
+      if (dragPending.a > dragPending.b) {
+        const t = dragPending.a
+        dragPending.a = dragPending.b
+        dragPending.b = t
+        handleDrag.end = handleDrag.end === 'a' ? 'b' : 'a'
+      }
+      const anchor = rowAnchorForOffset(dragPending[handleDrag.end])
+      if (anchor) { dragRowY = anchor.y; dragRowH = anchor.h }
+      if (!dragRaf) {
+        dragRaf = requestAnimationFrame(() => {
+          dragRaf = 0
+          if (dragPending && lastLayout) renderMarkers(lastLayout)
+        })
+      }
+    }
+    return
+  }
   // 长按拖选（页码对账：拖选中翻页/跳页后的旧指针事件，不得把新页偏移混进旧页选区）
   if (dragSel && e.pointerId === dragSel.ptr) {
     if (dragSel.docId !== lastLayout.docId || String(dragSel.page) !== String(lastLayout.page)) {
@@ -692,7 +1036,7 @@ bodyEl?.addEventListener('pointermove', (e) => {
     if (dragRowY != null && dragRowH > 0 && Math.abs(cy - dragRowY) < dragRowH * 0.6) {
       cy = dragRowY
     }
-    const off = caretOffsetForDrag(e.clientX, cy)
+    const off = endpointOffsetForDrag(e.clientX, cy)
     if (off != null && off !== dragSel.b) {
       dragSel.b = off
       const anchor = rowAnchorForOffset(off)
@@ -731,6 +1075,12 @@ bodyEl?.addEventListener('pointerup', (e) => {
   press = null
   selPtrs.delete(e.pointerId)
   if (selScroll) { if (selPtrs.size < 2) selScroll = null; return }
+  // 手柄拖拽收尾（bug3，D3）：统一 settleHandleAdjust（三出口同一条链）
+  if (handleDrag && e.pointerId === handleDrag.ptr) {
+    settleHandleAdjust()
+    e.__consumedByLink = true
+    return
+  }
   if (dragSel && e.pointerId === dragSel.ptr) {
     const sel = dragSel
     dragSel = null
@@ -754,10 +1104,13 @@ bodyEl?.addEventListener('pointerup', (e) => {
       a: Math.min(sel.a, sel.b),
       b: Math.max(sel.a, sel.b),
       text: made.text,
-      hint: made.hint
+      hint: made.hint,
+      color: pickColor
     }
     ensureDragBar()
+    ensureHandles()
     dragBar.hidden = false
+    syncDragColorUI()
     renderMarkers(lastLayout)
     return
   }
@@ -778,6 +1131,9 @@ bodyEl?.addEventListener('pointercancel', (e) => {
   selPtrs.delete(e.pointerId)
   if (selPtrs.size < 2) selScroll = null
   if (flick && e.pointerId === flick.id) { flick = null; flickScrolled = false }
+  if (handleDrag && e.pointerId === handleDrag.ptr) {
+    settleHandleAdjust() // D3：系统取消同样重算，半调状态收尾 + 重放手柄
+  }
   if (dragSel && e.pointerId === dragSel.ptr) {
     dragSel = null
     window.linkDragging = false
@@ -955,7 +1311,7 @@ async function commitAppend () {
     }
     const merged = [
       ...rec.excerpts.map(x => ({ ...x })),
-      ...fresh.map(s => ({ page: s.page, text: s.text, hint: s.hint }))
+      ...fresh.map(s => ({ page: s.page, text: s.text, hint: s.hint, color: validColor(s.color) }))
     ]
     const ld = await loadRecordMd(docId, file)
     if (ld.error) { window.toast?.(`读取失败：${ld.error.message || ld.error}`); return }
@@ -1029,13 +1385,24 @@ function renderChips () {
     box.innerHTML = `<span class="link-chip"><b>第 ${edCtx.summary.page} 页</b> ${esc(edCtx.summary.chapter)} · 章锚点</span>`
     return
   }
+  // 色点（bug2 生命周期补全）：chip 前的小色钮点击循环 5 色——改色即
+  // edExcerptsTouched（降级记录也写侧车，否则新色只在内存里看不见）
   const chips = edCtx.excerpts.map((x, i) =>
-    `<span class="link-chip">${chipLabel(x)}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
+    `<span class="link-chip"><button class="chip-dot lnk-c${validColor(x.color)}" data-i="${i}" title="标记颜色（点击换色）" aria-label="标记颜色"></button>${chipLabel(x)}<button class="chip-x" data-i="${i}" title="移除">✕</button></span>`).join('')
   // 降级（正文被外部改过）时正文按原样保存、不重建摘录区，但摘录条目仍要
   // 可移除——归属释放（§6.2）与「全移除退化为普通笔记」（§6.3）都靠它
   box.innerHTML = (edCtx.degraded
     ? '<span class="link-chip-degraded">正文格式已被外部修改，将按原样保存；摘录仍可在此移除</span>'
     : '') + chips
+  box.querySelectorAll('.chip-dot').forEach(b => b.addEventListener('click', () => {
+    if (edSaving) return
+    const x = edCtx.excerpts[Number(b.dataset.i)]
+    if (!x) return
+    x.color = (validColor(x.color) + 1) % LNK_COLORS
+    edDirty = true
+    edExcerptsTouched = true
+    renderChips()
+  }))
   box.querySelectorAll('.chip-x').forEach(b => b.addEventListener('click', () => {
     if (edSaving) return
     edCtx.excerpts.splice(Number(b.dataset.i), 1)

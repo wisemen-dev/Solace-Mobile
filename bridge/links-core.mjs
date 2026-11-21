@@ -1,7 +1,10 @@
 // 摘录链接锚点数据层：links/<docId>.json（移动端专有；与 notes/ 的 .md 解耦，
 // 桌面端不识别即忽略，同 annotations/ 模式）。
-// records[file] = { excerpts: [{ page, text, hint? }] }；损坏留档同 annotations-core
+// records[file] = { excerpts: [{ page, text, hint?, color? }] }；损坏留档同
+// annotations-core。color 是标记调色板色号（0..LINK_COLOR_COUNT-1，缺省
+// 0=琥珀，2026-11-13）——旧数据无字段照读，桌面端整库搬运不受影响
 import { checkDocId } from './doc-id.mjs'
+import { LINK_COLOR_COUNT } from './constants.mjs'
 import { createSerialQueue } from './serial-queue.mjs'
 import { readSidecarJson } from './sidecar-json.mjs'
 
@@ -42,6 +45,12 @@ export function createLinks ({ fs, isAlive }) {
       if (e.hint != null &&
           (typeof e.hint !== 'object' || !Number.isInteger(e.hint.item) || !Number.isInteger(e.hint.char))) {
         throw new Error('非法定位提示')
+      }
+      // 标记色号（2026-11-13）：可选整数 0..LINK_COLOR_COUNT-1，缺省/越界/
+      // 非整数拒绝——渲染层 validColor 同口径，脏数据在入口拦下
+      if (e.color != null &&
+          (!Number.isInteger(e.color) || e.color < 0 || e.color >= LINK_COLOR_COUNT)) {
+        throw new Error('非法摘录颜色')
       }
     }
     // body0：记录正文首行的显示快照（列表行内容优先用，免逐文件 IO）。

@@ -1,5 +1,6 @@
 // 摘录链接数据层（bridge/links-core.mjs）单测：空读、setEntry/removeEntry
-// 回环、孤儿剪除、损坏留档、白名单、文件名校验、并发写串行化、空表删文件
+// 回环、孤儿剪除、损坏留档、白名单、文件名校验、并发写串行化、空表删文件、
+// 摘录色号 color（合法区间/拒绝副作用/读侧脏色留档）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createLinks } from '../bridge/links-core.mjs'
@@ -158,6 +159,82 @@ test('entry 校验：空摘录/坏页码/坏 hint 拒绝', async () => {
   await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 0, text: 'x' }] }))
   await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: '   ' }] }))
   await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', hint: { item: 1 } }] }))
+})
+
+test('摘录色号 color（2026-11-13）：合法 0..4 逐字段回读，非法拒绝，缺省照读', async () => {
+  const { fs, links } = harness()
+  // 合法区间逐号写读回环
+  const excerpts = [0, 1, 2, 3, 4].map((c, i) => ({ page: i + 1, text: `句${i}`, color: c }))
+  await links.setEntry(ID, FILE, { excerpts })
+  const back = (await links.read(ID)).records[FILE].excerpts
+  back.forEach((e, i) => assert.equal(e.color, i, `色号 ${i} 应逐字段回读`))
+  // 越界/非整数拒绝（渲染层 validColor 只在显示侧兜底，脏数据入口拦下）
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: 5 }] }))
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: -1 }] }))
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: 1.5 }] }))
+  await assert.rejects(() => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: '2' }] }))
+  // 旧数据无 color 字段：照读（undefined，渲染层回 0=琥珀，免迁移）
+  await links.setEntry(ID, FILE, ENTRY)
+  assert.equal((await links.read(ID)).records[FILE].excerpts[0].color, undefined)
+  assert.ok(await fs.exists(`links/${ID}.json`))
+})
+
+/* ---- color 校验补充（审查 2026-11-13）：边界口径与拒绝副作用 ---- */
+
+test('摘录色号 color 补充：null 显式放行、错误文案、拒绝不落盘不污染旧条目', async () => {
+  const { fs, links } = harness()
+  // null 与缺省同口径放行（e.color != null 判据）；落盘后 null 被 JSON 序列化
+  // 保留——读回仍是 null，渲染层 validColor(null) 归 0，链路安全
+  await links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: null }] })
+  assert.equal((await links.read(ID)).records[FILE].excerpts[0].color, null)
+  // 错误文案固定『非法摘录颜色』：上游（编辑器/桥）按文案分流，改文案即破坏
+  await assert.rejects(
+    () => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: 5 }] }),
+    /非法摘录颜色/)
+  await assert.rejects(
+    () => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: '2' }] }),
+    /非法摘录颜色/)
+  // 其余非数字形态同口径拒绝：布尔/NaN/对象（Number.isInteger 单闸拦全）
+  for (const bad of [true, NaN, {}, [], Infinity]) {
+    await assert.rejects(
+      () => links.setEntry(ID, FILE, { excerpts: [{ page: 1, text: 'x', color: bad }] }),
+      /非法摘录颜色/)
+  }
+  // 多条摘录中仅一条带非法 color：整条 setEntry 拒绝（不做逐条过滤）
+  await assert.rejects(
+    () => links.setEntry(ID, 'multi.md', {
+      excerpts: [{ page: 1, text: '好', color: 2 }, { page: 1, text: '坏', color: 9 }]
+    }),
+    /非法摘录颜色/)
+  // 拒绝发生在写队列之前：先前 color:null 条目原样可读，未被坏写覆盖/清空，
+  // 也没有多写进任何 multi.md 条目
+  const after = (await links.read(ID)).records
+  assert.deepEqual(Object.keys(after), [FILE])
+  assert.equal(after[FILE].excerpts[0].color, null)
+})
+
+test('摘录色号 color 补充：读侧同口径——盘上越界色号按损坏留档，不带着脏色渲染', async () => {
+  const { fs, links } = harness()
+  // validateEntry 同时挂在写入口与读取校验（validate → readSidecarJson）：
+  // 桌面手改/旧版程序写出的越界色号在平板读取时整文件按损坏处理——留档 +
+  // 空回退 + notice，而不是让脏色号流进渲染层
+  await fs.mkdirp('links')
+  await fs.writeText(`links/${ID}.json`, JSON.stringify({
+    version: 2,
+    records: { [FILE]: { excerpts: [{ page: 1, text: '手改坏色', color: 7 }] } }
+  }))
+  const res = await links.read(ID)
+  assert.deepEqual(res.records, {})
+  assert.ok(res.notice && res.notice.includes('损坏'))
+  assert.equal(await fs.exists(`links/${ID}.corrupt-1.json`), true)
+  // 合法色号的盘上数据照读不动（同一读取校验的正向对照）
+  await fs.writeText(`links/${ID}.json`, JSON.stringify({
+    version: 2,
+    records: { [FILE]: { excerpts: [{ page: 1, text: '合法', color: 4 }] } }
+  }))
+  const ok = await links.read(ID)
+  assert.equal(ok.records[FILE].excerpts[0].color, 4)
+  assert.equal(ok.notice, undefined)
 })
 
 test('并发 setEntry 串行化：两条都落盘', async () => {

@@ -488,3 +488,81 @@ trashNote: 扩展为 notes.trash + links.removeEntry（同链）
 - 无文字页时序：现状为「进入选词后异步发现无字才 toast+退出」，非「探测后不进入」。
 - 载入失败分流（第四轮新增）：loadLinks 返回 null 区分「读取失败」与「无记录」——查看器/併入/章总结入口失败时中止并提示，不再误判「已不存在」或绕过幂等匹配新建重复总结。
 - 拖选对账（第四轮新增）：dragSel 记 {page, docId}，翻页/换书作废（同 ink 的翻页对账）。
+
+## 修订记（2026-11-13 自用 bug 批：色板 / 选区手柄 / 端点命中 / 沉浸对齐）
+
+**① 标记色板（bug2）**：excerpt 增可选 `color` 字段（整数 0..4，缺省 0=琥珀，
+旧数据免迁移；links-core 校验，色数常量 LINK_COLOR_COUNT）。色值 =
+mobile.css `--lnk-c0..4`（功能性高亮色不跟主题）。交互（拍板 2026-11-13）：
+确认条加色点圆钮，点开上方 5 色小板——选定即改当前选区并作**会话默认**
+（pickColor，延续到后续选区）；编辑器 chip 前小色钮**点击循环换色**
+（改色即 edExcerptsTouched，降级记录也写侧车）——补全「改色」生命周期。
+渲染：renderBands 从按 file 分组改为**按摘录/选区独立分组**各自着色；
+状态与颜色正交（虚线描边=会话态、底边线=落盘），色号类 `lnk-c0..4` 把
+RGB 通道挂进 `--lnk-c` 供带/手柄/色点/色板通用。md 不含颜色（颜色是锚点
+元数据，Typora 侧无感）。
+
+**② 选区两端手柄（bug3）**：抬手待确认时选区两端各挂一枚圆钮
+（.lnk-handles 容器在文本层内随滚动），拖手柄改对应端点——可收可放、拖过
+头自动翻转（与原生选区手柄同语义）；复用拖选的端点命中 + 行锚吸附 + rAF
+节流管线，翻页/换书对账作废同 dragSel。确认条 ‹ › 步进钮保留（单字微调
+与特殊 PDF 兜底，拍板：手柄 + 保留）。
+
+**③ 端点命中（bug4，最左/最右字选不进）**：双根因双修——
+- caret 边界在边缘字半边时落在字内侧：`endpointOffsetForDrag` 在 caret
+  结果上叠加「**过字符中心即覆盖**」（相邻两字符的 Range 视觉中心与指针
+  x 比较，越过中心即计入/剔除，两端通用）；指针已出该项视觉盒直接吸附
+  到该项起/终点（transform 缩放项的 caret 怪癖不再影响端点）；
+- 兜底选行 `caretToOffsetFallback` 的「同垂直距离取最矮盒」缺陷：一行有
+  短文本项时，行首/行尾空白的指针命中短项起/终点，端点整段错位——下沉
+  纯函数 `pickRowBox`（link-text.mjs，可单测）：垂直含 y（或最近）优先、
+  **水平最近**次之、盒高千分位末位 tie-break。
+
+**④ 沉浸×标记瞬时错位（bug1）**：沉浸切换的 padding 过渡（0↔18px,200ms）
+期间画布位置每帧在动，而墨迹/文本层是静态绝对定位、只在重渲染后的 layout
+事件同步一次（还要等 220ms 定时器+异步渲染）——数百毫秒窗口标记漂离文字。
+根治：immersive.js 在切换/resize 时派发 `solace-preview-follow`，ink.js 与
+link.js 各自起 ≤700ms 的 rAF 跟随循环，每帧按画布视觉盒重设层 left/top；
+新 layout 落地（applyLayout 权威值）即停。ink 墨迹与摘录带同批修复。
+
+**⑤ 预览横向平移（bug5，屏幕适应）**：放大（−/＋）/「适应高度」后画布宽于
+视口，但 `.preview-body { touch-action: pan-y }` 禁了横向原生滚动且横滑被判
+翻页——溢出内容摸不到。修复：mobile.js 在每页渲染/resize 后按
+`scrollWidth-clientWidth>48` 维护 `pan-x` 状态类（阈值 48px：fit 下画布有
+dpr 取整的几像素残差，不足半指宽的溢出平移无意义、还会吃掉首横滑的翻页），
+CSS 放开 `touch-action: pan-x pan-y`——浏览器原生接管横向滚动（带惯性）。
+捏合缩放暂不做（拍板：只修平移；PORTING 预留的捏合管线不变）。
+边界回落翻页首版设想「浏览器滚不动就放行给 JS」在真机不成立（Chromium 越
+slop 即派 pointercancel，边界处也一样）——2026-11-21 按验证报告 D4 方向①
+补 touch 通道接棒，见下方 D 批修订记。
+
+## 修订记（2026-11-21 D 批：验证报告 D1–D4 修复 + 纪律项收口）
+
+依据 `docs/FIX-VERIFY-REPORT-2026-11-13.md` 的判定与修复方案：
+
+- **D1 手柄孤儿化**：`ensureHandles` 改 renderBands 的 `.lnk-bands` 同款纪律——
+  每轮 `querySelector(':scope > .lnk-handles')` 重查当前节点并回写 `handleBox`，
+  `placeHandles` 先行 `ensureHandles()` 自愈；报告的备选（清空处置 null）不完备
+  （placeHandles 无人重建），未采用。
+- **D2 抓取必跳行**：三层修——① 手柄中心精确落行底边（top=行底 +
+  `translate(-50%,-50%)`，中心距行锚中心恒 H/2 < 0.6H 吸附半径，全行高成立）；
+  ② **抓取偏移校正**（报告方案之上的补强）：落指记 `handleGrabDy = clientY −
+  手柄中心 y`，move 时 `cy = clientY − handleGrabDy` 还原手柄中心轨迹——
+  17px 行高下吸附半径仅 ~10px，盖不住半颗 22px 圆钮的抓偏，只做 ① 抓圆钮
+  边缘仍会跳行；③ 大项（height>30 无行锚）退端点字符 Range 矩形定行锚
+  （`charLineAnchorForOffset`，charY 夹回项盒、h 取 20 近似）。
+- **D3 stale text/hint**：抬手/双指打断/pointercancel 三出口统一
+  `settleHandleAdjust()`——重算 `makeFreeSelection` 的 text/hint，拖空（<2 字）
+  整段取消；新增 node 回归测试锁定。
+- **D4 边界翻页被吞**（拍板方向① touch 通道接棒）：pan-x 态挂 touchstart/
+  touchend 第二触通道（touch 流不受 pointer 取消影响）；互斥判据 = 本次手势
+  是否收到过 pointercancel（无 = pointerup 链路自处理，touchend 让位防双翻）；
+  仅在「手势朝向的滚动边界」接棒翻页，未到边界的横滑仍是平移。
+  真机复验补丁（同日）：中段横滑被原生 pan 吃掉大部分行程、终点恰在墙上，
+  只按 dx+边界判会把「滚到位」误判成翻页（一次手势既滚又翻，实测坐实）——
+  touchend 追加「扣除本次手势实际滚掉的距离（scrollLeft 终值−起点）后仍
+  超出 48 步进阈值」才翻。三场景复验：滚到墙不翻 ✓、大行程推墙滚+翻 ✓、
+  在墙上外滑纯翻 ✓、边缘点按翻页不受影响 ✓。
+- **纪律项**：修订记⑤的 pan-x 阈值 `>4` 更正为 `>48`（含 dpr 残差说明）；
+  `.lnk-handle:active` 压缩放进文末 reduced-motion 跳过块（保留定位性
+  transform）。
